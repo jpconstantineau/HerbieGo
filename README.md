@@ -360,3 +360,7 @@ This would create a foundation that can later expand into longer time horizons, 
 ## Project Intent
 
 HerbieGo aims to be both a game and a systems-thinking simulation: a place where players can experience the tension between local decisions and global outcomes inside a plant that evolves over time. The project should be designed so that the gameplay remains understandable to humans, playable from the terminal, and open to experimentation with both human and AI decision-makers.
+
+## Design Docs
+
+- [MVP Game Design](docs/mvp-game-design.md)
