@@ -11,6 +11,7 @@ The first playable version intentionally focuses on:
 - one plant scenario
 - three operating roles plus one finance control role
 - simultaneous hidden turns
+- 52 weekly rounds per match
 - two finished products
 - two purchased parts per product
 - two required workstations in the production route
@@ -60,8 +61,8 @@ Responsibilities:
 
 Legal actions each round:
 
-- set selling price for each product
-- set offer quantity for each product
+- set selling price for each customer-product offer
+- set offer quantity for each customer-product offer
 - attach a short rationale/comment
 
 ### Finance Controller
@@ -79,6 +80,12 @@ Legal actions each round:
 - set next-round sales target for revenue
 - set next-round plant target for cash floor or debt ceiling
 - attach a short rationale/comment
+
+Budget rules:
+
+- finance budgets are soft targets
+- procurement and production may exceed the active budget by up to `10%`
+- spending beyond `110%` of the active budget is illegal and must be trimmed by the plant
 
 ### Plant Role
 
@@ -108,6 +115,23 @@ The MVP uses one fixed starter scenario so the first implementation can stay det
 - purchased parts: `Body`, `Fastener Kit`
 - route: `Fabrication -> Assembly`
 
+### Customers
+
+The game engine manages multiple customers. The Sales Manager sells to those customers instead of selling into one anonymous market.
+
+The MVP should start with a small fixed customer list, such as:
+
+- `NorthBuild`
+- `PrairieFlow`
+- `AgriWorks`
+
+Each customer has:
+
+- product-specific base demand
+- product-specific price sensitivity
+- a sentiment score that affects future demand
+- a backlog record for unshipped orders
+
 ### Workstations
 
 #### Workstation 1: `Fabrication`
@@ -133,15 +157,18 @@ Exact numeric values belong in scenario data, not hard-coded into the rules text
 
 ## Round Structure
 
-One round represents one planning-and-execution cycle for the plant.
+One round represents one week of plant operation.
 
 ### Phase 1: Broadcast state
 
 Each player receives:
 
+- current week number
 - current cash and debt
 - current parts inventory
 - current finished goods inventory
+- current customer backlog by customer and product
+- current customer sentiment by customer
 - workstation capacities for the round
 - active budgets and targets set by finance from the previous round
 - recent round log and player commentary
@@ -162,16 +189,26 @@ The plant resolves purchase orders.
 
 Rules:
 
-- each ordered part type adds to parts inventory at the end of procurement resolution
+- each ordered part type becomes an in-transit purchase order instead of immediate inventory
 - purchase spend reduces cash immediately
 - procurement may spend beyond cash on hand if the plant remains within the debt ceiling
 - if an order would breach the debt ceiling, the order is reduced or rejected until the rule is satisfied
 
-For MVP simplicity, purchased parts arrive in the same round after procurement resolution and are available to production in that round.
+Purchased parts arrive at the end of the next round. In MVP, all suppliers use the same one-round lead time. Supplier-specific lead times are deferred.
 
-### Phase 5: Production resolution
+### Phase 5: Parts receipt update
 
-The plant resolves production actions using available parts inventory and finite workstation capacity.
+The plant receives any purchase orders whose one-round lead time has completed.
+
+Rules:
+
+- arriving parts move from in-transit supply into parts inventory
+- received parts become available for production after receipt
+- the event log records which orders arrived this week
+
+### Phase 6: Production resolution
+
+The plant resolves production actions using on-hand parts inventory and finite workstation capacity.
 
 Rules:
 
@@ -184,20 +221,22 @@ Rules:
 
 The MVP resolves production as completed units within the same round instead of carrying work-in-progress between rounds.
 
-### Phase 6: Sales resolution
+### Phase 7: Sales resolution
 
-The plant converts pricing decisions into market demand, then ships from finished goods inventory.
+The plant converts pricing decisions into customer-level demand, applies backlog rules, then ships from finished goods inventory.
 
 Rules:
 
-- demand depends on price set by the Sales Manager
-- realized sales cannot exceed offered quantity
-- realized sales cannot exceed demand
-- realized sales cannot exceed finished goods inventory
+- each customer may receive separate price and quantity offers per product
+- demand depends on price set by the Sales Manager and current customer sentiment
+- new accepted demand is added to that customer-product backlog
+- shipments draw down backlog from oldest to newest
+- realized shipments cannot exceed finished goods inventory
 - shipped units reduce finished goods inventory and increase cash through revenue
-- unmet demand becomes lost sales in the MVP
+- backlog entries that remain unshipped for more than `2` rounds become lost sales and are removed from backlog
+- expired backlog reduces the affected customer's sentiment, making future sales harder
 
-### Phase 7: End-of-round finance update
+### Phase 8: End-of-round finance update
 
 The plant applies round-end financial effects.
 
@@ -233,17 +272,27 @@ The MVP uses a deliberately compact economic model.
 
 ### Demand Rules
 
-Each product has:
+Each customer-product pair has:
 
 - a reference price
 - a base demand
 - a price sensitivity
+- a sentiment modifier
 
 The first implementation should use a simple demand function:
 
-`realized_demand = max(0, base_demand - price_sensitivity * (price - reference_price))`
+`realized_demand = max(0, (base_demand * sentiment_modifier) - price_sensitivity * (price - reference_price))`
 
 The plant may round demand to an integer after applying the formula.
+
+### Backlog And Sentiment Rules
+
+- accepted demand that is not shipped immediately becomes backlog
+- backlog is tracked by customer, product, quantity, and order age in rounds
+- the plant ages backlog at the end of each round
+- backlog older than `2` rounds expires into lost sales
+- each expired backlog event reduces that customer's sentiment score
+- lower sentiment reduces future demand until the customer is won back through better service
 
 ### Cost Rules
 
@@ -253,6 +302,14 @@ The first implementation should track:
 - optional production operating cost
 - inventory holding cost
 - debt carrying cost
+
+### Budget Rules
+
+- finance budgets apply starting next round
+- procurement and production are expected to stay at or below budget
+- the plant allows spending up to `110%` of budget
+- the plant trims any action that would exceed the `110%` hard cap
+- budget misses inside the allowed range are logged as soft-target misses
 
 ## Action Vocabulary
 
@@ -269,8 +326,8 @@ This section is the canonical answer to "what can a player do in one MVP round?"
 
 ### Sales Manager
 
-- `set_price(product_id, unit_price)`
-- `set_offer_quantity(product_id, quantity)`
+- `set_price(customer_id, product_id, unit_price)`
+- `set_offer_quantity(customer_id, product_id, quantity)`
 
 ### Finance Controller
 
@@ -293,10 +350,12 @@ The plant should expose shared metrics every round.
 - procurement spend
 - production volume by product
 - units sold by product
+- backlog by customer and product
 - parts inventory by part
 - finished goods inventory by product
 - workstation utilization by workstation
 - lost sales by product
+- customer sentiment by customer
 - holding cost
 - debt cost
 - round profit
@@ -324,7 +383,7 @@ The plant immediately loses if:
 - debt exceeds the active debt ceiling and cannot be corrected by trimming actions
 - a mandatory round cannot be resolved legally
 
-The first playable version should favor a fixed-length match, such as `8` or `12` rounds, instead of open-ended play.
+The first playable version uses a fixed-length match of `52` rounds, with each round representing one week.
 
 ## Rules And Logic By Role
 
@@ -343,8 +402,10 @@ The first playable version should favor a fixed-length match, such as `8` or `12
 
 ### Sales Manager Logic
 
-- controls demand indirectly through price
-- cannot sell more than available inventory
+- controls demand indirectly through customer-specific pricing and offer quantity
+- cannot ship more than available inventory
+- works against both price sensitivity and customer sentiment
+- must manage backlog quality because delayed orders damage future sales
 - cannot backdate sales into the current round after seeing production results
 
 ### Finance Controller Logic
@@ -368,7 +429,7 @@ The MVP does not yet include:
 - networked multiplayer
 - long-term era progression
 - multiple scenarios or plants
-- supplier lead times beyond same-round arrival
+- supplier-specific lead times
 - work-in-progress carried between rounds
 - machine failures and stochastic disruptions
 - separate hidden personal victory conditions
@@ -384,6 +445,7 @@ Issue `#1` is complete when:
 - a contributor can describe the exact phases of one round
 - a contributor can list every legal action for each MVP role
 - a contributor can explain how two products, two-part BOMs, and two workstations interact
+- a contributor can explain one-round procurement lead time, backlog aging, and customer sentiment effects
 - a contributor knows the hard constraints: finite capacity, no negative inventory, debt allowed within limits
 - a future implementation can turn this document into deterministic code without first inventing new rules
 
@@ -391,7 +453,6 @@ Issue `#1` is complete when:
 
 These questions are narrow enough to answer later without blocking implementation, but they are worth confirming before balancing the simulation:
 
-1. Should purchased parts arrive immediately, at end of round, or next round?
-2. Should finance-set budgets be hard caps, soft warnings, or only scoring targets?
-3. Should the first match length be `8`, `10`, or `12` rounds?
-4. Should unmet sales demand be pure lost sales, or should some demand backlog into the next round?
+1. Should shipments always satisfy the oldest backlog first, or can the Sales Manager prioritize customers explicitly?
+2. Should customer sentiment recover automatically over time, or only through reliable service?
+3. Should customer offers be locked to one product each week, or can the Sales Manager set offers for every customer-product pair every round?
