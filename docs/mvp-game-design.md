@@ -61,7 +61,7 @@ Responsibilities:
 
 Legal actions each round:
 
-- set selling price for each customer-product offer
+- set market price for each product
 - set offer quantity for each customer-product offer
 - attach a short rationale/comment
 
@@ -166,6 +166,7 @@ Each player receives:
 - current week number
 - current cash and debt
 - current parts inventory
+- current shop floor inventory and work-in-progress by product and workstation stage
 - current finished goods inventory
 - current customer backlog by customer and product
 - current customer sentiment by customer
@@ -208,18 +209,20 @@ Rules:
 
 ### Phase 6: Production resolution
 
-The plant resolves production actions using on-hand parts inventory and finite workstation capacity.
+The plant resolves production actions using on-hand parts inventory, carried work-in-progress, and finite workstation capacity.
 
 Rules:
 
 - production cannot consume more parts than exist
 - production cannot use more workstation capacity than exists at either workstation
-- if the Production Manager requests more units than can be completed, the plant completes the maximum legal quantity
-- completed units are added to finished goods inventory
+- released units first consume required purchased parts and enter shop floor inventory at `Fabrication`
+- units that complete `Fabrication` move into intermediate work-in-progress before `Assembly`
+- units that complete `Assembly` move into finished goods inventory
+- if the Production Manager requests more units than can be advanced, the plant advances the maximum legal quantity
 - consumed parts are removed from parts inventory
 - any overtime or operating cost is charged to cash and may create debt within the debt ceiling
 
-The MVP resolves production as completed units within the same round instead of carrying work-in-progress between rounds.
+Shop floor inventory and work-in-progress carry from one round to the next until they are completed, blocked, or scrapped by a future ruleset.
 
 ### Phase 7: Sales resolution
 
@@ -227,8 +230,9 @@ The plant converts pricing decisions into customer-level demand, applies backlog
 
 Rules:
 
-- each customer may receive separate price and quantity offers per product
-- demand depends on price set by the Sales Manager and current customer sentiment
+- the Sales Manager sets one market price per product for all customers
+- each customer may receive a separate offer quantity per product
+- demand depends on market price set by the Sales Manager, current customer sentiment, and customer-specific demand
 - new accepted demand is added to that customer-product backlog
 - shipments draw down backlog from oldest to newest
 - realized shipments cannot exceed finished goods inventory
@@ -261,6 +265,7 @@ The MVP uses a deliberately compact economic model.
 ### Inventory Rules
 
 - parts inventory cannot go negative
+- shop floor inventory and work-in-progress cannot go negative
 - finished goods inventory cannot go negative
 - no action can sell, consume, or move more units than exist
 
@@ -292,7 +297,9 @@ The plant may round demand to an integer after applying the formula.
 - the plant ages backlog at the end of each round
 - backlog older than `2` rounds expires into lost sales
 - each expired backlog event reduces that customer's sentiment score
-- lower sentiment reduces future demand until the customer is won back through better service
+- sentiment recovers very slowly over time
+- sentiment recovers more quickly through reliable service and on-time shipment behavior
+- lower sentiment biases future purchase decisions downward until the customer is won back through better service
 
 ### Cost Rules
 
@@ -326,7 +333,7 @@ This section is the canonical answer to "what can a player do in one MVP round?"
 
 ### Sales Manager
 
-- `set_price(customer_id, product_id, unit_price)`
+- `set_price(product_id, unit_price)`
 - `set_offer_quantity(customer_id, product_id, quantity)`
 
 ### Finance Controller
@@ -349,6 +356,7 @@ The plant should expose shared metrics every round.
 - revenue
 - procurement spend
 - production volume by product
+- shop floor inventory by product and workstation stage
 - units sold by product
 - backlog by customer and product
 - parts inventory by part
@@ -397,14 +405,15 @@ The first playable version uses a fixed-length match of `52` rounds, with each r
 
 - can only produce defined products
 - must respect available part inventory
+- must manage partially completed units already on the shop floor
 - must respect workstation capacity at both workstations
 - cannot create finished products directly without consuming required parts
 
 ### Sales Manager Logic
 
-- controls demand indirectly through customer-specific pricing and offer quantity
+- controls demand through market-wide product pricing and customer-specific offer quantity
 - cannot ship more than available inventory
-- works against both price sensitivity and customer sentiment
+- works against price sensitivity, customer sentiment, and customer-specific demand
 - must manage backlog quality because delayed orders damage future sales
 - cannot backdate sales into the current round after seeing production results
 
@@ -430,7 +439,6 @@ The MVP does not yet include:
 - long-term era progression
 - multiple scenarios or plants
 - supplier-specific lead times
-- work-in-progress carried between rounds
 - machine failures and stochastic disruptions
 - separate hidden personal victory conditions
 - maintenance, engineering, HR, or distribution roles
@@ -453,6 +461,5 @@ Issue `#1` is complete when:
 
 These questions are narrow enough to answer later without blocking implementation, but they are worth confirming before balancing the simulation:
 
-1. Should shipments always satisfy the oldest backlog first, or can the Sales Manager prioritize customers explicitly?
-2. Should customer sentiment recover automatically over time, or only through reliable service?
-3. Should customer offers be locked to one product each week, or can the Sales Manager set offers for every customer-product pair every round?
+1. How quickly should passive customer sentiment recovery occur relative to the stronger recovery from reliable service?
+2. Should customer offers be locked to one product each week, or can the Sales Manager set offers for every customer-product pair every round?
