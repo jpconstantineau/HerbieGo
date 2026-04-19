@@ -20,7 +20,7 @@ These terms are canonical and should be reused consistently in code, prompts, lo
 - A `role` is a player-facing responsibility such as Procurement or Sales.
 - An `actor` is either a player role or the plant system.
 - An `action` is an intent submitted during hidden turn collection.
-- An `event` is a resolved outcome emitted by the plant.
+- An `event` is a resolved plant outcome emitted by the system.
 - `inventory` means on-hand stock owned by the plant.
 - `in_transit_supply` means purchased parts that have been ordered but not yet received.
 - `work_in_progress` means units already released into the route but not yet finished.
@@ -363,7 +363,7 @@ type ShipmentRecord struct {
 
 ## Event And Commentary Model
 
-The event stream is append-only. State snapshots may be persisted for convenience, but history should still be reconstructable from events plus scenario data.
+The round record is append-only. State snapshots may be persisted for convenience, but history should still be reconstructable from accepted actions, events, and scenario data.
 
 ```go
 type RoundRecord struct {
@@ -378,6 +378,8 @@ type RoundHistory struct {
     RecentRounds []RoundRecord
 }
 ```
+
+`Actions` are accepted round metadata revealed with the completed round record. `Events` are the public plant outcomes produced while resolving those accepted actions.
 
 ```go
 type CommentaryRecord struct {
@@ -417,7 +419,6 @@ Recommended MVP event types:
 type RoundEventType string
 
 const (
-    EventActionAccepted         RoundEventType = "action_accepted"
     EventBudgetActivated        RoundEventType = "budget_activated"
     EventPurchaseOrderPlaced    RoundEventType = "purchase_order_placed"
     EventSupplyArrived          RoundEventType = "supply_arrived"

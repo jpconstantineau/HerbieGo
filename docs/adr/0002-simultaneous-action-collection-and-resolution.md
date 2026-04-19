@@ -27,7 +27,7 @@ HerbieGo resolves one round through six deterministic stages:
 2. collect exactly one hidden `ActionSubmission` per role for the active round
 3. validate submission shape and role ownership before any game rules run
 4. freeze the round input set and resolve actions in a fixed plant-owned order
-5. append events and metrics in deterministic order as outcomes occur
+5. append public outcome events and round metadata in deterministic order as outcomes occur
 6. reveal only the resolved round record after the full round is committed
 
 Key decisions:
@@ -36,7 +36,7 @@ Key decisions:
 - Validation is split into submission validation and resolution validation.
 - Missing or illegal intents never stop the round if the plant can deterministically trim them into a legal no-op or partial outcome.
 - Resolution order is fixed as start-of-round activation of previously scheduled targets, then procurement, supply receipt, production, sales, and end-of-round aging plus next-round target scheduling.
-- Event ordering is stable and append-only so UI, persistence, replay, and tests can agree on the same round history.
+- Event ordering and round metadata ordering are stable and append-only so UI, persistence, replay, and tests can agree on the same round history.
 
 ## Round Lifecycle
 
@@ -70,7 +70,14 @@ Collection rules:
 - players never receive another role's current-round submission contents
 - the plant does not begin outcome resolution until collection is closed and the input set is frozen
 
-The MVP default is "wait for all roles". Timeouts, auto-submit heuristics, and partial real-time resolution are explicitly out of scope unless a future ADR changes this rule.
+Collection behavior differs by player type:
+
+- human players block round collection until they submit, with the option to resubmit a previously provided response before round freeze
+- AI-controlled roles should use a timeout
+- if an AI role times out, the previous accepted action for that role is reused by default
+- if an AI role returns an unparsable response before timeout, the game should log the parsing error and retry after telling the agent what parsing problem occurred
+
+Partial real-time resolution remains out of scope for MVP.
 
 ### Stage 3: Submission Validation
 
@@ -90,12 +97,12 @@ Outcomes:
 - structurally valid submissions are stored as accepted hidden inputs
 - structurally invalid submissions are rejected back to the submitting player for correction while collection remains open
 
-Recommended event behavior:
+Recommended round-record behavior:
 
-- emit `action_accepted` only when a structurally valid submission is stored in the frozen input set
+- store accepted submissions as round metadata once they enter the frozen input set
 - do not emit public rejection events for transient pre-lock validation failures
 
-This keeps the event log focused on the resolved round record rather than every draft edit a player made during collection.
+This keeps the public event log focused on resolved plant outcomes rather than every draft edit a player made during collection.
 
 ### Stage 4: Input Freeze And Resolution Validation
 
@@ -166,8 +173,9 @@ Resolve `ProductionAction` against:
 Rules:
 
 - compute the maximum legal advances from parts, route stage, and capacity constraints
-- apply capacity allocation requests as directional intent, but the plant owns the final legal throughput
-- trim releases and workstation advancement deterministically when requested output exceeds feasible output
+- accept both `release_product` and `allocate_capacity` intents even when they do not align perfectly
+- when release intent exceeds available downstream advancement, the excess accepted work remains in `WIPInventory`
+- inventory limits such as safety stock or maximum holding capacity are post-MVP concerns and do not block this behavior
 - never create negative parts inventory, negative WIP, negative finished goods, or capacity overuse
 - apply production spending and any resulting debt changes during this phase
 
@@ -217,9 +225,9 @@ Procurement versus debt ceiling:
 
 Production versus parts and capacity:
 
-- requested releases and capacity allocations are interpreted together
-- the engine computes a single legal production outcome from the combined request
-- if the request is internally inconsistent, the engine favors the maximum legal throughput that does not violate explicit capacity allocations more than necessary
+- requested releases and capacity allocations are both accepted as valid intent
+- the engine advances as much work as legal through the route in round `R`
+- any accepted release that cannot advance far enough this round remains as increased `WIPInventory`
 
 Sales versus limited finished goods:
 
@@ -250,33 +258,33 @@ The round record is append-only and must reflect actual resolved outcomes, not s
 
 ### Required Principles
 
-- events are emitted only from plant-owned resolution steps
+- public events are emitted only from plant-owned resolution steps
 - event order matches state mutation order
-- all events for round `R` are revealed together after the round commits
+- all public events for round `R` are revealed together after the round commits
+- accepted action envelopes belong to round metadata, not the public event stream
 - each materially visible trim, rejection, or adjustment should produce an explicit `rule_adjustment` event
 - final round metrics should be captured with `metric_snapshot`
 
 ### Typical Event Sequence
 
-An MVP round will usually emit events in an order like:
+An MVP round will usually emit public events in an order like:
 
 1. `budget_activated` if round `R` starts with newly effective targets
-2. `action_accepted` for each frozen role submission in role order
-3. `purchase_order_placed` for each accepted procurement line
-4. `cash_changed` for procurement spend effects
-5. `supply_arrived` for receipts entering parts inventory
-6. `production_released`, `work_advanced`, and `finished_goods_produced` during production
-7. `cash_changed` for production operating cost if applicable
-8. `demand_realized`, `shipment_completed`, and `backlog_created` during sales processing
-9. `cash_changed` for realized revenue and finance adjustments
-10. `backlog_expired` and `customer_sentiment_moved` during end-of-round aging
-11. `metric_snapshot` after all state mutation is complete
+2. `purchase_order_placed` for each accepted procurement line
+3. `cash_changed` for procurement spend effects
+4. `supply_arrived` for receipts entering parts inventory
+5. `production_released`, `work_advanced`, and `finished_goods_produced` during production
+6. `cash_changed` for production operating cost if applicable
+7. `demand_realized`, `shipment_completed`, and `backlog_created` during sales processing
+8. `cash_changed` for realized revenue and finance adjustments
+9. `backlog_expired` and `customer_sentiment_moved` during end-of-round aging
+10. `metric_snapshot` after all state mutation is complete
 
 Not every round will emit every event type.
 
 ### Commentary Reveal
 
-Player commentary submitted with actions is stored with the round input set but revealed only with the completed round record.
+Player commentary and accepted action intent are stored with the round input set as round metadata, then revealed only with the completed round record.
 
 Reveal rule:
 
@@ -288,7 +296,9 @@ This preserves simultaneous hidden play while keeping the social explanation lay
 
 The MVP should keep round processing deterministic and robust.
 
-- A missing role submission blocks round freeze by default.
+- A missing human submission blocks round freeze by default.
+- An AI role that times out reuses its previous accepted action by default.
+- An AI role that returns an unparsable response should be retried with the parsing error surfaced to that agent.
 - A structurally invalid submission is rejected before freeze and does not enter the round record until corrected.
 - A structurally valid but economically illegal submission is frozen, then trimmed or converted into a no-op during resolution.
 - Only irrecoverable rule contradictions after deterministic trimming should trigger the match failure condition.
@@ -299,10 +309,10 @@ This lets UI and AI contributors implement collection and engine code without de
 
 Contributors implementing the engine and UI should treat the following as the minimum contract:
 
-- `internal/app` owns the collection window, submission replacement, and round freeze orchestration
+- `internal/app` owns the collection window, submission replacement, AI timeout and retry orchestration, and round freeze orchestration
 - `internal/engine` owns resolution validation, deterministic phase execution, trimming, and event emission
 - `internal/projection` reveals only prior-round history plus the viewer's current round input draft, never another role's current-round action
-- persistence should store the frozen action set, emitted events, commentary, and post-round metrics as one coherent round record
+- persistence should store the frozen action set, accepted-action metadata, emitted events, commentary, and post-round metrics as one coherent round record
 
 Suggested engine shape:
 
