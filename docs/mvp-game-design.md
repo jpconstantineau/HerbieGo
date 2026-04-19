@@ -62,7 +62,6 @@ Responsibilities:
 Legal actions each round:
 
 - set market price for each product
-- set offer quantity for each customer-product offer
 - attach a short rationale/comment
 
 ### Finance Controller
@@ -231,7 +230,7 @@ The plant converts pricing decisions into customer-level demand, applies backlog
 Rules:
 
 - the Sales Manager sets one market price per product for all customers
-- each customer may receive a separate offer quantity per product
+- market prices changed this round affect customer purchase decisions in the subsequent round
 - demand depends on market price set by the Sales Manager, current customer sentiment, and customer-specific demand
 - new accepted demand is added to that customer-product backlog
 - shipments draw down backlog from oldest to newest
@@ -298,6 +297,7 @@ The plant may round demand to an integer after applying the formula.
 - backlog older than `2` rounds expires into lost sales
 - each expired backlog event reduces that customer's sentiment score
 - sentiment recovers very slowly over time
+- passive sentiment recovery is `5%` of the recovery rate granted by reliable service
 - sentiment recovers more quickly through reliable service and on-time shipment behavior
 - lower sentiment biases future purchase decisions downward until the customer is won back through better service
 
@@ -411,7 +411,8 @@ The first playable version uses a fixed-length match of `52` rounds, with each r
 
 ### Sales Manager Logic
 
-- controls demand through market-wide product pricing and customer-specific offer quantity
+- controls demand through market-wide product pricing only
+- pricing changes influence the subsequent round rather than the current round
 - cannot ship more than available inventory
 - works against price sensitivity, customer sentiment, and customer-specific demand
 - must manage backlog quality because delayed orders damage future sales
@@ -461,5 +462,4 @@ Issue `#1` is complete when:
 
 These questions are narrow enough to answer later without blocking implementation, but they are worth confirming before balancing the simulation:
 
-1. How quickly should passive customer sentiment recovery occur relative to the stronger recovery from reliable service?
-2. Should customer offers be locked to one product each week, or can the Sales Manager set offers for every customer-product pair every round?
+No open MVP rule questions remain for issue `#1`.
