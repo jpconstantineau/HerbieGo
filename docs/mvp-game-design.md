@@ -19,6 +19,8 @@ The first playable version intentionally focuses on:
 
 The MVP does not yet try to simulate decades of evolution, deep supplier networks, multiple plants, or networked multiplayer.
 
+The MVP also intentionally keeps shop-floor control simple. It uses fixed per-round workstation capacity rather than explicit scheduling, batch setup logic, tooling-change penalties, maintenance planning, stochastic machine failures, or repair-time simulation.
+
 ## Roles In MVP
 
 The MVP includes four player roles plus plant-owned resolution logic.
@@ -137,11 +139,13 @@ Each customer has:
 
 - finite capacity per round
 - converts purchased parts into fabricated subassemblies
+- no explicit queue sequencing or batch setup logic in MVP
 
 #### Workstation 2: `Assembly`
 
 - finite capacity per round
 - converts fabricated subassemblies into finished goods
+- no explicit queue sequencing or tooling-change penalty in MVP
 
 ### Initial Assumptions
 
@@ -151,6 +155,8 @@ The initial implementation should start with visible scenario constants similar 
 - both products require capacity at both workstations
 - `Pump` and `Valve` can consume different amounts of workstation time
 - each part, product, workstation capacity, and cash amount is represented as an integer
+- workstation time is modeled as a simple capacity pool, not a detailed schedule
+- setup times, batch sizes, tooling changes, planned maintenance, machine failures, and repair duration are deferred
 
 Exact numeric values belong in scenario data, not hard-coded into the rules text.
 
@@ -214,6 +220,7 @@ Rules:
 
 - production cannot consume more parts than exist
 - production cannot use more workstation capacity than exists at either workstation
+- production does not sequence jobs within a round; it only allocates aggregate capacity by workstation and product
 - released units first consume required purchased parts and enter shop floor inventory at `Fabrication`
 - units that complete `Fabrication` move into intermediate work-in-progress before `Assembly`
 - units that complete `Assembly` move into finished goods inventory
@@ -273,6 +280,8 @@ The MVP uses a deliberately compact economic model.
 - every workstation has finite capacity per round
 - each product consumes defined capacity units at each workstation
 - the plant computes the maximum feasible production from capacity and parts availability
+- workstation capacity is assumed to be fully available unless reduced by future scenario rules
+- the MVP does not model changeovers, tooling setup loss, maintenance downtime, failure downtime, or repair duration
 
 ### Demand Rules
 
@@ -440,12 +449,54 @@ The MVP does not yet include:
 - long-term era progression
 - multiple scenarios or plants
 - supplier-specific lead times
-- machine failures and stochastic disruptions
+- detailed workstation scheduling or queue sequencing
+- explicit production batch-size rules
+- tooling or setup changes that reduce available production time
+- machine maintenance planning
+- machine failures and repair-time simulation
+- stochastic disruptions beyond the basic deterministic MVP flow
+- explicit bottleneck-management mechanics such as TOC or drum-buffer-rope
+- dedicated planner, scheduler, or expeditor roles
+- formal bottleneck analysis workflows or bottleneck-shift scenarios
 - separate hidden personal victory conditions
 - maintenance, engineering, HR, or distribution roles
 - quality defects, scrap, or rework
 - save/load persistence
 - a fully fleshed out balancing model
+
+## Post-MVP Operations Expansion
+
+These items are intentionally outside the MVP so the first playable version stays small, deterministic, and easy to implement. They are still important future scope and should shape post-MVP design.
+
+### Shop-Floor Control
+
+Post-MVP simulation should consider:
+
+- workstation-level job sequencing within a round
+- production batch-size decisions and the tradeoff between flow and efficiency
+- tooling or setup changes that consume part of a workstation's available time
+- planner or scheduler decisions that change local efficiency but may hurt global throughput
+
+### Reliability And Asset Behavior
+
+Post-MVP simulation should consider:
+
+- preventive and corrective maintenance decisions
+- machine failures that reduce usable capacity
+- repair duration and recovery lag
+- reliability tradeoffs between short-term output pressure and long-term stability
+
+### Constraint Management And TOC
+
+The MVP starter scenario does not yet create a strong explicit bottleneck-management game. Capacity is limited, but the current scope does not yet include the richer Theory of Constraints mechanics that would make bottleneck control a central source of strategy.
+
+Post-MVP scope should consider:
+
+- clearer bottleneck structures in scenario data
+- bottleneck analysis and identification as a first-class gameplay concern
+- Theory of Constraints concepts such as drum-buffer-rope
+- explicit roles or responsibilities for planner, scheduler, and expeditor work
+- scenarios where the active constraint can shift over time
 
 ## Acceptance Criteria
 

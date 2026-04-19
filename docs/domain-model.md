@@ -469,8 +469,12 @@ The first domain model should not try to solve everything at once.
 - No generic ECS or highly abstract resource graph
 - No multi-plant network model
 - No supplier-specific lead-time rules in the shared types yet
+- No workstation scheduling calendar, batch, setup, maintenance, failure, or repair model in the MVP domain contract yet
+- No TOC-specific bottleneck-control entities such as drum-buffer-rope buffers, planner queues, scheduler states, or expeditor workflows yet
 - No hidden/private commentary visibility classes until the game actually needs them
 - No provider-specific AI fields in domain records beyond stable role assignment metadata
+
+Those concepts are expected post-MVP, but they should be added only when the rules are concrete enough to justify stable shared types.
 
 ## Stability Rules
 

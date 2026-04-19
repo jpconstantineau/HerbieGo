@@ -138,6 +138,8 @@ This initial role set creates a strong core tension:
 
 Future expansions may add roles such as Plant Manager, maintenance, engineering, distribution, human resources, or scenario-specific executives. The same design pattern should continue: public responsibilities aligned with the plant, and hidden incentives that tempt players toward local optimization.
 
+Post-MVP expansions should also deepen shop-floor control. Likely additions include workstation scheduling, batch-size decisions, tooling/setup changes that consume production time, maintenance planning, machine failures, repair duration, and explicit bottleneck-management concepts such as Theory of Constraints, drum-buffer-rope, and planner/scheduler/expeditor responsibilities.
+
 ### Core Objective
 
 The primary victory condition is maximizing the plant's long-term profitability. Players are expected to make decisions that affect:
