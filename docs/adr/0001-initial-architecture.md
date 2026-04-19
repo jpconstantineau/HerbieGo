@@ -21,6 +21,7 @@ Those documents define what the game should do and which domain records are cano
 HerbieGo will use a layered architecture built around a UI-independent deterministic engine.
 
 - `internal/domain` owns shared game vocabulary and canonical data shapes.
+- `internal/scenario` owns match setup data, scenario catalogs, and scenario-specific tuning values.
 - `internal/engine` owns deterministic rules, round resolution, legality checks, and metric calculation.
 - `internal/app` owns use-case orchestration between the engine and the outside world.
 - `internal/ports` owns interfaces for time, randomness, persistence, player input, and model providers.
@@ -39,6 +40,7 @@ cmd/
 internal/
   app/
   domain/
+  scenario/
   engine/
   ports/
   projection/
@@ -91,6 +93,24 @@ Must not own:
 - LLM provider request and response types
 - random number generation
 - round resolution logic
+
+### `internal/scenario`
+
+Owns:
+
+- scenario definitions and catalogs
+- starting inventory, customer mix, workstation capacities, and economic constants
+- scenario-specific rule parameters consumed by the engine
+- scenario metadata used for match setup and future scenario selection
+
+Must not own:
+
+- mutable match state
+- UI rendering logic
+- persistence transport details
+- round resolution logic
+
+The scenario package exists so the game can grow beyond one starter plant without overloading `internal/domain` with content data.
 
 ### `internal/engine`
 
@@ -180,20 +200,24 @@ cmd/herbiego
 
 internal/app
   -> internal/domain
+  -> internal/scenario
   -> internal/engine
   -> internal/ports
   -> internal/projection
 
 internal/engine
   -> internal/domain
+  -> internal/scenario
   -> internal/ports
 
 internal/projection
   -> internal/domain
+  -> internal/scenario
 
 internal/adapters/*
   -> internal/app
   -> internal/domain
+  -> internal/scenario
   -> internal/ports
   -> internal/projection
 ```
@@ -201,8 +225,10 @@ internal/adapters/*
 Explicit rules:
 
 - `internal/domain` depends on nothing inside `internal/`.
+- `internal/scenario` may depend on `internal/domain` for canonical identifiers and record shapes.
 - `internal/engine` may depend on `internal/domain` and narrow interfaces in `internal/ports`.
-- `internal/projection` may depend on `internal/domain` only.
+- `internal/engine` may read immutable scenario definitions from `internal/scenario`.
+- `internal/projection` may depend on `internal/domain` and `internal/scenario` when scenario metadata affects presentation.
 - `internal/app` may coordinate all core packages, but adapters must stay outside it.
 - Adapters implement ports; ports must never import adapters.
 - TUI code must never be imported by `internal/engine` or `internal/domain`.
@@ -216,6 +242,7 @@ Determinism lives in `internal/engine`.
 That means:
 
 - given the same input state, submitted actions, scenario data, and random draws, the engine must produce the same next state, events, and metrics
+- scenario definitions are treated as immutable inputs to the engine, not mutable game state
 - rule ordering is fixed and documented in one place
 - legality checks and trimming are engine responsibilities, not UI or adapter responsibilities
 - projections must be pure transforms of canonical records
@@ -251,6 +278,28 @@ type RandomSource interface {
 
 For MVP, the design should prefer deterministic scenario constants first and use injected randomness only where the rules explicitly call for it.
 
+## Scenario Package Guidance
+
+`internal/scenario` should hold content that changes the starting conditions or rule parameters of a match without changing the shared domain vocabulary.
+
+Examples of values that belong there:
+
+- product catalogs and BOM choices used by one scenario
+- customer portfolios and price-sensitivity profiles
+- workstation capacity baselines
+- debt ceilings, holding-cost settings, and demand-tuning constants
+- optional scenario flags that enable post-MVP mechanics once rules exist
+
+Examples of post-MVP scenarios the package should be able to host:
+
+- a high-volume commodity plant with thin margins and aggressive price sensitivity
+- a custom-engineering plant with long lead times, low volume, and high backlog risk
+- a constrained plant centered around one chronic bottleneck workstation
+- a disruption-heavy scenario with unreliable supply and volatile demand
+- a growth-phase scenario that introduces new products and management methods over time
+
+Those examples are intentionally content-driven variations, not reasons to fork the engine package layout.
+
 ## UI And Prompt Projections
 
 UI projections are built in `internal/projection`, not in the engine and not directly inside Bubble Tea components.
@@ -276,6 +325,7 @@ The TUI adapter renders projection outputs. It should not compute rules, mutate 
 Use this checklist when adding a feature:
 
 - If it changes game vocabulary or canonical record shape, start in `internal/domain`.
+- If it changes starting conditions, scenario catalogs, or tunable scenario constants, place it in `internal/scenario`.
 - If it changes how a round resolves, legality is enforced, or metrics are computed, change `internal/engine`.
 - If it is a workflow that coordinates repositories, players, and projections, place it in `internal/app`.
 - If it is a read-only view model for TUI, debugging, or prompts, place it in `internal/projection`.
@@ -286,6 +336,7 @@ Examples:
 
 - adding backlog expiry rules: `internal/engine`
 - adding a new `CustomerSentimentMoved` field to a canonical event payload: `internal/domain`
+- adding a "supplier disruption" scenario pack: `internal/scenario`
 - adding a "finance dashboard" sidebar model: `internal/projection`
 - adding an Ollama streaming client: `internal/adapters/ai/ollama`
 - adding a "resume saved match" use case: `internal/app`
