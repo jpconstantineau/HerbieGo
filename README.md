@@ -357,3 +357,4 @@ HerbieGo aims to be both a game and a systems-thinking simulation: a place where
 
 - [MVP Game Design](docs/mvp-game-design.md)
 - [Canonical Domain Model](docs/domain-model.md)
+- [Architecture Decision Records](docs/adr/README.md)
