@@ -37,6 +37,15 @@ The initial version of HerbieGo should focus on a small set of roles that create
 
 These hidden objectives are not necessarily "evil" goals. They represent the kinds of local incentives that make real organizations drift away from system-wide optimization.
 
+For the MVP, the canonical playable roles are:
+
+- Procurement Manager
+- Production Manager
+- Sales Manager
+- Finance Controller
+
+The plant itself resolves turns as a system actor. The broader project vision may later add roles such as Plant Manager, but that role is not part of the MVP action roster.
+
 #### Corporate Objectives
 
 All roles operate inside the same plant and contribute to the same corporate objectives:
@@ -49,24 +58,6 @@ All roles operate inside the same plant and contribute to the same corporate obj
 - Protect cash flow and the long-term viability of the business
 
 These are the shared goals the team should be trying to optimize together. The game becomes interesting when role-specific incentives pull players away from these corporate objectives.
-
-#### Plant Manager
-
-Public responsibility:
-
-- Coordinate the whole plant
-- Balance short-term survival with long-term improvement
-- Resolve conflicts between departments
-- Keep the plant profitable overall
-
-Hidden objective:
-
-- Avoid visible plant-wide failure during your tenure
-- Favor decisions that stabilize reported performance quickly, even if they defer deeper structural fixes
-
-Role prompt intent:
-
-The Plant Manager should think like the person ultimately accountable for the whole system. This role values total profitability, cash protection, and coordination, but is under pressure to show visible improvement and prevent major breakdowns.
 
 #### Production Manager
 
@@ -144,9 +135,8 @@ This initial role set creates a strong core tension:
 - Procurement wants cheaper inputs and larger buys
 - Sales wants more orders and stronger promises
 - Finance wants tighter cost control
-- Plant Management wants the whole system to survive and improve
 
-Future expansions may add roles such as maintenance, engineering, distribution, human resources, or scenario-specific executives. The same design pattern should continue: public responsibilities aligned with the plant, and hidden incentives that tempt players toward local optimization.
+Future expansions may add roles such as Plant Manager, maintenance, engineering, distribution, human resources, or scenario-specific executives. The same design pattern should continue: public responsibilities aligned with the plant, and hidden incentives that tempt players toward local optimization.
 
 ### Core Objective
 
@@ -364,3 +354,4 @@ HerbieGo aims to be both a game and a systems-thinking simulation: a place where
 ## Design Docs
 
 - [MVP Game Design](docs/mvp-game-design.md)
+- [Canonical Domain Model](docs/domain-model.md)
