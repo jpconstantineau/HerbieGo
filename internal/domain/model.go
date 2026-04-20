@@ -302,8 +302,23 @@ type RoundView struct {
 	Customers        []CustomerState
 	ActiveTargets    BudgetTargets
 	Metrics          PlantMetrics
+	RecentRounds     []RoundHistoryEntry
 	RecentEvents     []RoundEvent
 	RecentCommentary []CommentaryRecord
+}
+
+type RoundHistoryEntry struct {
+	Round      RoundNumber
+	Events     []RoundEvent
+	Commentary []CommentaryRecord
+	Summary    RoundSummary
+}
+
+type RoundSummary struct {
+	Metrics         PlantMetrics
+	EventCount      int
+	CommentaryCount int
+	ActionCount     int
 }
 
 func (s MatchState) Clone() MatchState {
@@ -435,8 +450,27 @@ func (v RoundView) Clone() RoundView {
 		Customers:        cloneSlice(v.Customers, CustomerState.Clone),
 		ActiveTargets:    v.ActiveTargets,
 		Metrics:          v.Metrics,
+		RecentRounds:     cloneSlice(v.RecentRounds, RoundHistoryEntry.Clone),
 		RecentEvents:     cloneSlice(v.RecentEvents, RoundEvent.Clone),
 		RecentCommentary: cloneSlice(v.RecentCommentary, CommentaryRecord.Clone),
+	}
+}
+
+func (e RoundHistoryEntry) Clone() RoundHistoryEntry {
+	return RoundHistoryEntry{
+		Round:      e.Round,
+		Events:     cloneSlice(e.Events, RoundEvent.Clone),
+		Commentary: cloneSlice(e.Commentary, CommentaryRecord.Clone),
+		Summary:    e.Summary.Clone(),
+	}
+}
+
+func (s RoundSummary) Clone() RoundSummary {
+	return RoundSummary{
+		Metrics:         s.Metrics,
+		EventCount:      s.EventCount,
+		CommentaryCount: s.CommentaryCount,
+		ActionCount:     s.ActionCount,
 	}
 }
 
