@@ -226,6 +226,13 @@ func (p *roundPhase) resolveProcurement(action *domain.ActionSubmission) {
 		}
 
 		if allowed <= 0 {
+			p.appendEvent(domain.EventRuleAdjustment, domain.ActorPlantSystem, "Rejected procurement order because no legal quantity remained", map[string]any{
+				"part_id":                string(order.PartID),
+				"requested_quantity":     int(order.Quantity),
+				"accepted_quantity":      0,
+				"minimum_order_quantity": int(terms.MinimumOrderQuantity),
+				"effective_unit_cost":    int(terms.UnitCost),
+			})
 			continue
 		}
 
@@ -598,12 +605,22 @@ func (p *roundPhase) appendEvent(eventType domain.RoundEventType, actorID domain
 
 func normalizeActions(state domain.MatchState, actions []domain.ActionSubmission) ([]domain.ActionSubmission, error) {
 	byRole := map[domain.RoleID]domain.ActionSubmission{}
+	assignedRoles := assignedRoles(state)
 	for _, action := range actions {
 		if action.MatchID != state.MatchID {
 			return nil, fmt.Errorf("engine: action %q match id %q does not match state %q", action.ActionID, action.MatchID, state.MatchID)
 		}
 		if action.Round != state.CurrentRound {
 			return nil, fmt.Errorf("engine: action %q round %d does not match state round %d", action.ActionID, action.Round, state.CurrentRound)
+		}
+		if !slices.Contains(domain.CanonicalRoles(), action.RoleID) {
+			return nil, fmt.Errorf("engine: action %q uses unsupported role %q", action.ActionID, action.RoleID)
+		}
+		if len(assignedRoles) > 0 && !assignedRoles[action.RoleID] {
+			return nil, fmt.Errorf("engine: action %q role %q is not assigned in the current match", action.ActionID, action.RoleID)
+		}
+		if err := validateActionSubmission(action); err != nil {
+			return nil, err
 		}
 		if _, exists := byRole[action.RoleID]; exists {
 			return nil, fmt.Errorf("engine: duplicate action for role %q", action.RoleID)
@@ -626,6 +643,126 @@ func normalizeActions(state domain.MatchState, actions []domain.ActionSubmission
 	}
 
 	return ordered, nil
+}
+
+func assignedRoles(state domain.MatchState) map[domain.RoleID]bool {
+	if len(state.Roles) == 0 {
+		return nil
+	}
+
+	assigned := make(map[domain.RoleID]bool, len(state.Roles))
+	for _, role := range state.Roles {
+		assigned[role.RoleID] = true
+	}
+	return assigned
+}
+
+func validateActionSubmission(action domain.ActionSubmission) error {
+	payloads := populatedPayloadNames(action.Action)
+	if len(payloads) > 1 {
+		return fmt.Errorf("engine: action %q role %q includes multiple payloads: %s", action.ActionID, action.RoleID, strings.Join(payloads, ", "))
+	}
+	if len(payloads) == 1 && payloads[0] != string(action.RoleID) {
+		return fmt.Errorf("engine: action %q role %q includes mismatched payload %q", action.ActionID, action.RoleID, payloads[0])
+	}
+
+	switch action.RoleID {
+	case domain.RoleProcurementManager:
+		return validateProcurementAction(action)
+	case domain.RoleProductionManager:
+		return validateProductionAction(action)
+	case domain.RoleSalesManager:
+		return validateSalesAction(action)
+	case domain.RoleFinanceController:
+		return validateFinanceAction(action)
+	default:
+		return fmt.Errorf("engine: action %q uses unsupported role %q", action.ActionID, action.RoleID)
+	}
+}
+
+func populatedPayloadNames(action domain.RoleAction) []string {
+	var names []string
+	if action.Procurement != nil {
+		names = append(names, string(domain.RoleProcurementManager))
+	}
+	if action.Production != nil {
+		names = append(names, string(domain.RoleProductionManager))
+	}
+	if action.Sales != nil {
+		names = append(names, string(domain.RoleSalesManager))
+	}
+	if action.Finance != nil {
+		names = append(names, string(domain.RoleFinanceController))
+	}
+	return names
+}
+
+func validateProcurementAction(action domain.ActionSubmission) error {
+	if action.Action.Procurement == nil {
+		return nil
+	}
+
+	for index, order := range action.Action.Procurement.Orders {
+		if order.Quantity < 0 {
+			return fmt.Errorf("engine: action %q procurement order %d quantity must be non-negative", action.ActionID, index)
+		}
+	}
+	return nil
+}
+
+func validateProductionAction(action domain.ActionSubmission) error {
+	if action.Action.Production == nil {
+		return nil
+	}
+
+	for index, release := range action.Action.Production.Releases {
+		if release.Quantity < 0 {
+			return fmt.Errorf("engine: action %q production release %d quantity must be non-negative", action.ActionID, index)
+		}
+	}
+	for index, allocation := range action.Action.Production.CapacityAllocation {
+		if allocation.Capacity < 0 {
+			return fmt.Errorf("engine: action %q capacity allocation %d capacity must be non-negative", action.ActionID, index)
+		}
+	}
+	return nil
+}
+
+func validateSalesAction(action domain.ActionSubmission) error {
+	if action.Action.Sales == nil {
+		return nil
+	}
+
+	for index, offer := range action.Action.Sales.ProductOffers {
+		if offer.UnitPrice < 0 {
+			return fmt.Errorf("engine: action %q sales offer %d unit price must be non-negative", action.ActionID, index)
+		}
+	}
+	return nil
+}
+
+func validateFinanceAction(action domain.ActionSubmission) error {
+	if action.Action.Finance == nil {
+		return nil
+	}
+
+	targets := action.Action.Finance.NextRoundTargets
+	if targets.ProcurementBudget < 0 {
+		return fmt.Errorf("engine: action %q procurement budget must be non-negative", action.ActionID)
+	}
+	if targets.ProductionSpendBudget < 0 {
+		return fmt.Errorf("engine: action %q production budget must be non-negative", action.ActionID)
+	}
+	if targets.RevenueTarget < 0 {
+		return fmt.Errorf("engine: action %q revenue target must be non-negative", action.ActionID)
+	}
+	if targets.CashFloorTarget < 0 {
+		return fmt.Errorf("engine: action %q cash floor target must be non-negative", action.ActionID)
+	}
+	if targets.DebtCeilingTarget < 0 {
+		return fmt.Errorf("engine: action %q debt ceiling target must be non-negative", action.ActionID)
+	}
+	return nil
 }
 
 func collectCommentary(state domain.MatchState, actions []domain.ActionSubmission) []domain.CommentaryRecord {

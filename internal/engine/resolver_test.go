@@ -192,6 +192,109 @@ func TestResolverUsesScenarioProcurementTermsAndRoutingHooks(t *testing.T) {
 	}
 }
 
+func TestResolverRejectsMismatchedRolePayloads(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{})
+	actions := fixtureActions()
+	actions[0].Action = domain.RoleAction{
+		Sales: &domain.SalesAction{
+			ProductOffers: []domain.ProductOffer{
+				{ProductID: "widget", UnitPrice: 9},
+			},
+		},
+	}
+
+	_, err := resolver.ResolveRound(fixtureState(), actions, seeded.New(1))
+	if err == nil {
+		t.Fatal("ResolveRound() error = nil, want mismatched payload error")
+	}
+	if got := err.Error(); got != `engine: action "proc-1" role "procurement_manager" includes mismatched payload "sales_manager"` {
+		t.Fatalf("ResolveRound() error = %q", got)
+	}
+}
+
+func TestResolverRejectsMultiplePayloads(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{})
+	actions := fixtureActions()
+	actions[1].Action.Sales = &domain.SalesAction{
+		ProductOffers: []domain.ProductOffer{
+			{ProductID: "widget", UnitPrice: 7},
+		},
+	}
+
+	_, err := resolver.ResolveRound(fixtureState(), actions, seeded.New(1))
+	if err == nil {
+		t.Fatal("ResolveRound() error = nil, want multiple payload error")
+	}
+	if got := err.Error(); got != `engine: action "prod-1" role "production_manager" includes multiple payloads: production_manager, sales_manager` {
+		t.Fatalf("ResolveRound() error = %q", got)
+	}
+}
+
+func TestResolverRejectsNegativeValues(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{})
+	actions := fixtureActions()
+	actions[2].Action.Sales.ProductOffers[0].UnitPrice = -1
+
+	_, err := resolver.ResolveRound(fixtureState(), actions, seeded.New(1))
+	if err == nil {
+		t.Fatal("ResolveRound() error = nil, want negative price error")
+	}
+	if got := err.Error(); got != `engine: action "sales-1" sales offer 0 unit price must be non-negative` {
+		t.Fatalf("ResolveRound() error = %q", got)
+	}
+}
+
+func TestResolverRejectsActionsForUnassignedRoles(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{})
+	state := fixtureState()
+	state.Roles = []domain.RoleAssignment{
+		{RoleID: domain.RoleProcurementManager, PlayerID: "proc"},
+		{RoleID: domain.RoleProductionManager, PlayerID: "prod"},
+		{RoleID: domain.RoleSalesManager, PlayerID: "sales"},
+	}
+
+	_, err := resolver.ResolveRound(state, fixtureActions(), seeded.New(1))
+	if err == nil {
+		t.Fatal("ResolveRound() error = nil, want unassigned role error")
+	}
+	if got := err.Error(); got != `engine: action "fin-1" role "finance_controller" is not assigned in the current match` {
+		t.Fatalf("ResolveRound() error = %q", got)
+	}
+}
+
+func TestResolverEmitsRuleAdjustmentWhenProcurementOrderIsFullyRejected(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{})
+	state := fixtureState()
+	state.ActiveTargets.ProcurementBudget = 1
+	state.Plant.Cash = 0
+	state.Plant.DebtCeiling = 0
+
+	result, err := resolver.ResolveRound(state, fixtureActions(), seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() error = %v", err)
+	}
+
+	if got := len(result.NextState.Plant.InTransitSupply); got != 0 {
+		t.Fatalf("InTransitSupply len = %d, want 0", got)
+	}
+
+	rejected := false
+	for _, event := range result.Round.Events {
+		if event.Type != domain.EventRuleAdjustment {
+			continue
+		}
+		if event.Summary == "Rejected procurement order because no legal quantity remained" {
+			rejected = true
+			if got := event.Payload["accepted_quantity"]; got != 0 {
+				t.Fatalf("accepted_quantity = %#v, want 0", got)
+			}
+		}
+	}
+	if !rejected {
+		t.Fatalf("Round.Events missing procurement rejection rule adjustment: %#v", result.Round.Events)
+	}
+}
+
 func fixtureState() domain.MatchState {
 	return domain.MatchState{
 		MatchID:      "match-1",
