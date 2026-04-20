@@ -16,6 +16,13 @@ const (
 	defaultRandomSeed  = uint64(1)
 )
 
+var preferredHumanRoleOrder = []domain.RoleID{
+	domain.RoleProductionManager,
+	domain.RoleProcurementManager,
+	domain.RoleSalesManager,
+	domain.RoleFinanceController,
+}
+
 // PlayerKind determines how a role is controlled at runtime.
 type PlayerKind string
 
@@ -169,21 +176,37 @@ func (c *Config) normalize() {
 
 	if len(c.RoleConfigs) > 0 {
 		c.Roles = make(map[domain.RoleID]RoleConfig, len(c.RoleConfigs))
-		for index, roleFile := range c.RoleConfigs {
+		for _, roleFile := range c.RoleConfigs {
 			roleID := roleFile.RoleID
-			roleCfg := RoleConfig{
+			c.Roles[roleID] = RoleConfig{
 				Kind:     PlayerKindAI,
 				Provider: ProviderName(strings.ToLower(strings.TrimSpace(string(roleFile.Provider)))),
 				Model:    strings.TrimSpace(roleFile.Model),
 			}
+		}
 
-			if index < c.HumanPlayers {
-				roleCfg.Kind = PlayerKindHuman
+		for _, roleID := range selectedHumanRoles(c.HumanPlayers) {
+			roleCfg, ok := c.Roles[roleID]
+			if !ok {
+				continue
 			}
 
+			roleCfg.Kind = PlayerKindHuman
 			c.Roles[roleID] = roleCfg
 		}
 	}
+}
+
+func selectedHumanRoles(humanPlayers int) []domain.RoleID {
+	if humanPlayers <= 0 {
+		return nil
+	}
+
+	if humanPlayers > len(preferredHumanRoleOrder) {
+		humanPlayers = len(preferredHumanRoleOrder)
+	}
+
+	return preferredHumanRoleOrder[:humanPlayers]
 }
 
 func validateRoleConfig(roleID domain.RoleID, roleCfg RoleConfig) error {

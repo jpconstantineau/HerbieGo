@@ -47,12 +47,12 @@ roles:
 		t.Fatalf("HumanPlayers = %d, want 1", cfg.HumanPlayers)
 	}
 
-	if cfg.Roles[domain.RoleProcurementManager].Kind != PlayerKindHuman {
-		t.Fatalf("procurement kind = %q, want %q", cfg.Roles[domain.RoleProcurementManager].Kind, PlayerKindHuman)
+	if cfg.Roles[domain.RoleProductionManager].Kind != PlayerKindHuman {
+		t.Fatalf("production kind = %q, want %q", cfg.Roles[domain.RoleProductionManager].Kind, PlayerKindHuman)
 	}
 
-	if cfg.Roles[domain.RoleProductionManager].Kind != PlayerKindAI {
-		t.Fatalf("production kind = %q, want %q", cfg.Roles[domain.RoleProductionManager].Kind, PlayerKindAI)
+	if cfg.Roles[domain.RoleProcurementManager].Kind != PlayerKindAI {
+		t.Fatalf("procurement kind = %q, want %q", cfg.Roles[domain.RoleProcurementManager].Kind, PlayerKindAI)
 	}
 }
 
