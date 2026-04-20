@@ -7,12 +7,15 @@ import (
 	"github.com/jpconstantineau/herbiego/internal/adapters/random/seeded"
 	"github.com/jpconstantineau/herbiego/internal/domain"
 	"github.com/jpconstantineau/herbiego/internal/ports"
+	"github.com/jpconstantineau/herbiego/internal/scenario"
 )
 
 // Runtime contains the process dependencies created during startup.
 type Runtime struct {
-	Config Config
-	Random ports.RandomSource
+	Config       Config
+	Random       ports.RandomSource
+	Scenario     scenario.Definition
+	InitialMatch domain.MatchState
 }
 
 // Bootstrap loads startup configuration and constructs process dependencies.
@@ -32,9 +35,12 @@ func NewRuntime(cfg Config) (Runtime, error) {
 		return Runtime{}, fmt.Errorf("validate runtime config: %w", err)
 	}
 
+	starter := scenario.Default()
 	return Runtime{
-		Config: cfg,
-		Random: seeded.New(cfg.Random.Seed),
+		Config:       cfg,
+		Random:       seeded.New(cfg.Random.Seed),
+		Scenario:     starter,
+		InitialMatch: starter.InitialState("starter-match", runtimeRoles(cfg)),
 	}, nil
 }
 
@@ -57,4 +63,23 @@ func (r Runtime) RoleSummaries() []string {
 
 	slices.Sort(summaries)
 	return summaries
+}
+
+func runtimeRoles(cfg Config) []domain.RoleAssignment {
+	roles := make([]domain.RoleAssignment, 0, len(cfg.Roles))
+	for _, roleID := range domain.CanonicalRoles() {
+		roleCfg, ok := cfg.Roles[roleID]
+		if !ok {
+			continue
+		}
+
+		roles = append(roles, domain.RoleAssignment{
+			RoleID:    roleID,
+			PlayerID:  fmt.Sprintf("%s-player", roleID),
+			IsHuman:   roleCfg.Kind == PlayerKindHuman,
+			Provider:  string(roleCfg.Provider),
+			ModelName: roleCfg.Model,
+		})
+	}
+	return roles
 }
