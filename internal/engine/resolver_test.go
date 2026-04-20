@@ -51,7 +51,9 @@ func TestResolverProducesDeterministicRoundResults(t *testing.T) {
 }
 
 func TestResolverExecutesRoundPhasesAndSchedulesNextTargets(t *testing.T) {
-	resolver := engine.NewResolver(engine.Options{})
+	resolver := engine.NewResolver(engine.Options{
+		ProductionBOM: widgetBOM,
+	})
 
 	result, err := resolver.ResolveRound(fixtureState(), fixtureActions(), seeded.New(7))
 	if err != nil {
@@ -73,8 +75,8 @@ func TestResolverExecutesRoundPhasesAndSchedulesNextTargets(t *testing.T) {
 	if got := finishedQty(result.NextState.Plant.FinishedInventory, "widget"); got != 1 {
 		t.Fatalf("FinishedInventory(widget) = %d, want 1", got)
 	}
-	if got := partQty(result.NextState.Plant.PartsInventory, "housing"); got != 4 {
-		t.Fatalf("PartsInventory(housing) = %d, want 4", got)
+	if got := partQty(result.NextState.Plant.PartsInventory, "housing"); got != 2 {
+		t.Fatalf("PartsInventory(housing) = %d, want 2", got)
 	}
 	if len(result.NextState.Plant.InTransitSupply) != 1 {
 		t.Fatalf("InTransitSupply len = %d, want 1", len(result.NextState.Plant.InTransitSupply))
@@ -117,6 +119,7 @@ func TestResolverExecutesRoundPhasesAndSchedulesNextTargets(t *testing.T) {
 
 func TestResolverUsesWorldUpdateHookAfterSales(t *testing.T) {
 	resolver := engine.NewResolver(engine.Options{
+		ProductionBOM: widgetBOM,
 		WorldUpdate: func(ctx *engine.WorldUpdateContext) error {
 			ctx.State.Customers[0].Sentiment += 2
 			ctx.AppendEvent(domain.EventRuleAdjustment, domain.ActorPlantSystem, "World update adjusted sentiment", map[string]any{
@@ -151,6 +154,7 @@ func TestResolverUsesScenarioProcurementTermsAndRoutingHooks(t *testing.T) {
 				MinimumOrderQuantity: 5,
 			}
 		},
+		ProductionBOM: widgetBOM,
 		ProductionRoute: func(ctx engine.ProductionRouteContext) engine.ProductionRouteStep {
 			switch ctx.CurrentStationID {
 			case "fabrication":
@@ -192,6 +196,20 @@ func TestResolverUsesScenarioProcurementTermsAndRoutingHooks(t *testing.T) {
 	}
 }
 
+func TestResolverRequiresExplicitRolePayload(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{})
+	actions := fixtureActions()
+	actions[2].Action = domain.RoleAction{}
+
+	_, err := resolver.ResolveRound(fixtureState(), actions, seeded.New(1))
+	if err == nil {
+		t.Fatal("ResolveRound() error = nil, want missing payload error")
+	}
+	if got := err.Error(); got != `engine: action "sales-1" role "sales_manager" must include payload "sales_manager"` {
+		t.Fatalf("ResolveRound() error = %q", got)
+	}
+}
+
 func TestResolverRejectsMismatchedRolePayloads(t *testing.T) {
 	resolver := engine.NewResolver(engine.Options{})
 	actions := fixtureActions()
@@ -226,6 +244,20 @@ func TestResolverRejectsMultiplePayloads(t *testing.T) {
 		t.Fatal("ResolveRound() error = nil, want multiple payload error")
 	}
 	if got := err.Error(); got != `engine: action "prod-1" role "production_manager" includes multiple payloads: production_manager, sales_manager` {
+		t.Fatalf("ResolveRound() error = %q", got)
+	}
+}
+
+func TestResolverRejectsUnknownWorkstationsDuringValidation(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{})
+	actions := fixtureActions()
+	actions[1].Action.Production.CapacityAllocation[0].WorkstationID = "unknown"
+
+	_, err := resolver.ResolveRound(fixtureState(), actions, seeded.New(1))
+	if err == nil {
+		t.Fatal("ResolveRound() error = nil, want unknown workstation error")
+	}
+	if got := err.Error(); got != `engine: action "prod-1" capacity allocation 0 references unknown workstation "unknown"` {
 		t.Fatalf("ResolveRound() error = %q", got)
 	}
 }
@@ -292,6 +324,79 @@ func TestResolverEmitsRuleAdjustmentWhenProcurementOrderIsFullyRejected(t *testi
 	}
 	if !rejected {
 		t.Fatalf("Round.Events missing procurement rejection rule adjustment: %#v", result.Round.Events)
+	}
+}
+
+func TestResolverConsumesPartsAndTrimsReleaseToAvailableBOM(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{
+		ProductionBOM: widgetBOM,
+	})
+	state := fixtureState()
+	state.Plant.PartsInventory = []domain.PartInventory{
+		{PartID: "housing", OnHandQty: 1},
+	}
+	state.Plant.InTransitSupply = nil
+	actions := fixtureActions()
+	actions[1].Action.Production.Releases = []domain.ProductionRelease{
+		{ProductID: "widget", Quantity: 3},
+	}
+	actions[1].Action.Production.CapacityAllocation = nil
+
+	result, err := resolver.ResolveRound(state, actions, seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() error = %v", err)
+	}
+
+	if got := partQty(result.NextState.Plant.PartsInventory, "housing"); got != 0 {
+		t.Fatalf("PartsInventory(housing) = %d, want 0", got)
+	}
+	if got := wipQty(result.NextState.Plant.WIPInventory, "widget", "fabrication"); got != 1 {
+		t.Fatalf("WIP(fabrication/widget) = %d, want 1", got)
+	}
+
+	trimmed := false
+	for _, event := range result.Round.Events {
+		if event.Type == domain.EventRuleAdjustment && event.Summary == "Trimmed production release to available part inventory" {
+			trimmed = true
+			if got := event.Payload["accepted_quantity"]; got != 1 {
+				t.Fatalf("accepted_quantity = %#v, want 1", got)
+			}
+		}
+	}
+	if !trimmed {
+		t.Fatalf("Round.Events missing production trim event: %#v", result.Round.Events)
+	}
+}
+
+func TestResolverRejectsUnknownProductsWhenProductionBOMMarksThemUnknown(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{
+		ProductionBOM: func(ctx engine.ProductionBOMContext) engine.ProductionBOM {
+			if ctx.ProductID == "widget" {
+				return widgetBOM(ctx)
+			}
+			return engine.ProductionBOM{}
+		},
+	})
+	state := fixtureState()
+	actions := fixtureActions()
+	actions[1].Action.Production.Releases = []domain.ProductionRelease{
+		{ProductID: "mystery", Quantity: 1},
+	}
+	actions[1].Action.Production.CapacityAllocation = nil
+
+	result, err := resolver.ResolveRound(state, actions, seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() error = %v", err)
+	}
+
+	rejected := false
+	for _, event := range result.Round.Events {
+		if event.Type == domain.EventRuleAdjustment && event.Summary == "Rejected production release for unknown product" {
+			rejected = true
+		}
+	}
+	if !rejected {
+		t.Fatalf("Round.Events missing unknown-product rejection: %#v", result.Round.Events)
 	}
 }
 
@@ -449,4 +554,17 @@ func wipQty(items []domain.WIPInventory, productID domain.ProductID, workstation
 		}
 	}
 	return 0
+}
+
+func widgetBOM(ctx engine.ProductionBOMContext) engine.ProductionBOM {
+	if ctx.ProductID != "widget" {
+		return engine.ProductionBOM{KnownProduct: true}
+	}
+
+	return engine.ProductionBOM{
+		KnownProduct: true,
+		Parts: []domain.BOMLine{
+			{PartID: "housing", Quantity: 1},
+		},
+	}
 }
