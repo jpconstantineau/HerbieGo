@@ -1,4 +1,4 @@
-module github.com/jpconstantineau/HerbieGo
+module github.com/jpconstantineau/herbiego
 
 go 1.26
 
