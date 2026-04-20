@@ -15,6 +15,7 @@ import (
 type Options struct {
 	HistoryLimit     int
 	ProcurementTerms ProcurementTermsHook
+	ProductionBOM    ProductionBOMHook
 	ProductionRoute  ProductionRouteHook
 	WorldUpdate      WorldUpdateHook
 }
@@ -32,6 +33,21 @@ type ProcurementTermsContext struct {
 type ProcurementTerms struct {
 	UnitCost             domain.Money
 	MinimumOrderQuantity domain.Units
+}
+
+// ProductionBOMHook lets scenario data define the parts consumed when a product is released.
+// The default implementation assumes products consume no explicit parts until scenario data is provided.
+type ProductionBOMHook func(ProductionBOMContext) ProductionBOM
+
+type ProductionBOMContext struct {
+	State        domain.MatchState
+	CurrentRound domain.RoundNumber
+	ProductID    domain.ProductID
+}
+
+type ProductionBOM struct {
+	KnownProduct bool
+	Parts        []domain.BOMLine
 }
 
 // ProductionRouteHook lets scenario data define product-specific routing semantics.
@@ -69,6 +85,7 @@ type Result struct {
 type Resolver struct {
 	historyLimit     int
 	procurementTerms ProcurementTermsHook
+	productionBOM    ProductionBOMHook
 	productionRoute  ProductionRouteHook
 	worldUpdate      WorldUpdateHook
 }
@@ -77,6 +94,7 @@ func NewResolver(options Options) *Resolver {
 	return &Resolver{
 		historyLimit:     normalizedHistoryLimit(options.HistoryLimit),
 		procurementTerms: defaultProcurementTerms(options.ProcurementTerms),
+		productionBOM:    defaultProductionBOM(options.ProductionBOM),
 		productionRoute:  defaultProductionRoute(options.ProductionRoute),
 		worldUpdate:      options.WorldUpdate,
 	}
@@ -110,6 +128,7 @@ func (r *Resolver) ResolveRound(state domain.MatchState, actions []domain.Action
 		currentRound:     state.CurrentRound,
 		stats:            &resolutionStats{},
 		procurementTerms: r.procurementTerms,
+		productionBOM:    r.productionBOM,
 		productionRoute:  r.productionRoute,
 	}
 
@@ -160,6 +179,7 @@ type roundPhase struct {
 	currentRound     domain.RoundNumber
 	stats            *resolutionStats
 	procurementTerms ProcurementTermsHook
+	productionBOM    ProductionBOMHook
 	productionRoute  ProductionRouteHook
 	eventSeq         int
 }
@@ -226,6 +246,13 @@ func (p *roundPhase) resolveProcurement(action *domain.ActionSubmission) {
 		}
 
 		if allowed <= 0 {
+			p.appendEvent(domain.EventRuleAdjustment, domain.ActorPlantSystem, "Rejected procurement order because no legal quantity remained", map[string]any{
+				"part_id":                string(order.PartID),
+				"requested_quantity":     int(order.Quantity),
+				"accepted_quantity":      0,
+				"minimum_order_quantity": int(terms.MinimumOrderQuantity),
+				"effective_unit_cost":    int(terms.UnitCost),
+			})
 			continue
 		}
 
@@ -303,10 +330,46 @@ func (p *roundPhase) resolveProduction(action *domain.ActionSubmission) {
 			continue
 		}
 
-		addWIPInventory(&p.state.Plant.WIPInventory, release.ProductID, firstStation, release.Quantity)
-		p.appendEvent(domain.EventProductionReleased, domain.ActorPlantSystem, fmt.Sprintf("Released %d %s into production", release.Quantity, release.ProductID), map[string]any{
+		bom := p.productionBOM(ProductionBOMContext{
+			State:        p.state.Clone(),
+			CurrentRound: p.currentRound,
+			ProductID:    release.ProductID,
+		})
+		if !bom.KnownProduct {
+			p.appendEvent(domain.EventRuleAdjustment, domain.ActorPlantSystem, "Rejected production release for unknown product", map[string]any{
+				"product_id":          string(release.ProductID),
+				"requested_quantity":  int(release.Quantity),
+				"accepted_quantity":   0,
+				"blocked_requirement": "unknown_product",
+			})
+			continue
+		}
+
+		allowed := release.Quantity
+		if len(bom.Parts) > 0 {
+			allowed = minUnits(allowed, maxBuildableQuantity(p.state.Plant.PartsInventory, bom.Parts))
+			if allowed != release.Quantity {
+				p.appendEvent(domain.EventRuleAdjustment, domain.ActorPlantSystem, "Trimmed production release to available part inventory", map[string]any{
+					"product_id":         string(release.ProductID),
+					"requested_quantity": int(release.Quantity),
+					"accepted_quantity":  int(allowed),
+				})
+			}
+		}
+		if allowed <= 0 {
+			p.appendEvent(domain.EventRuleAdjustment, domain.ActorPlantSystem, "Rejected production release because required parts were unavailable", map[string]any{
+				"product_id":         string(release.ProductID),
+				"requested_quantity": int(release.Quantity),
+				"accepted_quantity":  0,
+			})
+			continue
+		}
+
+		consumePartInventory(&p.state.Plant.PartsInventory, bom.Parts, allowed)
+		addWIPInventory(&p.state.Plant.WIPInventory, release.ProductID, firstStation, allowed)
+		p.appendEvent(domain.EventProductionReleased, domain.ActorPlantSystem, fmt.Sprintf("Released %d %s into production", allowed, release.ProductID), map[string]any{
 			"product_id":     string(release.ProductID),
-			"quantity":       int(release.Quantity),
+			"quantity":       int(allowed),
 			"workstation_id": string(firstStation),
 		})
 	}
@@ -598,12 +661,22 @@ func (p *roundPhase) appendEvent(eventType domain.RoundEventType, actorID domain
 
 func normalizeActions(state domain.MatchState, actions []domain.ActionSubmission) ([]domain.ActionSubmission, error) {
 	byRole := map[domain.RoleID]domain.ActionSubmission{}
+	assignedRoles := assignedRoles(state)
 	for _, action := range actions {
 		if action.MatchID != state.MatchID {
 			return nil, fmt.Errorf("engine: action %q match id %q does not match state %q", action.ActionID, action.MatchID, state.MatchID)
 		}
 		if action.Round != state.CurrentRound {
 			return nil, fmt.Errorf("engine: action %q round %d does not match state round %d", action.ActionID, action.Round, state.CurrentRound)
+		}
+		if !slices.Contains(domain.CanonicalRoles(), action.RoleID) {
+			return nil, fmt.Errorf("engine: action %q uses unsupported role %q", action.ActionID, action.RoleID)
+		}
+		if len(assignedRoles) > 0 && !assignedRoles[action.RoleID] {
+			return nil, fmt.Errorf("engine: action %q role %q is not assigned in the current match", action.ActionID, action.RoleID)
+		}
+		if err := validateActionSubmission(state, action); err != nil {
+			return nil, err
 		}
 		if _, exists := byRole[action.RoleID]; exists {
 			return nil, fmt.Errorf("engine: duplicate action for role %q", action.RoleID)
@@ -626,6 +699,132 @@ func normalizeActions(state domain.MatchState, actions []domain.ActionSubmission
 	}
 
 	return ordered, nil
+}
+
+func assignedRoles(state domain.MatchState) map[domain.RoleID]bool {
+	if len(state.Roles) == 0 {
+		return nil
+	}
+
+	assigned := make(map[domain.RoleID]bool, len(state.Roles))
+	for _, role := range state.Roles {
+		assigned[role.RoleID] = true
+	}
+	return assigned
+}
+
+func validateActionSubmission(state domain.MatchState, action domain.ActionSubmission) error {
+	payloads := populatedPayloadNames(action.Action)
+	if len(payloads) == 0 {
+		return fmt.Errorf("engine: action %q role %q must include payload %q", action.ActionID, action.RoleID, action.RoleID)
+	}
+	if len(payloads) > 1 {
+		return fmt.Errorf("engine: action %q role %q includes multiple payloads: %s", action.ActionID, action.RoleID, strings.Join(payloads, ", "))
+	}
+	if len(payloads) == 1 && payloads[0] != string(action.RoleID) {
+		return fmt.Errorf("engine: action %q role %q includes mismatched payload %q", action.ActionID, action.RoleID, payloads[0])
+	}
+
+	switch action.RoleID {
+	case domain.RoleProcurementManager:
+		return validateProcurementAction(action)
+	case domain.RoleProductionManager:
+		return validateProductionAction(state, action)
+	case domain.RoleSalesManager:
+		return validateSalesAction(action)
+	case domain.RoleFinanceController:
+		return validateFinanceAction(action)
+	default:
+		return fmt.Errorf("engine: action %q uses unsupported role %q", action.ActionID, action.RoleID)
+	}
+}
+
+func populatedPayloadNames(action domain.RoleAction) []string {
+	var names []string
+	if action.Procurement != nil {
+		names = append(names, string(domain.RoleProcurementManager))
+	}
+	if action.Production != nil {
+		names = append(names, string(domain.RoleProductionManager))
+	}
+	if action.Sales != nil {
+		names = append(names, string(domain.RoleSalesManager))
+	}
+	if action.Finance != nil {
+		names = append(names, string(domain.RoleFinanceController))
+	}
+	return names
+}
+
+func validateProcurementAction(action domain.ActionSubmission) error {
+	if action.Action.Procurement == nil {
+		return fmt.Errorf("engine: action %q role %q must include payload %q", action.ActionID, action.RoleID, action.RoleID)
+	}
+
+	for index, order := range action.Action.Procurement.Orders {
+		if order.Quantity < 0 {
+			return fmt.Errorf("engine: action %q procurement order %d quantity must be non-negative", action.ActionID, index)
+		}
+	}
+	return nil
+}
+
+func validateProductionAction(state domain.MatchState, action domain.ActionSubmission) error {
+	if action.Action.Production == nil {
+		return fmt.Errorf("engine: action %q role %q must include payload %q", action.ActionID, action.RoleID, action.RoleID)
+	}
+
+	for index, release := range action.Action.Production.Releases {
+		if release.Quantity < 0 {
+			return fmt.Errorf("engine: action %q production release %d quantity must be non-negative", action.ActionID, index)
+		}
+	}
+	for index, allocation := range action.Action.Production.CapacityAllocation {
+		if allocation.Capacity < 0 {
+			return fmt.Errorf("engine: action %q capacity allocation %d capacity must be non-negative", action.ActionID, index)
+		}
+		if workstationIndex(state.Plant.Workstations, allocation.WorkstationID) < 0 {
+			return fmt.Errorf("engine: action %q capacity allocation %d references unknown workstation %q", action.ActionID, index, allocation.WorkstationID)
+		}
+	}
+	return nil
+}
+
+func validateSalesAction(action domain.ActionSubmission) error {
+	if action.Action.Sales == nil {
+		return fmt.Errorf("engine: action %q role %q must include payload %q", action.ActionID, action.RoleID, action.RoleID)
+	}
+
+	for index, offer := range action.Action.Sales.ProductOffers {
+		if offer.UnitPrice < 0 {
+			return fmt.Errorf("engine: action %q sales offer %d unit price must be non-negative", action.ActionID, index)
+		}
+	}
+	return nil
+}
+
+func validateFinanceAction(action domain.ActionSubmission) error {
+	if action.Action.Finance == nil {
+		return fmt.Errorf("engine: action %q role %q must include payload %q", action.ActionID, action.RoleID, action.RoleID)
+	}
+
+	targets := action.Action.Finance.NextRoundTargets
+	if targets.ProcurementBudget < 0 {
+		return fmt.Errorf("engine: action %q procurement budget must be non-negative", action.ActionID)
+	}
+	if targets.ProductionSpendBudget < 0 {
+		return fmt.Errorf("engine: action %q production budget must be non-negative", action.ActionID)
+	}
+	if targets.RevenueTarget < 0 {
+		return fmt.Errorf("engine: action %q revenue target must be non-negative", action.ActionID)
+	}
+	if targets.CashFloorTarget < 0 {
+		return fmt.Errorf("engine: action %q cash floor target must be non-negative", action.ActionID)
+	}
+	if targets.DebtCeilingTarget < 0 {
+		return fmt.Errorf("engine: action %q debt ceiling target must be non-negative", action.ActionID)
+	}
+	return nil
 }
 
 func collectCommentary(state domain.MatchState, actions []domain.ActionSubmission) []domain.CommentaryRecord {
@@ -730,6 +929,55 @@ func addPartInventory(items *[]domain.PartInventory, partID domain.PartID, quant
 		}
 	}
 	*items = append(*items, domain.PartInventory{PartID: partID, OnHandQty: quantity})
+}
+
+func partQuantity(items []domain.PartInventory, partID domain.PartID) domain.Units {
+	for _, item := range items {
+		if item.PartID == partID {
+			return item.OnHandQty
+		}
+	}
+	return 0
+}
+
+func consumePartInventory(items *[]domain.PartInventory, bom []domain.BOMLine, quantity domain.Units) {
+	for _, line := range bom {
+		takePartInventory(items, line.PartID, line.Quantity*quantity)
+	}
+}
+
+func takePartInventory(items *[]domain.PartInventory, partID domain.PartID, quantity domain.Units) {
+	filtered := (*items)[:0]
+	for _, item := range *items {
+		if item.PartID == partID {
+			item.OnHandQty -= quantity
+		}
+		if item.OnHandQty > 0 {
+			filtered = append(filtered, item)
+		}
+	}
+	*items = filtered
+}
+
+func maxBuildableQuantity(items []domain.PartInventory, bom []domain.BOMLine) domain.Units {
+	if len(bom) == 0 {
+		return 0
+	}
+
+	allowed := domain.Units(-1)
+	for _, line := range bom {
+		if line.Quantity <= 0 {
+			continue
+		}
+		buildable := partQuantity(items, line.PartID) / line.Quantity
+		if allowed < 0 || buildable < allowed {
+			allowed = buildable
+		}
+	}
+	if allowed < 0 {
+		return 0
+	}
+	return allowed
 }
 
 func addWIPInventory(items *[]domain.WIPInventory, productID domain.ProductID, workstationID domain.WorkstationID, quantity domain.Units) {
@@ -874,6 +1122,16 @@ func defaultProcurementTerms(hook ProcurementTermsHook) ProcurementTermsHook {
 
 	return func(_ ProcurementTermsContext) ProcurementTerms {
 		return ProcurementTerms{UnitCost: 1}
+	}
+}
+
+func defaultProductionBOM(hook ProductionBOMHook) ProductionBOMHook {
+	if hook != nil {
+		return hook
+	}
+
+	return func(_ ProductionBOMContext) ProductionBOM {
+		return ProductionBOM{KnownProduct: true}
 	}
 }
 
