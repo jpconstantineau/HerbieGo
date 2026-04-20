@@ -29,6 +29,7 @@ type Percentage int
 
 const ActorPlantSystem ActorID = "plant_system"
 
+// MatchState is the canonical in-memory snapshot for the round currently being collected.
 type MatchState struct {
 	MatchID       MatchID
 	ScenarioID    ScenarioID
@@ -254,6 +255,7 @@ type CommentaryRecord struct {
 
 type CommentaryVisibility string
 
+// CommentaryPublic is the only MVP visibility class; all stored commentary is public after reveal.
 const CommentaryPublic CommentaryVisibility = "public"
 
 type RoundEvent struct {

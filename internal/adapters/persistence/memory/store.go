@@ -12,6 +12,7 @@ import (
 var ErrMatchNotFound = errors.New("memory store: match not found")
 
 type Options struct {
+	// RecentHistoryLimit bounds MatchState.History without trimming the full event or commentary timeline.
 	RecentHistoryLimit int
 }
 
@@ -144,6 +145,7 @@ func (s *Store) EventTimeline(matchID domain.MatchID) ([]domain.RoundEvent, erro
 	return cloneEvents(match.events), nil
 }
 
+// Commentary returns the full append-only public commentary timeline for the match.
 func (s *Store) Commentary(matchID domain.MatchID) ([]domain.CommentaryRecord, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

@@ -2,7 +2,8 @@ package ports
 
 import "github.com/jpconstantineau/herbiego/internal/domain"
 
-// MatchStateStore persists and serves canonical match state plus append-only history.
+// MatchStateStore persists and serves canonical match state for the round being collected,
+// plus append-only event and commentary timelines.
 type MatchStateStore interface {
 	CreateMatch(initial domain.MatchState) error
 	CurrentState(matchID domain.MatchID) (domain.MatchState, error)
