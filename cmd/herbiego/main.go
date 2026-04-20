@@ -34,10 +34,17 @@ func main() {
 
 	fmt.Fprintf(
 		os.Stdout,
-		"HerbieGo runtime initialized (env=%s, human_players=%d, seed=%d)\nroles: %v\n",
+		"HerbieGo runtime initialized (env=%s, human_players=%d, seed=%d)\nscenario: %s (%s)\nmatch: %s round=%d cash=%d debt=%d backlog=%d\nroles: %v\n",
 		runtime.Config.Environment,
 		runtime.Config.HumanPlayers,
 		runtime.Config.Random.Seed,
+		runtime.Scenario.ID,
+		runtime.Scenario.DisplayName,
+		runtime.InitialMatch.MatchID,
+		runtime.InitialMatch.CurrentRound,
+		runtime.InitialMatch.Plant.Cash,
+		runtime.InitialMatch.Plant.Debt,
+		len(runtime.InitialMatch.Plant.Backlog),
 		runtime.RoleSummaries(),
 	)
 }
