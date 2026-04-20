@@ -358,3 +358,37 @@ HerbieGo aims to be both a game and a systems-thinking simulation: a place where
 - [MVP Game Design](docs/mvp-game-design.md)
 - [Canonical Domain Model](docs/domain-model.md)
 - [Architecture Decision Records](docs/adr/README.md)
+
+## Contributor Quality Checks
+
+HerbieGo targets Go `1.26.2`, and the contributor quality workflow is intentionally small and repeatable.
+
+Run the full local check suite with:
+
+```bash
+go run ./cmd/quality
+```
+
+That single command runs:
+
+```bash
+gofmt -w <repo .go files>
+go test ./...
+go tool staticcheck ./...
+```
+
+You can also run an individual step when iterating locally:
+
+```bash
+go run ./cmd/quality fmt
+go run ./cmd/quality test
+go run ./cmd/quality lint
+```
+
+`staticcheck` is tracked in `go.mod` using Go's `tool` directive, so contributors and CI use the same linter version through the standard Go toolchain.
+
+For CI or other automation, use the non-mutating verification command:
+
+```bash
+go run ./cmd/quality verify
+```
