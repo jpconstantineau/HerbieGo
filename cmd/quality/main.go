@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -133,16 +135,14 @@ func runGoFmt(mode string) error {
 
 	args := append([]string{mode}, files...)
 	if mode == "-l" {
-		var output []byte
-
-		cmd := exec.Command("gofmt", args...)
-		cmd.Stderr = os.Stderr
-		output, err = cmd.Output()
+		unformatted, err := unformattedGoFiles(files)
 		if err != nil {
 			return err
 		}
-		if len(output) > 0 {
-			fmt.Fprint(os.Stderr, string(output))
+		if len(unformatted) > 0 {
+			for _, path := range unformatted {
+				fmt.Fprintln(os.Stderr, path)
+			}
 			return errors.New("gofmt found files that need formatting")
 		}
 
@@ -152,10 +152,44 @@ func runGoFmt(mode string) error {
 	return runCommand("gofmt", args...)
 }
 
+func unformattedGoFiles(files []string) ([]string, error) {
+	unformatted := make([]string, 0)
+	for _, path := range files {
+		ok, err := fileNeedsFormatting(path)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			unformatted = append(unformatted, path)
+		}
+	}
+	return unformatted, nil
+}
+
+func fileNeedsFormatting(path string) (bool, error) {
+	source, err := os.ReadFile(path)
+	if err != nil {
+		return false, fmt.Errorf("read %q: %w", path, err)
+	}
+
+	cmd := exec.Command("gofmt", path)
+	cmd.Stderr = os.Stderr
+	formatted, err := cmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("gofmt %q: %w", path, err)
+	}
+
+	return !bytes.Equal(normalizeLineEndings(source), normalizeLineEndings(formatted)), nil
+}
+
+func normalizeLineEndings(data []byte) []byte {
+	return bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
+}
+
 func goFiles(root string) ([]string, error) {
 	var files []string
 
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
