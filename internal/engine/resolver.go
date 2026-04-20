@@ -17,6 +17,8 @@ type Options struct {
 	ProcurementTerms ProcurementTermsHook
 	ProductionBOM    ProductionBOMHook
 	ProductionRoute  ProductionRouteHook
+	ProductionCost   ProductionCostHook
+	InventoryCost    InventoryCarryingCostHook
 	WorldUpdate      WorldUpdateHook
 }
 
@@ -66,6 +68,41 @@ type ProductionRouteStep struct {
 	Finished          bool
 }
 
+// ProductionCostHook lets scenario data define operating expense per unit of advanced capacity.
+// The default implementation charges 1 money unit per unit of advanced work.
+type ProductionCostHook func(ProductionCostContext) ProductionCost
+
+type ProductionCostContext struct {
+	State         domain.MatchState
+	CurrentRound  domain.RoundNumber
+	ProductID     domain.ProductID
+	WorkstationID domain.WorkstationID
+	Quantity      domain.CapacityUnits
+}
+
+type ProductionCost struct {
+	CostPerCapacityUnit domain.Money
+}
+
+// InventoryCarryingCostHook lets scenario data define carrying cost by inventory class.
+// The default implementation charges a flat 10% round-end carrying cost with a minimum of 1.
+type InventoryCarryingCostHook func(InventoryCarryingCostContext) domain.Money
+
+type InventoryCarryingCostContext struct {
+	State          domain.MatchState
+	CurrentRound   domain.RoundNumber
+	InventoryClass InventoryClass
+	InventoryValue domain.Money
+}
+
+type InventoryClass string
+
+const (
+	InventoryClassParts    InventoryClass = "parts"
+	InventoryClassWIP      InventoryClass = "wip"
+	InventoryClassFinished InventoryClass = "finished"
+)
+
 // WorldUpdateHook is the extension point for scenario-owned demand generation, market behavior,
 // and other seeded world events that should stay outside the deterministic core resolver.
 type WorldUpdateHook func(*WorldUpdateContext) error
@@ -87,6 +124,8 @@ type Resolver struct {
 	procurementTerms ProcurementTermsHook
 	productionBOM    ProductionBOMHook
 	productionRoute  ProductionRouteHook
+	productionCost   ProductionCostHook
+	inventoryCost    InventoryCarryingCostHook
 	worldUpdate      WorldUpdateHook
 }
 
@@ -96,6 +135,8 @@ func NewResolver(options Options) *Resolver {
 		procurementTerms: defaultProcurementTerms(options.ProcurementTerms),
 		productionBOM:    defaultProductionBOM(options.ProductionBOM),
 		productionRoute:  defaultProductionRoute(options.ProductionRoute),
+		productionCost:   defaultProductionCost(options.ProductionCost),
+		inventoryCost:    options.InventoryCost,
 		worldUpdate:      options.WorldUpdate,
 	}
 }
@@ -130,6 +171,8 @@ func (r *Resolver) ResolveRound(state domain.MatchState, actions []domain.Action
 		procurementTerms: r.procurementTerms,
 		productionBOM:    r.productionBOM,
 		productionRoute:  r.productionRoute,
+		productionCost:   r.productionCost,
+		inventoryCost:    r.inventoryCost,
 	}
 
 	if nextState.ActiveTargets.EffectiveRound == state.CurrentRound {
@@ -181,6 +224,8 @@ type roundPhase struct {
 	procurementTerms ProcurementTermsHook
 	productionBOM    ProductionBOMHook
 	productionRoute  ProductionRouteHook
+	productionCost   ProductionCostHook
+	inventoryCost    InventoryCarryingCostHook
 	eventSeq         int
 }
 
@@ -398,16 +443,26 @@ func (p *roundPhase) resolveProduction(action *domain.ActionSubmission) {
 		remainingCapacity := p.state.Plant.Workstations[wsIndex].CapacityPerRound - p.state.Plant.Workstations[wsIndex].CapacityUsed
 		availableWIP := wipQuantity(p.state.Plant.WIPInventory, allocation.ProductID, allocation.WorkstationID)
 		advance := minCapacity(allocation.Capacity, remainingCapacity, domain.CapacityUnits(availableWIP))
+		costing := p.productionCost(ProductionCostContext{
+			State:         p.state.Clone(),
+			CurrentRound:  p.currentRound,
+			ProductID:     allocation.ProductID,
+			WorkstationID: allocation.WorkstationID,
+			Quantity:      advance,
+		})
+		if costing.CostPerCapacityUnit <= 0 {
+			costing.CostPerCapacityUnit = 1
+		}
 		if hardCap > 0 {
 			remainingBudget := hardCap - spendUsed
 			if remainingBudget <= 0 {
 				advance = 0
 			} else {
-				advance = minCapacity(advance, domain.CapacityUnits(remainingBudget))
+				advance = minCapacity(advance, domain.CapacityUnits(affordableQuantity(remainingBudget, costing.CostPerCapacityUnit)))
 			}
 		}
 		affordable := availableSpendCapacity(p.state.Plant)
-		advance = minCapacity(advance, domain.CapacityUnits(affordable))
+		advance = minCapacity(advance, domain.CapacityUnits(affordableQuantity(affordable, costing.CostPerCapacityUnit)))
 		if advance < allocation.Capacity {
 			p.appendEvent(domain.EventRuleAdjustment, domain.ActorPlantSystem, "Trimmed production advance to available work or capacity", map[string]any{
 				"workstation_id":     string(allocation.WorkstationID),
@@ -422,7 +477,7 @@ func (p *roundPhase) resolveProduction(action *domain.ActionSubmission) {
 
 		advancedCost := takeWIPInventory(&p.state.Plant.WIPInventory, allocation.ProductID, allocation.WorkstationID, domain.Units(advance))
 		p.state.Plant.Workstations[wsIndex].CapacityUsed += advance
-		lineSpend := domain.Money(advance)
+		lineSpend := spendForQuantity(domain.Units(advance), costing.CostPerCapacityUnit)
 		spendUsed += lineSpend
 		p.stats.productionSpend += lineSpend
 
@@ -662,18 +717,40 @@ func (p *roundPhase) computeMetrics() domain.PlantMetrics {
 }
 
 func (p *roundPhase) applyRoundOperatingCosts() (domain.Money, domain.Money) {
-	inventoryValue := domain.Money(0)
+	partsValue := domain.Money(0)
 	for _, part := range p.state.Plant.PartsInventory {
-		inventoryValue += inventoryCost(part.OnHandQty, part.UnitCost)
+		partsValue += inventoryCost(part.OnHandQty, part.UnitCost)
 	}
+	wipValue := domain.Money(0)
 	for _, item := range p.state.Plant.WIPInventory {
-		inventoryValue += inventoryCost(item.Quantity, item.UnitCost)
+		wipValue += inventoryCost(item.Quantity, item.UnitCost)
 	}
+	finishedValue := domain.Money(0)
 	for _, item := range p.state.Plant.FinishedInventory {
-		inventoryValue += inventoryCost(item.OnHandQty, item.UnitCost)
+		finishedValue += inventoryCost(item.OnHandQty, item.UnitCost)
 	}
 
-	holdingCost := carryingCost(inventoryValue)
+	holdingCost := carryingCost(partsValue + wipValue + finishedValue)
+	if p.inventoryCost != nil {
+		holdingCost = p.inventoryCost(InventoryCarryingCostContext{
+			State:          p.state.Clone(),
+			CurrentRound:   p.currentRound,
+			InventoryClass: InventoryClassParts,
+			InventoryValue: partsValue,
+		})
+		holdingCost += p.inventoryCost(InventoryCarryingCostContext{
+			State:          p.state.Clone(),
+			CurrentRound:   p.currentRound,
+			InventoryClass: InventoryClassWIP,
+			InventoryValue: wipValue,
+		})
+		holdingCost += p.inventoryCost(InventoryCarryingCostContext{
+			State:          p.state.Clone(),
+			CurrentRound:   p.currentRound,
+			InventoryClass: InventoryClassFinished,
+			InventoryValue: finishedValue,
+		})
+	}
 	debtCost := carryingCost(p.state.Plant.Debt)
 	total := holdingCost + debtCost
 	if total > 0 {
@@ -1277,6 +1354,16 @@ func defaultProductionRoute(hook ProductionRouteHook) ProductionRouteHook {
 			return ProductionRouteStep{Finished: true}
 		}
 		return ProductionRouteStep{NextWorkstationID: ctx.State.Plant.Workstations[index+1].WorkstationID}
+	}
+}
+
+func defaultProductionCost(hook ProductionCostHook) ProductionCostHook {
+	if hook != nil {
+		return hook
+	}
+
+	return func(_ ProductionCostContext) ProductionCost {
+		return ProductionCost{CostPerCapacityUnit: 1}
 	}
 }
 

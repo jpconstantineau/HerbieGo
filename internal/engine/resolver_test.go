@@ -217,6 +217,52 @@ func TestResolverUsesScenarioProcurementTermsAndRoutingHooks(t *testing.T) {
 	}
 }
 
+func TestResolverUsesScenarioProductionAndInventoryCostHooks(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{
+		ProductionBOM: widgetBOM,
+		ProductionCost: func(ctx engine.ProductionCostContext) engine.ProductionCost {
+			switch ctx.WorkstationID {
+			case "fabrication":
+				return engine.ProductionCost{CostPerCapacityUnit: 2}
+			case "assembly":
+				return engine.ProductionCost{CostPerCapacityUnit: 3}
+			default:
+				return engine.ProductionCost{CostPerCapacityUnit: 1}
+			}
+		},
+		InventoryCost: func(ctx engine.InventoryCarryingCostContext) domain.Money {
+			if ctx.InventoryValue <= 0 {
+				return 0
+			}
+			switch ctx.InventoryClass {
+			case engine.InventoryClassParts:
+				return 1
+			case engine.InventoryClassWIP:
+				return 2
+			case engine.InventoryClassFinished:
+				return 3
+			default:
+				return 0
+			}
+		},
+	})
+
+	result, err := resolver.ResolveRound(fixtureState(), fixtureActions(), seeded.New(7))
+	if err != nil {
+		t.Fatalf("ResolveRound() error = %v", err)
+	}
+
+	if got := result.Round.Metrics.ProductionSpend; got != 10 {
+		t.Fatalf("ProductionSpend = %d, want 10", got)
+	}
+	if got := result.Round.Metrics.HoldingCost; got != 6 {
+		t.Fatalf("HoldingCost = %d, want 6", got)
+	}
+	if got := result.Round.Metrics.OperatingExpense; got != 20 {
+		t.Fatalf("OperatingExpense = %d, want 20", got)
+	}
+}
+
 func TestResolverRequiresExplicitRolePayload(t *testing.T) {
 	resolver := engine.NewResolver(engine.Options{})
 	actions := fixtureActions()
