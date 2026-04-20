@@ -1,85 +1,125 @@
 package app
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/jpconstantineau/herbiego/internal/domain"
 )
 
-func TestLoadConfigFromEnvDefaults(t *testing.T) {
-	clearConfigEnv(t)
+func TestLoadConfigDefaultsFromYAML(t *testing.T) {
+	configPath := writeConfigFile(t, `
+environment: local
+random:
+  seed: 7
+human_players: 1
+roles:
+  - role_id: procurement_manager
+    provider: ollama
+    model: llama3.2:3b
+  - role_id: production_manager
+    provider: ollama
+    model: llama3.2:3b
+  - role_id: sales_manager
+    provider: openrouter
+    model: openai/gpt-5-mini
+  - role_id: finance_controller
+    provider: ollama
+    model: llama3.2:3b
+`)
 
-	cfg, err := LoadConfigFromEnv()
+	cfg, err := LoadConfig(configPath)
 	if err != nil {
-		t.Fatalf("LoadConfigFromEnv() error = %v", err)
+		t.Fatalf("LoadConfig() error = %v", err)
 	}
 
-	if cfg.Environment != defaultEnvironment {
-		t.Fatalf("Environment = %q, want %q", cfg.Environment, defaultEnvironment)
+	if cfg.Environment != "local" {
+		t.Fatalf("Environment = %q, want %q", cfg.Environment, "local")
 	}
 
-	if cfg.Random.Seed != defaultRandomSeed {
-		t.Fatalf("Random.Seed = %d, want %d", cfg.Random.Seed, defaultRandomSeed)
+	if cfg.Random.Seed != 7 {
+		t.Fatalf("Random.Seed = %d, want 7", cfg.Random.Seed)
+	}
+
+	if cfg.HumanPlayers != 1 {
+		t.Fatalf("HumanPlayers = %d, want 1", cfg.HumanPlayers)
+	}
+
+	if cfg.Roles[domain.RoleProcurementManager].Kind != PlayerKindHuman {
+		t.Fatalf("procurement kind = %q, want %q", cfg.Roles[domain.RoleProcurementManager].Kind, PlayerKindHuman)
+	}
+
+	if cfg.Roles[domain.RoleProductionManager].Kind != PlayerKindAI {
+		t.Fatalf("production kind = %q, want %q", cfg.Roles[domain.RoleProductionManager].Kind, PlayerKindAI)
+	}
+}
+
+func TestConfigApplyOverridesSupportsAITestMode(t *testing.T) {
+	configPath := writeConfigFile(t, `
+roles:
+  - role_id: procurement_manager
+    provider: ollama
+    model: llama3.2:3b
+  - role_id: production_manager
+    provider: ollama
+    model: llama3.2:3b
+  - role_id: sales_manager
+    provider: openrouter
+    model: openai/gpt-5-mini
+  - role_id: finance_controller
+    provider: ollama
+    model: llama3.2:3b
+`)
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+
+	humanPlayers := 0
+	seed := uint64(42)
+	cfg = cfg.ApplyOverrides(BootstrapOptions{
+		HumanPlayersOverride: &humanPlayers,
+		SeedOverride:         &seed,
+	})
+
+	if cfg.HumanPlayers != 0 {
+		t.Fatalf("HumanPlayers = %d, want 0", cfg.HumanPlayers)
+	}
+
+	if cfg.Random.Seed != 42 {
+		t.Fatalf("Random.Seed = %d, want 42", cfg.Random.Seed)
 	}
 
 	for _, roleID := range domain.CanonicalRoles() {
-		roleCfg, ok := cfg.Roles[roleID]
-		if !ok {
-			t.Fatalf("missing role config for %s", roleID)
-		}
-
-		if roleCfg.Kind != PlayerKindHuman {
-			t.Fatalf("role %s kind = %q, want %q", roleID, roleCfg.Kind, PlayerKindHuman)
+		if cfg.Roles[roleID].Kind != PlayerKindAI {
+			t.Fatalf("role %s kind = %q, want %q", roleID, cfg.Roles[roleID].Kind, PlayerKindAI)
 		}
 	}
 }
 
-func TestLoadConfigFromEnvAIRoleMapping(t *testing.T) {
-	clearConfigEnv(t)
-	t.Setenv("HERBIEGO_ENV", "test")
-	t.Setenv("HERBIEGO_RANDOM_SEED", "42")
-	t.Setenv("HERBIEGO_ROLE_FINANCE_CONTROLLER_KIND", "ai")
-	t.Setenv("HERBIEGO_ROLE_FINANCE_CONTROLLER_PROVIDER", "ollama")
-	t.Setenv("HERBIEGO_ROLE_FINANCE_CONTROLLER_MODEL", "llama3.2:3b")
+func TestLoadConfigReportsValidationErrors(t *testing.T) {
+	configPath := writeConfigFile(t, `
+human_players: 5
+roles:
+  - role_id: procurement_manager
+    provider: ""
+    model: ""
+`)
 
-	cfg, err := LoadConfigFromEnv()
-	if err != nil {
-		t.Fatalf("LoadConfigFromEnv() error = %v", err)
-	}
-
-	finance := cfg.Roles[domain.RoleFinanceController]
-	if finance.Kind != PlayerKindAI {
-		t.Fatalf("finance kind = %q, want %q", finance.Kind, PlayerKindAI)
-	}
-
-	if finance.Provider != ProviderOllama {
-		t.Fatalf("finance provider = %q, want %q", finance.Provider, ProviderOllama)
-	}
-
-	if finance.Model != "llama3.2:3b" {
-		t.Fatalf("finance model = %q, want %q", finance.Model, "llama3.2:3b")
-	}
-}
-
-func TestLoadConfigFromEnvReportsValidationErrors(t *testing.T) {
-	clearConfigEnv(t)
-	t.Setenv("HERBIEGO_RANDOM_SEED", "nope")
-	t.Setenv("HERBIEGO_ROLE_SALES_MANAGER_KIND", "bot")
-	t.Setenv("HERBIEGO_ROLE_FINANCE_CONTROLLER_KIND", "ai")
-	t.Setenv("HERBIEGO_ROLE_FINANCE_CONTROLLER_PROVIDER", "invalid")
-
-	_, err := LoadConfigFromEnv()
+	_, err := LoadConfig(configPath)
 	if err == nil {
-		t.Fatal("LoadConfigFromEnv() error = nil, want validation error")
+		t.Fatal("LoadConfig() error = nil, want validation error")
 	}
 
 	message := err.Error()
 	for _, want := range []string{
-		"HERBIEGO_RANDOM_SEED must be an unsigned integer",
-		"HERBIEGO_ROLE_SALES_MANAGER_KIND must be \"human\" or \"ai\"",
-		"HERBIEGO_ROLE_FINANCE_CONTROLLER_PROVIDER must be one of",
-		"HERBIEGO_ROLE_FINANCE_CONTROLLER_MODEL is required",
+		"human_players must be between 0 and 4",
+		"roles must include exactly 4 canonical roles",
+		"procurement_manager provider must not be empty",
+		"procurement_manager model must not be empty",
 	} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("error %q does not contain %q", message, want)
@@ -87,16 +127,14 @@ func TestLoadConfigFromEnvReportsValidationErrors(t *testing.T) {
 	}
 }
 
-func clearConfigEnv(t *testing.T) {
+func writeConfigFile(t *testing.T, contents string) string {
 	t.Helper()
 
-	t.Setenv("HERBIEGO_ENV", "")
-	t.Setenv("HERBIEGO_RANDOM_SEED", "")
-
-	for _, roleID := range domain.CanonicalRoles() {
-		prefix := envRolePrefix(roleID)
-		t.Setenv(prefix+"_KIND", "")
-		t.Setenv(prefix+"_PROVIDER", "")
-		t.Setenv(prefix+"_MODEL", "")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "herbiego.yaml")
+	if err := os.WriteFile(path, []byte(strings.TrimSpace(contents)), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
 	}
+
+	return path
 }

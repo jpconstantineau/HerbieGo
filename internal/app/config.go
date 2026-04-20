@@ -4,14 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/jpconstantineau/herbiego/internal/domain"
+	"gopkg.in/yaml.v3"
 )
 
 const (
+	defaultConfigPath  = "herbiego.yaml"
 	defaultEnvironment = "local"
 	defaultRandomSeed  = uint64(1)
 )
@@ -34,14 +34,16 @@ const (
 
 // Config holds process-level runtime configuration.
 type Config struct {
-	Environment string
-	Random      RandomConfig
-	Roles       map[domain.RoleID]RoleConfig
+	Environment  string                       `yaml:"environment"`
+	Random       RandomConfig                 `yaml:"random"`
+	HumanPlayers int                          `yaml:"human_players"`
+	Roles        map[domain.RoleID]RoleConfig `yaml:"-"`
+	RoleConfigs  []RoleConfigFile             `yaml:"roles"`
 }
 
 // RandomConfig controls deterministic randomness for the process.
 type RandomConfig struct {
-	Seed uint64
+	Seed uint64 `yaml:"seed"`
 }
 
 // RoleConfig defines runtime settings for a single role.
@@ -51,64 +53,88 @@ type RoleConfig struct {
 	Model    string
 }
 
-// LoadConfigFromEnv reads runtime configuration from environment variables.
-func LoadConfigFromEnv() (Config, error) {
+// RoleConfigFile is the editable YAML representation for a role's runtime options.
+type RoleConfigFile struct {
+	RoleID   domain.RoleID `yaml:"role_id"`
+	Provider ProviderName  `yaml:"provider"`
+	Model    string        `yaml:"model"`
+}
+
+// BootstrapOptions controls startup loading behavior.
+type BootstrapOptions struct {
+	ConfigPath           string
+	HumanPlayersOverride *int
+	SeedOverride         *uint64
+}
+
+// LoadConfig reads runtime configuration from a YAML file.
+func LoadConfig(path string) (Config, error) {
+	if strings.TrimSpace(path) == "" {
+		path = defaultConfigPath
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Config{}, fmt.Errorf("read config file %q: %w", path, err)
+	}
+
 	cfg := Config{
-		Environment: strings.TrimSpace(os.Getenv("HERBIEGO_ENV")),
+		Environment: defaultEnvironment,
 		Random: RandomConfig{
 			Seed: defaultRandomSeed,
 		},
-		Roles: make(map[domain.RoleID]RoleConfig, len(domain.CanonicalRoles())),
+		HumanPlayers: 1,
 	}
 
-	if cfg.Environment == "" {
-		cfg.Environment = defaultEnvironment
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return Config{}, fmt.Errorf("parse config file %q: %w", path, err)
 	}
 
-	var errs []error
-
-	if rawSeed := strings.TrimSpace(os.Getenv("HERBIEGO_RANDOM_SEED")); rawSeed != "" {
-		seed, err := strconv.ParseUint(rawSeed, 10, 64)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("HERBIEGO_RANDOM_SEED must be an unsigned integer: %w", err))
-		} else {
-			cfg.Random.Seed = seed
-		}
-	}
-
-	for _, roleID := range domain.CanonicalRoles() {
-		roleCfg := loadRoleConfig(roleID)
-		cfg.Roles[roleID] = roleCfg
-	}
-
+	cfg.normalize()
 	if err := cfg.Validate(); err != nil {
-		errs = append(errs, err)
-	}
-
-	if len(errs) > 0 {
-		return Config{}, errors.Join(errs...)
+		return Config{}, fmt.Errorf("validate config file %q: %w", path, err)
 	}
 
 	return cfg, nil
 }
 
+// ApplyOverrides applies runtime-only startup overrides after config loading.
+func (c Config) ApplyOverrides(options BootstrapOptions) Config {
+	if options.HumanPlayersOverride != nil {
+		c.HumanPlayers = *options.HumanPlayersOverride
+	}
+
+	if options.SeedOverride != nil {
+		c.Random.Seed = *options.SeedOverride
+	}
+
+	c.normalize()
+	return c
+}
+
 // Validate checks that the configuration is internally consistent.
-func (c Config) Validate() error {
+func (c *Config) Validate() error {
+	c.normalize()
+
 	var errs []error
 
 	if strings.TrimSpace(c.Environment) == "" {
-		errs = append(errs, errors.New("HERBIEGO_ENV must not be empty"))
+		errs = append(errs, errors.New("environment must not be empty"))
 	}
 
 	expectedRoles := domain.CanonicalRoles()
 	if len(c.Roles) != len(expectedRoles) {
-		errs = append(errs, fmt.Errorf("runtime roles must include exactly %d canonical roles", len(expectedRoles)))
+		errs = append(errs, fmt.Errorf("roles must include exactly %d canonical roles", len(expectedRoles)))
+	}
+
+	if c.HumanPlayers < 0 || c.HumanPlayers > len(expectedRoles) {
+		errs = append(errs, fmt.Errorf("human_players must be between 0 and %d", len(expectedRoles)))
 	}
 
 	for _, roleID := range expectedRoles {
 		roleCfg, ok := c.Roles[roleID]
 		if !ok {
-			errs = append(errs, fmt.Errorf("runtime role configuration missing for %s", roleID))
+			errs = append(errs, fmt.Errorf("role configuration missing for %s", roleID))
 			continue
 		}
 
@@ -124,47 +150,67 @@ func (c Config) Validate() error {
 	return errors.Join(errs...)
 }
 
-func loadRoleConfig(roleID domain.RoleID) RoleConfig {
-	prefix := envRolePrefix(roleID)
-
-	rawKind := strings.TrimSpace(os.Getenv(prefix + "_KIND"))
-	if rawKind == "" {
-		rawKind = string(PlayerKindHuman)
+func (c *Config) normalize() {
+	if strings.TrimSpace(c.Environment) == "" {
+		c.Environment = defaultEnvironment
 	}
 
-	roleCfg := RoleConfig{
-		Kind:  PlayerKind(strings.ToLower(rawKind)),
-		Model: strings.TrimSpace(os.Getenv(prefix + "_MODEL")),
+	if c.Random.Seed == 0 {
+		c.Random.Seed = defaultRandomSeed
 	}
 
-	if provider := strings.TrimSpace(os.Getenv(prefix + "_PROVIDER")); provider != "" {
-		roleCfg.Provider = ProviderName(strings.ToLower(provider))
+	if c.HumanPlayers == 0 && len(c.RoleConfigs) == 0 && len(c.Roles) == 0 {
+		c.HumanPlayers = 1
 	}
 
-	return roleCfg
+	if c.Roles == nil {
+		c.Roles = make(map[domain.RoleID]RoleConfig, len(c.RoleConfigs))
+	}
+
+	if len(c.RoleConfigs) > 0 {
+		c.Roles = make(map[domain.RoleID]RoleConfig, len(c.RoleConfigs))
+		for index, roleFile := range c.RoleConfigs {
+			roleID := roleFile.RoleID
+			roleCfg := RoleConfig{
+				Kind:     PlayerKindAI,
+				Provider: ProviderName(strings.ToLower(strings.TrimSpace(string(roleFile.Provider)))),
+				Model:    strings.TrimSpace(roleFile.Model),
+			}
+
+			if index < c.HumanPlayers {
+				roleCfg.Kind = PlayerKindHuman
+			}
+
+			c.Roles[roleID] = roleCfg
+		}
+	}
 }
 
 func validateRoleConfig(roleID domain.RoleID, roleCfg RoleConfig) error {
 	var errs []error
-	prefix := envRolePrefix(roleID)
+
+	if roleCfg.Kind == "" {
+		errs = append(errs, fmt.Errorf("%s kind must not be empty", roleID))
+	}
 
 	switch roleCfg.Kind {
 	case PlayerKindHuman:
-		if roleCfg.Provider != "" {
-			errs = append(errs, fmt.Errorf("%s_PROVIDER must be unset when %s_KIND=%q", prefix, prefix, PlayerKindHuman))
-		}
-		if roleCfg.Model != "" {
-			errs = append(errs, fmt.Errorf("%s_MODEL must be unset when %s_KIND=%q", prefix, prefix, PlayerKindHuman))
-		}
-	case PlayerKindAI:
-		if !slices.Contains([]ProviderName{ProviderOllama, ProviderOpenRouter}, roleCfg.Provider) {
-			errs = append(errs, fmt.Errorf("%s_PROVIDER must be one of %q or %q when %s_KIND=%q", prefix, ProviderOllama, ProviderOpenRouter, prefix, PlayerKindAI))
+		// Human-controlled roles still carry minimal AI mapping so a CLI override can enable AI-only tests.
+		if roleCfg.Provider == "" {
+			errs = append(errs, fmt.Errorf("%s provider must not be empty", roleID))
 		}
 		if roleCfg.Model == "" {
-			errs = append(errs, fmt.Errorf("%s_MODEL is required when %s_KIND=%q", prefix, prefix, PlayerKindAI))
+			errs = append(errs, fmt.Errorf("%s model must not be empty", roleID))
+		}
+	case PlayerKindAI:
+		if roleCfg.Provider == "" {
+			errs = append(errs, fmt.Errorf("%s provider must not be empty", roleID))
+		}
+		if roleCfg.Model == "" {
+			errs = append(errs, fmt.Errorf("%s model must not be empty", roleID))
 		}
 	default:
-		errs = append(errs, fmt.Errorf("%s_KIND must be %q or %q", prefix, PlayerKindHuman, PlayerKindAI))
+		errs = append(errs, fmt.Errorf("%s kind must be %q or %q", roleID, PlayerKindHuman, PlayerKindAI))
 	}
 
 	if len(errs) == 0 {
@@ -172,8 +218,4 @@ func validateRoleConfig(roleID domain.RoleID, roleCfg RoleConfig) error {
 	}
 
 	return errors.Join(errs...)
-}
-
-func envRolePrefix(roleID domain.RoleID) string {
-	return "HERBIEGO_ROLE_" + strings.ToUpper(string(roleID))
 }

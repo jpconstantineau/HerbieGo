@@ -15,13 +15,14 @@ type Runtime struct {
 	Random ports.RandomSource
 }
 
-// BootstrapFromEnv loads runtime configuration and constructs process dependencies.
-func BootstrapFromEnv() (Runtime, error) {
-	cfg, err := LoadConfigFromEnv()
+// Bootstrap loads startup configuration and constructs process dependencies.
+func Bootstrap(options BootstrapOptions) (Runtime, error) {
+	cfg, err := LoadConfig(options.ConfigPath)
 	if err != nil {
 		return Runtime{}, fmt.Errorf("load runtime config: %w", err)
 	}
 
+	cfg = cfg.ApplyOverrides(options)
 	return NewRuntime(cfg)
 }
 
@@ -47,7 +48,7 @@ func (r Runtime) RoleSummaries() []string {
 		}
 
 		summary := fmt.Sprintf("%s=%s", roleID, roleCfg.Kind)
-		if roleCfg.Kind == PlayerKindAI {
+		if roleCfg.Provider != "" || roleCfg.Model != "" {
 			summary = fmt.Sprintf("%s[%s:%s]", summary, roleCfg.Provider, roleCfg.Model)
 		}
 
