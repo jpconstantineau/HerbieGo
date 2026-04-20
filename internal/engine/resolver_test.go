@@ -140,6 +140,58 @@ func TestResolverUsesWorldUpdateHookAfterSales(t *testing.T) {
 	}
 }
 
+func TestResolverUsesScenarioProcurementTermsAndRoutingHooks(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{
+		ProcurementTerms: func(ctx engine.ProcurementTermsContext) engine.ProcurementTerms {
+			if ctx.Order.PartID != "housing" {
+				return engine.ProcurementTerms{UnitCost: 1}
+			}
+			return engine.ProcurementTerms{
+				UnitCost:             2,
+				MinimumOrderQuantity: 5,
+			}
+		},
+		ProductionRoute: func(ctx engine.ProductionRouteContext) engine.ProductionRouteStep {
+			switch ctx.CurrentStationID {
+			case "fabrication":
+				return engine.ProductionRouteStep{NextWorkstationID: "paint"}
+			case "paint":
+				return engine.ProductionRouteStep{NextWorkstationID: "assembly"}
+			default:
+				return engine.ProductionRouteStep{Finished: true}
+			}
+		},
+	})
+
+	state := fixtureState()
+	state.ActiveTargets.ProcurementBudget = 20
+	state.Plant.Workstations = []domain.WorkstationState{
+		{WorkstationID: "fabrication", DisplayName: "Fabrication", CapacityPerRound: 3},
+		{WorkstationID: "paint", DisplayName: "Paint", CapacityPerRound: 2},
+		{WorkstationID: "assembly", DisplayName: "Assembly", CapacityPerRound: 3},
+	}
+
+	actions := fixtureActions()
+	actions[1].Action.Production.CapacityAllocation = []domain.CapacityAllocation{
+		{WorkstationID: "fabrication", ProductID: "widget", Capacity: 2},
+	}
+
+	result, err := resolver.ResolveRound(state, actions, seeded.New(13))
+	if err != nil {
+		t.Fatalf("ResolveRound() error = %v", err)
+	}
+
+	if got := result.NextState.Plant.InTransitSupply[0].Quantity; got != 5 {
+		t.Fatalf("procurement MOQ quantity = %d, want 5", got)
+	}
+	if got := result.NextState.Plant.InTransitSupply[0].UnitCost; got != 2 {
+		t.Fatalf("procurement unit cost = %d, want 2", got)
+	}
+	if got := wipQty(result.NextState.Plant.WIPInventory, "widget", "paint"); got != 2 {
+		t.Fatalf("WIP paint quantity = %d, want 2", got)
+	}
+}
+
 func fixtureState() domain.MatchState {
 	return domain.MatchState{
 		MatchID:      "match-1",
@@ -281,6 +333,15 @@ func partQty(items []domain.PartInventory, partID domain.PartID) domain.Units {
 func backlogQty(items []domain.BacklogEntry, customerID domain.CustomerID, productID domain.ProductID) domain.Units {
 	for _, item := range items {
 		if item.CustomerID == customerID && item.ProductID == productID {
+			return item.Quantity
+		}
+	}
+	return 0
+}
+
+func wipQty(items []domain.WIPInventory, productID domain.ProductID, workstationID domain.WorkstationID) domain.Units {
+	for _, item := range items {
+		if item.ProductID == productID && item.WorkstationID == workstationID {
 			return item.Quantity
 		}
 	}

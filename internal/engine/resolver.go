@@ -13,10 +13,45 @@ import (
 )
 
 type Options struct {
-	HistoryLimit int
-	WorldUpdate  WorldUpdateHook
+	HistoryLimit     int
+	ProcurementTerms ProcurementTermsHook
+	ProductionRoute  ProductionRouteHook
+	WorldUpdate      WorldUpdateHook
 }
 
+// ProcurementTermsHook lets scenario data supply part cost, MOQ, and quantity-based pricing rules.
+// The default implementation uses a unit cost fallback of 1 with no MOQ.
+type ProcurementTermsHook func(ProcurementTermsContext) ProcurementTerms
+
+type ProcurementTermsContext struct {
+	State        domain.MatchState
+	CurrentRound domain.RoundNumber
+	Order        domain.PurchaseOrderIntent
+}
+
+type ProcurementTerms struct {
+	UnitCost             domain.Money
+	MinimumOrderQuantity domain.Units
+}
+
+// ProductionRouteHook lets scenario data define product-specific routing semantics.
+// The default implementation advances through Plant.Workstations in their declared order.
+type ProductionRouteHook func(ProductionRouteContext) ProductionRouteStep
+
+type ProductionRouteContext struct {
+	State            domain.MatchState
+	CurrentRound     domain.RoundNumber
+	ProductID        domain.ProductID
+	CurrentStationID domain.WorkstationID
+}
+
+type ProductionRouteStep struct {
+	NextWorkstationID domain.WorkstationID
+	Finished          bool
+}
+
+// WorldUpdateHook is the extension point for scenario-owned demand generation, market behavior,
+// and other seeded world events that should stay outside the deterministic core resolver.
 type WorldUpdateHook func(*WorldUpdateContext) error
 
 type WorldUpdateContext struct {
@@ -32,14 +67,18 @@ type Result struct {
 }
 
 type Resolver struct {
-	historyLimit int
-	worldUpdate  WorldUpdateHook
+	historyLimit     int
+	procurementTerms ProcurementTermsHook
+	productionRoute  ProductionRouteHook
+	worldUpdate      WorldUpdateHook
 }
 
 func NewResolver(options Options) *Resolver {
 	return &Resolver{
-		historyLimit: normalizedHistoryLimit(options.HistoryLimit),
-		worldUpdate:  options.WorldUpdate,
+		historyLimit:     normalizedHistoryLimit(options.HistoryLimit),
+		procurementTerms: defaultProcurementTerms(options.ProcurementTerms),
+		productionRoute:  defaultProductionRoute(options.ProductionRoute),
+		worldUpdate:      options.WorldUpdate,
 	}
 }
 
@@ -66,10 +105,12 @@ func (r *Resolver) ResolveRound(state domain.MatchState, actions []domain.Action
 	}
 
 	phase := roundPhase{
-		state:        &nextState,
-		round:        &round,
-		currentRound: state.CurrentRound,
-		stats:        &resolutionStats{},
+		state:            &nextState,
+		round:            &round,
+		currentRound:     state.CurrentRound,
+		stats:            &resolutionStats{},
+		procurementTerms: r.procurementTerms,
+		productionRoute:  r.productionRoute,
 	}
 
 	if nextState.ActiveTargets.EffectiveRound == state.CurrentRound {
@@ -114,11 +155,13 @@ func (r *Resolver) ResolveRound(state domain.MatchState, actions []domain.Action
 }
 
 type roundPhase struct {
-	state        *domain.MatchState
-	round        *domain.RoundRecord
-	currentRound domain.RoundNumber
-	stats        *resolutionStats
-	eventSeq     int
+	state            *domain.MatchState
+	round            *domain.RoundRecord
+	currentRound     domain.RoundNumber
+	stats            *resolutionStats
+	procurementTerms ProcurementTermsHook
+	productionRoute  ProductionRouteHook
+	eventSeq         int
 }
 
 type resolutionStats struct {
@@ -143,25 +186,42 @@ func (p *roundPhase) resolveProcurement(action *domain.ActionSubmission) {
 		}
 
 		allowed := order.Quantity
+		terms := p.procurementTerms(ProcurementTermsContext{
+			State:        p.state.Clone(),
+			CurrentRound: p.currentRound,
+			Order:        order,
+		})
+		if terms.UnitCost <= 0 {
+			terms.UnitCost = 1
+		}
+		if order.Quantity < terms.MinimumOrderQuantity {
+			allowed = terms.MinimumOrderQuantity
+		}
+
 		if hardCap > 0 {
 			remaining := hardCap - spendUsed
 			if remaining <= 0 {
 				allowed = 0
-			} else if domain.Money(allowed) > remaining {
-				allowed = domain.Units(remaining)
+			} else if spendForQuantity(allowed, terms.UnitCost) > remaining {
+				allowed = affordableQuantity(remaining, terms.UnitCost)
 			}
 		}
 
 		affordable := availableSpendCapacity(p.state.Plant)
-		if domain.Money(allowed) > affordable {
-			allowed = domain.Units(max(0, int(affordable)))
+		if spendForQuantity(allowed, terms.UnitCost) > affordable {
+			allowed = affordableQuantity(affordable, terms.UnitCost)
+		}
+		if allowed > 0 && allowed < terms.MinimumOrderQuantity {
+			allowed = 0
 		}
 
-		if allowed < order.Quantity {
+		if allowed != order.Quantity {
 			p.appendEvent(domain.EventRuleAdjustment, domain.ActorPlantSystem, "Trimmed procurement order to stay within budget or debt constraints", map[string]any{
-				"part_id":            string(order.PartID),
-				"requested_quantity": int(order.Quantity),
-				"accepted_quantity":  int(allowed),
+				"part_id":                string(order.PartID),
+				"requested_quantity":     int(order.Quantity),
+				"accepted_quantity":      int(allowed),
+				"minimum_order_quantity": int(terms.MinimumOrderQuantity),
+				"effective_unit_cost":    int(terms.UnitCost),
 			})
 		}
 
@@ -174,12 +234,12 @@ func (p *roundPhase) resolveProcurement(action *domain.ActionSubmission) {
 			SupplierID:      order.SupplierID,
 			PartID:          order.PartID,
 			Quantity:        allowed,
-			UnitCost:        1,
+			UnitCost:        terms.UnitCost,
 			OrderedRound:    p.currentRound,
 			ArrivalRound:    p.currentRound + 1,
 		}
 		p.state.Plant.InTransitSupply = append(p.state.Plant.InTransitSupply, lot)
-		lineSpend := domain.Money(allowed) * lot.UnitCost
+		lineSpend := spendForQuantity(allowed, lot.UnitCost)
 		spendUsed += lineSpend
 		p.stats.procurementSpend += lineSpend
 
@@ -284,6 +344,31 @@ func (p *roundPhase) resolveProduction(action *domain.ActionSubmission) {
 		p.state.Plant.Workstations[wsIndex].CapacityUsed += advance
 
 		if wsIndex == len(p.state.Plant.Workstations)-1 {
+			route := p.productionRoute(ProductionRouteContext{
+				State:            p.state.Clone(),
+				CurrentRound:     p.currentRound,
+				ProductID:        allocation.ProductID,
+				CurrentStationID: allocation.WorkstationID,
+			})
+			if route.Finished {
+				addFinishedInventory(&p.state.Plant.FinishedInventory, allocation.ProductID, domain.Units(advance))
+				p.stats.producedUnits += domain.Units(advance)
+				p.appendEvent(domain.EventFinishedGoodsProduced, domain.ActorPlantSystem, fmt.Sprintf("Finished %d %s", advance, allocation.ProductID), map[string]any{
+					"product_id":     string(allocation.ProductID),
+					"quantity":       int(advance),
+					"workstation_id": string(allocation.WorkstationID),
+				})
+				continue
+			}
+		}
+
+		route := p.productionRoute(ProductionRouteContext{
+			State:            p.state.Clone(),
+			CurrentRound:     p.currentRound,
+			ProductID:        allocation.ProductID,
+			CurrentStationID: allocation.WorkstationID,
+		})
+		if route.Finished {
 			addFinishedInventory(&p.state.Plant.FinishedInventory, allocation.ProductID, domain.Units(advance))
 			p.stats.producedUnits += domain.Units(advance)
 			p.appendEvent(domain.EventFinishedGoodsProduced, domain.ActorPlantSystem, fmt.Sprintf("Finished %d %s", advance, allocation.ProductID), map[string]any{
@@ -294,7 +379,16 @@ func (p *roundPhase) resolveProduction(action *domain.ActionSubmission) {
 			continue
 		}
 
-		nextStation := p.state.Plant.Workstations[wsIndex+1].WorkstationID
+		nextStation := route.NextWorkstationID
+		if nextStation == "" {
+			p.appendEvent(domain.EventRuleAdjustment, domain.ActorPlantSystem, "Ignored production advance with no scenario route continuation", map[string]any{
+				"product_id":     string(allocation.ProductID),
+				"workstation_id": string(allocation.WorkstationID),
+				"quantity":       int(advance),
+			})
+			addWIPInventory(&p.state.Plant.WIPInventory, allocation.ProductID, allocation.WorkstationID, domain.Units(advance))
+			continue
+		}
 		addWIPInventory(&p.state.Plant.WIPInventory, allocation.ProductID, nextStation, domain.Units(advance))
 		p.appendEvent(domain.EventWorkAdvanced, domain.ActorPlantSystem, fmt.Sprintf("Advanced %d %s to %s", advance, allocation.ProductID, nextStation), map[string]any{
 			"product_id":          string(allocation.ProductID),
@@ -771,6 +865,41 @@ func minUnits(values ...domain.Units) domain.Units {
 		}
 	}
 	return result
+}
+
+func defaultProcurementTerms(hook ProcurementTermsHook) ProcurementTermsHook {
+	if hook != nil {
+		return hook
+	}
+
+	return func(_ ProcurementTermsContext) ProcurementTerms {
+		return ProcurementTerms{UnitCost: 1}
+	}
+}
+
+func defaultProductionRoute(hook ProductionRouteHook) ProductionRouteHook {
+	if hook != nil {
+		return hook
+	}
+
+	return func(ctx ProductionRouteContext) ProductionRouteStep {
+		index := workstationIndex(ctx.State.Plant.Workstations, ctx.CurrentStationID)
+		if index < 0 || index == len(ctx.State.Plant.Workstations)-1 {
+			return ProductionRouteStep{Finished: true}
+		}
+		return ProductionRouteStep{NextWorkstationID: ctx.State.Plant.Workstations[index+1].WorkstationID}
+	}
+}
+
+func spendForQuantity(quantity domain.Units, unitCost domain.Money) domain.Money {
+	return domain.Money(quantity) * unitCost
+}
+
+func affordableQuantity(available domain.Money, unitCost domain.Money) domain.Units {
+	if available <= 0 || unitCost <= 0 {
+		return 0
+	}
+	return domain.Units(available / unitCost)
 }
 
 func minCapacity(values ...domain.CapacityUnits) domain.CapacityUnits {
