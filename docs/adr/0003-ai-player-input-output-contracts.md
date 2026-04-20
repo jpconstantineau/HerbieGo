@@ -33,10 +33,11 @@ Key decisions:
 
 - AI roles consume the same canonical `RoundView` used by the UI rather than provider-specific prompt fields.
 - AI roles must return a single machine-readable JSON response whose action payload matches the role they control.
-- Commentary is structured as concise public explanation text plus optional machine-readable focus tags.
+- Commentary is structured as concise public explanation text plus machine-readable focus tags.
 - Invalid model output triggers a fixed retry path with explicit validation feedback before any fallback is applied.
 - Fallback behavior is deterministic: reuse the previous accepted action when available, otherwise submit a role-specific safe no-op.
 - Token and window management is projection-driven, ordered, and truncation-safe so OpenRouter and Ollama can both receive materially equivalent context.
+- AI and human-facing round context should preserve enough recent history and actual performance data to support four-round monthly reporting.
 
 ## Shared Contract Objects
 
@@ -133,7 +134,7 @@ type AIDecisionResponse struct {
 
 type AICommentary struct {
     PublicSummary string   `json:"public_summary"`
-    FocusTags     []string `json:"focus_tags,omitempty"`
+    FocusTags     []string `json:"focus_tags"`
 }
 ```
 
@@ -142,7 +143,8 @@ Required response rules:
 - `contract_version`, `match_id`, `round`, and `role_id` must echo the request.
 - `action` must populate only the payload corresponding to `role_id`.
 - `commentary.public_summary` is required and should be short enough to reveal in the multiplayer log without further summarization.
-- `commentary.focus_tags` is optional and exists for UI filtering or debugging; it must not contain private hidden information from other roles.
+- `commentary.focus_tags` is required and exists for UI filtering, reporting, or debugging; it must not contain private hidden information from other roles.
+- `commentary.focus_tags` should summarize the primary concern driving the decision, such as `throughput`, `cash_discipline`, or `inventory_risk`.
 - No free-form text may appear before or after the JSON object in the ideal path.
 
 Recommended JSON shape by role:
@@ -271,7 +273,7 @@ Recommended safe no-op defaults:
 - procurement: empty `orders`
 - production: empty `releases` and empty `capacity_allocation`
 - sales: empty `product_offers`
-- finance: repeat current active targets into `next_round_targets`
+- finance: repeat the currently active targets exactly into `next_round_targets`
 
 The fallback chosen for round `R` must be independent of provider brand, latency race conditions, or non-deterministic parser behavior.
 
@@ -313,7 +315,7 @@ Recommended MVP strategy:
 
 - keep the full role briefing
 - keep the full current-round facts needed for the role
-- keep only a bounded recent history window
+- keep a bounded recent history window large enough to support monthly performance reasoning
 - summarize older history into durable trend bullets before inclusion
 
 ### Ordering Rules
@@ -329,7 +331,9 @@ To keep truncation deterministic:
 
 The MVP prompt builder should prefer:
 
-- up to the last `3` fully revealed rounds in structured form
+- the last `4` fully revealed rounds in structured form so players and AI can reason about a monthly window
+- actual performance values for those rounds rather than commentary-only history
+- last-month and month-to-date performance summaries derived from those actuals
 - older history collapsed into compact summary bullets or omitted entirely
 - only the most relevant commentary excerpts rather than every prior message
 
