@@ -1,0 +1,923 @@
+package engine
+
+import (
+	"cmp"
+	"errors"
+	"fmt"
+	"maps"
+	"slices"
+	"strings"
+
+	"github.com/jpconstantineau/herbiego/internal/domain"
+	"github.com/jpconstantineau/herbiego/internal/ports"
+)
+
+type Options struct {
+	HistoryLimit     int
+	ProcurementTerms ProcurementTermsHook
+	ProductionRoute  ProductionRouteHook
+	WorldUpdate      WorldUpdateHook
+}
+
+// ProcurementTermsHook lets scenario data supply part cost, MOQ, and quantity-based pricing rules.
+// The default implementation uses a unit cost fallback of 1 with no MOQ.
+type ProcurementTermsHook func(ProcurementTermsContext) ProcurementTerms
+
+type ProcurementTermsContext struct {
+	State        domain.MatchState
+	CurrentRound domain.RoundNumber
+	Order        domain.PurchaseOrderIntent
+}
+
+type ProcurementTerms struct {
+	UnitCost             domain.Money
+	MinimumOrderQuantity domain.Units
+}
+
+// ProductionRouteHook lets scenario data define product-specific routing semantics.
+// The default implementation advances through Plant.Workstations in their declared order.
+type ProductionRouteHook func(ProductionRouteContext) ProductionRouteStep
+
+type ProductionRouteContext struct {
+	State            domain.MatchState
+	CurrentRound     domain.RoundNumber
+	ProductID        domain.ProductID
+	CurrentStationID domain.WorkstationID
+}
+
+type ProductionRouteStep struct {
+	NextWorkstationID domain.WorkstationID
+	Finished          bool
+}
+
+// WorldUpdateHook is the extension point for scenario-owned demand generation, market behavior,
+// and other seeded world events that should stay outside the deterministic core resolver.
+type WorldUpdateHook func(*WorldUpdateContext) error
+
+type WorldUpdateContext struct {
+	State       *domain.MatchState
+	Round       *domain.RoundRecord
+	Random      ports.RandomSource
+	AppendEvent func(eventType domain.RoundEventType, actorID domain.ActorID, summary string, payload map[string]any)
+}
+
+type Result struct {
+	NextState domain.MatchState
+	Round     domain.RoundRecord
+}
+
+type Resolver struct {
+	historyLimit     int
+	procurementTerms ProcurementTermsHook
+	productionRoute  ProductionRouteHook
+	worldUpdate      WorldUpdateHook
+}
+
+func NewResolver(options Options) *Resolver {
+	return &Resolver{
+		historyLimit:     normalizedHistoryLimit(options.HistoryLimit),
+		procurementTerms: defaultProcurementTerms(options.ProcurementTerms),
+		productionRoute:  defaultProductionRoute(options.ProductionRoute),
+		worldUpdate:      options.WorldUpdate,
+	}
+}
+
+func (r *Resolver) ResolveRound(state domain.MatchState, actions []domain.ActionSubmission, random ports.RandomSource) (Result, error) {
+	if state.MatchID == "" {
+		return Result{}, errors.New("engine: state match id must not be empty")
+	}
+	if state.CurrentRound <= 0 {
+		return Result{}, fmt.Errorf("engine: state round %d must be positive", state.CurrentRound)
+	}
+
+	orderedActions, err := normalizeActions(state, actions)
+	if err != nil {
+		return Result{}, err
+	}
+
+	nextState := state.Clone()
+	nextState.Plant.Workstations = resetCapacityUsage(nextState.Plant.Workstations)
+
+	round := domain.RoundRecord{
+		Round:      state.CurrentRound,
+		Actions:    cloneActions(orderedActions),
+		Commentary: collectCommentary(state, orderedActions),
+	}
+
+	phase := roundPhase{
+		state:            &nextState,
+		round:            &round,
+		currentRound:     state.CurrentRound,
+		stats:            &resolutionStats{},
+		procurementTerms: r.procurementTerms,
+		productionRoute:  r.productionRoute,
+	}
+
+	if nextState.ActiveTargets.EffectiveRound == state.CurrentRound {
+		phase.appendEvent(domain.EventBudgetActivated, domain.ActorPlantSystem, "Activated current round targets", map[string]any{
+			"effective_round":     int(nextState.ActiveTargets.EffectiveRound),
+			"procurement_budget":  int(nextState.ActiveTargets.ProcurementBudget),
+			"production_budget":   int(nextState.ActiveTargets.ProductionSpendBudget),
+			"revenue_target":      int(nextState.ActiveTargets.RevenueTarget),
+			"cash_floor_target":   int(nextState.ActiveTargets.CashFloorTarget),
+			"debt_ceiling_target": int(nextState.ActiveTargets.DebtCeilingTarget),
+		})
+	}
+
+	phase.resolveProcurement(actionForRole(orderedActions, domain.RoleProcurementManager))
+	phase.receiveSupply()
+	phase.resolveProduction(actionForRole(orderedActions, domain.RoleProductionManager))
+	phase.resolveSales(actionForRole(orderedActions, domain.RoleSalesManager))
+
+	if r.worldUpdate != nil {
+		if err := r.worldUpdate(&WorldUpdateContext{
+			State:  &nextState,
+			Round:  &round,
+			Random: random,
+			AppendEvent: func(eventType domain.RoundEventType, actorID domain.ActorID, summary string, payload map[string]any) {
+				phase.appendEvent(eventType, actorID, summary, payload)
+			},
+		}); err != nil {
+			return Result{}, fmt.Errorf("engine: world update: %w", err)
+		}
+	}
+
+	phase.finalizeRound(actionForRole(orderedActions, domain.RoleFinanceController))
+
+	nextState.Metrics = round.Metrics
+	nextState.CurrentRound++
+	nextState.History = appendRecentRound(nextState.History, round, r.historyLimit)
+
+	return Result{
+		NextState: nextState.Clone(),
+		Round:     round.Clone(),
+	}, nil
+}
+
+type roundPhase struct {
+	state            *domain.MatchState
+	round            *domain.RoundRecord
+	currentRound     domain.RoundNumber
+	stats            *resolutionStats
+	procurementTerms ProcurementTermsHook
+	productionRoute  ProductionRouteHook
+	eventSeq         int
+}
+
+type resolutionStats struct {
+	revenue          domain.Money
+	procurementSpend domain.Money
+	productionSpend  domain.Money
+	shippedUnits     domain.Units
+	producedUnits    domain.Units
+}
+
+func (p *roundPhase) resolveProcurement(action *domain.ActionSubmission) {
+	if action == nil || action.Action.Procurement == nil {
+		return
+	}
+
+	hardCap := cappedBudget(p.state.ActiveTargets.ProcurementBudget)
+	spendUsed := domain.Money(0)
+
+	for index, order := range action.Action.Procurement.Orders {
+		if order.Quantity <= 0 {
+			continue
+		}
+
+		allowed := order.Quantity
+		terms := p.procurementTerms(ProcurementTermsContext{
+			State:        p.state.Clone(),
+			CurrentRound: p.currentRound,
+			Order:        order,
+		})
+		if terms.UnitCost <= 0 {
+			terms.UnitCost = 1
+		}
+		if order.Quantity < terms.MinimumOrderQuantity {
+			allowed = terms.MinimumOrderQuantity
+		}
+
+		if hardCap > 0 {
+			remaining := hardCap - spendUsed
+			if remaining <= 0 {
+				allowed = 0
+			} else if spendForQuantity(allowed, terms.UnitCost) > remaining {
+				allowed = affordableQuantity(remaining, terms.UnitCost)
+			}
+		}
+
+		affordable := availableSpendCapacity(p.state.Plant)
+		if spendForQuantity(allowed, terms.UnitCost) > affordable {
+			allowed = affordableQuantity(affordable, terms.UnitCost)
+		}
+		if allowed > 0 && allowed < terms.MinimumOrderQuantity {
+			allowed = 0
+		}
+
+		if allowed != order.Quantity {
+			p.appendEvent(domain.EventRuleAdjustment, domain.ActorPlantSystem, "Trimmed procurement order to stay within budget or debt constraints", map[string]any{
+				"part_id":                string(order.PartID),
+				"requested_quantity":     int(order.Quantity),
+				"accepted_quantity":      int(allowed),
+				"minimum_order_quantity": int(terms.MinimumOrderQuantity),
+				"effective_unit_cost":    int(terms.UnitCost),
+			})
+		}
+
+		if allowed <= 0 {
+			continue
+		}
+
+		lot := domain.SupplyLot{
+			PurchaseOrderID: fmt.Sprintf("%s-po-%02d", action.ActionID, index+1),
+			SupplierID:      order.SupplierID,
+			PartID:          order.PartID,
+			Quantity:        allowed,
+			UnitCost:        terms.UnitCost,
+			OrderedRound:    p.currentRound,
+			ArrivalRound:    p.currentRound + 1,
+		}
+		p.state.Plant.InTransitSupply = append(p.state.Plant.InTransitSupply, lot)
+		lineSpend := spendForQuantity(allowed, lot.UnitCost)
+		spendUsed += lineSpend
+		p.stats.procurementSpend += lineSpend
+
+		p.appendEvent(domain.EventPurchaseOrderPlaced, domain.ActorPlantSystem, fmt.Sprintf("Placed purchase order for %d %s", allowed, order.PartID), map[string]any{
+			"purchase_order_id": lot.PurchaseOrderID,
+			"part_id":           string(order.PartID),
+			"supplier_id":       string(order.SupplierID),
+			"quantity":          int(allowed),
+			"arrival_round":     int(lot.ArrivalRound),
+			"unit_cost":         int(lot.UnitCost),
+		})
+	}
+
+	if spendUsed > 0 {
+		p.applyCashDelta(-spendUsed)
+		p.appendEvent(domain.EventCashChanged, domain.ActorPlantSystem, "Procurement spending applied", map[string]any{
+			"delta": -int(spendUsed),
+			"cash":  int(p.state.Plant.Cash),
+			"debt":  int(p.state.Plant.Debt),
+		})
+	}
+}
+
+func (p *roundPhase) receiveSupply() {
+	if len(p.state.Plant.InTransitSupply) == 0 {
+		return
+	}
+
+	arrivals := make([]domain.SupplyLot, 0, len(p.state.Plant.InTransitSupply))
+	remaining := make([]domain.SupplyLot, 0, len(p.state.Plant.InTransitSupply))
+	for _, lot := range p.state.Plant.InTransitSupply {
+		if lot.ArrivalRound == p.currentRound {
+			arrivals = append(arrivals, lot)
+			continue
+		}
+		remaining = append(remaining, lot)
+	}
+
+	p.state.Plant.InTransitSupply = remaining
+	for _, lot := range arrivals {
+		addPartInventory(&p.state.Plant.PartsInventory, lot.PartID, lot.Quantity)
+		p.appendEvent(domain.EventSupplyArrived, domain.ActorPlantSystem, fmt.Sprintf("Received %d %s", lot.Quantity, lot.PartID), map[string]any{
+			"purchase_order_id": lot.PurchaseOrderID,
+			"part_id":           string(lot.PartID),
+			"quantity":          int(lot.Quantity),
+		})
+	}
+}
+
+func (p *roundPhase) resolveProduction(action *domain.ActionSubmission) {
+	if action == nil || action.Action.Production == nil {
+		return
+	}
+	if len(p.state.Plant.Workstations) == 0 {
+		return
+	}
+
+	firstStation := p.state.Plant.Workstations[0].WorkstationID
+	for _, release := range action.Action.Production.Releases {
+		if release.Quantity <= 0 {
+			continue
+		}
+
+		addWIPInventory(&p.state.Plant.WIPInventory, release.ProductID, firstStation, release.Quantity)
+		p.appendEvent(domain.EventProductionReleased, domain.ActorPlantSystem, fmt.Sprintf("Released %d %s into production", release.Quantity, release.ProductID), map[string]any{
+			"product_id":     string(release.ProductID),
+			"quantity":       int(release.Quantity),
+			"workstation_id": string(firstStation),
+		})
+	}
+
+	for _, allocation := range action.Action.Production.CapacityAllocation {
+		if allocation.Capacity <= 0 {
+			continue
+		}
+
+		wsIndex := workstationIndex(p.state.Plant.Workstations, allocation.WorkstationID)
+		if wsIndex < 0 {
+			p.appendEvent(domain.EventRuleAdjustment, domain.ActorPlantSystem, "Ignored capacity allocation for unknown workstation", map[string]any{
+				"workstation_id": string(allocation.WorkstationID),
+				"product_id":     string(allocation.ProductID),
+			})
+			continue
+		}
+
+		remainingCapacity := p.state.Plant.Workstations[wsIndex].CapacityPerRound - p.state.Plant.Workstations[wsIndex].CapacityUsed
+		availableWIP := wipQuantity(p.state.Plant.WIPInventory, allocation.ProductID, allocation.WorkstationID)
+		advance := minCapacity(allocation.Capacity, remainingCapacity, domain.CapacityUnits(availableWIP))
+		if advance < allocation.Capacity {
+			p.appendEvent(domain.EventRuleAdjustment, domain.ActorPlantSystem, "Trimmed production advance to available work or capacity", map[string]any{
+				"workstation_id":     string(allocation.WorkstationID),
+				"product_id":         string(allocation.ProductID),
+				"requested_capacity": int(allocation.Capacity),
+				"accepted_capacity":  int(advance),
+			})
+		}
+		if advance <= 0 {
+			continue
+		}
+
+		takeWIPInventory(&p.state.Plant.WIPInventory, allocation.ProductID, allocation.WorkstationID, domain.Units(advance))
+		p.state.Plant.Workstations[wsIndex].CapacityUsed += advance
+
+		if wsIndex == len(p.state.Plant.Workstations)-1 {
+			route := p.productionRoute(ProductionRouteContext{
+				State:            p.state.Clone(),
+				CurrentRound:     p.currentRound,
+				ProductID:        allocation.ProductID,
+				CurrentStationID: allocation.WorkstationID,
+			})
+			if route.Finished {
+				addFinishedInventory(&p.state.Plant.FinishedInventory, allocation.ProductID, domain.Units(advance))
+				p.stats.producedUnits += domain.Units(advance)
+				p.appendEvent(domain.EventFinishedGoodsProduced, domain.ActorPlantSystem, fmt.Sprintf("Finished %d %s", advance, allocation.ProductID), map[string]any{
+					"product_id":     string(allocation.ProductID),
+					"quantity":       int(advance),
+					"workstation_id": string(allocation.WorkstationID),
+				})
+				continue
+			}
+		}
+
+		route := p.productionRoute(ProductionRouteContext{
+			State:            p.state.Clone(),
+			CurrentRound:     p.currentRound,
+			ProductID:        allocation.ProductID,
+			CurrentStationID: allocation.WorkstationID,
+		})
+		if route.Finished {
+			addFinishedInventory(&p.state.Plant.FinishedInventory, allocation.ProductID, domain.Units(advance))
+			p.stats.producedUnits += domain.Units(advance)
+			p.appendEvent(domain.EventFinishedGoodsProduced, domain.ActorPlantSystem, fmt.Sprintf("Finished %d %s", advance, allocation.ProductID), map[string]any{
+				"product_id":     string(allocation.ProductID),
+				"quantity":       int(advance),
+				"workstation_id": string(allocation.WorkstationID),
+			})
+			continue
+		}
+
+		nextStation := route.NextWorkstationID
+		if nextStation == "" {
+			p.appendEvent(domain.EventRuleAdjustment, domain.ActorPlantSystem, "Ignored production advance with no scenario route continuation", map[string]any{
+				"product_id":     string(allocation.ProductID),
+				"workstation_id": string(allocation.WorkstationID),
+				"quantity":       int(advance),
+			})
+			addWIPInventory(&p.state.Plant.WIPInventory, allocation.ProductID, allocation.WorkstationID, domain.Units(advance))
+			continue
+		}
+		addWIPInventory(&p.state.Plant.WIPInventory, allocation.ProductID, nextStation, domain.Units(advance))
+		p.appendEvent(domain.EventWorkAdvanced, domain.ActorPlantSystem, fmt.Sprintf("Advanced %d %s to %s", advance, allocation.ProductID, nextStation), map[string]any{
+			"product_id":          string(allocation.ProductID),
+			"quantity":            int(advance),
+			"from_workstation_id": string(allocation.WorkstationID),
+			"to_workstation_id":   string(nextStation),
+		})
+	}
+}
+
+func (p *roundPhase) resolveSales(action *domain.ActionSubmission) {
+	priceByProduct := map[domain.ProductID]domain.Money{}
+	if action != nil && action.Action.Sales != nil {
+		for _, offer := range action.Action.Sales.ProductOffers {
+			if offer.UnitPrice <= 0 {
+				continue
+			}
+			priceByProduct[offer.ProductID] = offer.UnitPrice
+		}
+	}
+
+	backlog := effectiveBacklog(*p.state)
+	if len(backlog) == 0 {
+		p.syncCustomerBacklog(nil)
+		p.state.Plant.Backlog = nil
+		return
+	}
+
+	slices.SortFunc(backlog, func(left, right domain.BacklogEntry) int {
+		return cmp.Or(
+			cmp.Compare(int(left.OriginRound), int(right.OriginRound)),
+			cmp.Compare(string(left.CustomerID), string(right.CustomerID)),
+			cmp.Compare(string(left.ProductID), string(right.ProductID)),
+		)
+	})
+
+	remaining := make([]domain.BacklogEntry, 0, len(backlog))
+	for _, entry := range backlog {
+		onHand := finishedQuantity(p.state.Plant.FinishedInventory, entry.ProductID)
+		shipped := minUnits(entry.Quantity, onHand)
+		if shipped > 0 {
+			takeFinishedInventory(&p.state.Plant.FinishedInventory, entry.ProductID, shipped)
+			entry.Quantity -= shipped
+
+			unitPrice := priceByProduct[entry.ProductID]
+			if unitPrice <= 0 {
+				unitPrice = 1
+			}
+			revenue := domain.Money(shipped) * unitPrice
+			p.stats.revenue += revenue
+			p.stats.shippedUnits += shipped
+			p.applyCashDelta(revenue)
+
+			p.appendEvent(domain.EventShipmentCompleted, domain.ActorPlantSystem, fmt.Sprintf("Shipped %d %s to %s", shipped, entry.ProductID, entry.CustomerID), map[string]any{
+				"customer_id": string(entry.CustomerID),
+				"product_id":  string(entry.ProductID),
+				"quantity":    int(shipped),
+				"unit_price":  int(unitPrice),
+			})
+		}
+
+		if entry.Quantity > 0 {
+			remaining = append(remaining, entry)
+		}
+	}
+
+	if p.stats.revenue > 0 {
+		p.appendEvent(domain.EventCashChanged, domain.ActorPlantSystem, "Shipment revenue applied", map[string]any{
+			"delta": int(p.stats.revenue),
+			"cash":  int(p.state.Plant.Cash),
+			"debt":  int(p.state.Plant.Debt),
+		})
+	}
+
+	p.state.Plant.Backlog = remaining
+	p.syncCustomerBacklog(remaining)
+}
+
+func (p *roundPhase) finalizeRound(action *domain.ActionSubmission) {
+	backlog := effectiveBacklog(*p.state)
+	aged := make([]domain.BacklogEntry, 0, len(backlog))
+	for _, entry := range backlog {
+		entry.AgeInRounds++
+		if entry.AgeInRounds > 2 {
+			p.appendEvent(domain.EventBacklogExpired, domain.ActorPlantSystem, fmt.Sprintf("Expired backlog for %s/%s", entry.CustomerID, entry.ProductID), map[string]any{
+				"customer_id": string(entry.CustomerID),
+				"product_id":  string(entry.ProductID),
+				"quantity":    int(entry.Quantity),
+			})
+			if customer := findCustomer(p.state.Customers, entry.CustomerID); customer != nil {
+				customer.Sentiment--
+				p.appendEvent(domain.EventCustomerSentimentMoved, domain.ActorPlantSystem, fmt.Sprintf("Customer %s sentiment decreased", entry.CustomerID), map[string]any{
+					"customer_id": string(entry.CustomerID),
+					"sentiment":   customer.Sentiment,
+				})
+			}
+			continue
+		}
+		aged = append(aged, entry)
+	}
+
+	p.state.Plant.Backlog = aged
+	p.syncCustomerBacklog(aged)
+
+	if action != nil && action.Action.Finance != nil {
+		targets := action.Action.Finance.NextRoundTargets
+		targets.EffectiveRound = p.currentRound + 1
+		p.state.ActiveTargets = targets
+	}
+
+	metrics := p.computeMetrics()
+	p.round.Metrics = metrics
+	p.appendEvent(domain.EventMetricSnapshot, domain.ActorPlantSystem, "Recorded round metrics", map[string]any{
+		"round_profit":            int(metrics.RoundProfit),
+		"throughput_revenue":      int(metrics.ThroughputRevenue),
+		"backlog_units":           int(metrics.BacklogUnits),
+		"production_output_units": int(metrics.ProductionOutputUnits),
+	})
+}
+
+func (p *roundPhase) computeMetrics() domain.PlantMetrics {
+	backlogUnits := domain.Units(0)
+	for _, entry := range p.state.Plant.Backlog {
+		backlogUnits += entry.Quantity
+	}
+
+	partsUnits := domain.Units(0)
+	inventoryValue := domain.Money(0)
+	for _, part := range p.state.Plant.PartsInventory {
+		partsUnits += part.OnHandQty
+		inventoryValue += domain.Money(part.OnHandQty)
+	}
+
+	finishedUnits := domain.Units(0)
+	for _, item := range p.state.Plant.FinishedInventory {
+		finishedUnits += item.OnHandQty
+		inventoryValue += domain.Money(item.OnHandQty)
+	}
+
+	netCashChange := p.stats.revenue - p.stats.procurementSpend - p.stats.productionSpend
+	demandUnits := p.stats.shippedUnits + backlogUnits
+	onTime := domain.Percentage(100)
+	if demandUnits > 0 {
+		onTime = domain.Percentage(int(p.stats.shippedUnits) * 100 / int(demandUnits))
+	}
+
+	return domain.PlantMetrics{
+		ThroughputRevenue:     p.stats.revenue,
+		OperatingExpense:      p.stats.procurementSpend + p.stats.productionSpend,
+		InventoryValue:        inventoryValue,
+		NetCashChange:         netCashChange,
+		RoundProfit:           p.stats.revenue - p.stats.procurementSpend - p.stats.productionSpend,
+		OnTimeShipmentRate:    onTime,
+		BacklogUnits:          backlogUnits,
+		PartsOnHandUnits:      partsUnits,
+		FinishedGoodsUnits:    finishedUnits,
+		ProductionOutputUnits: p.stats.producedUnits,
+	}
+}
+
+func (p *roundPhase) syncCustomerBacklog(backlog []domain.BacklogEntry) {
+	byCustomer := map[domain.CustomerID][]domain.BacklogEntry{}
+	for _, entry := range backlog {
+		byCustomer[entry.CustomerID] = append(byCustomer[entry.CustomerID], entry)
+	}
+
+	for index := range p.state.Customers {
+		p.state.Customers[index].Backlog = slices.Clone(byCustomer[p.state.Customers[index].CustomerID])
+	}
+}
+
+func (p *roundPhase) applyCashDelta(delta domain.Money) {
+	if delta == 0 {
+		return
+	}
+
+	if delta > 0 {
+		paydown := minMoney(delta, p.state.Plant.Debt)
+		p.state.Plant.Debt -= paydown
+		p.state.Plant.Cash += delta - paydown
+		return
+	}
+
+	spend := -delta
+	if p.state.Plant.Cash >= spend {
+		p.state.Plant.Cash -= spend
+		return
+	}
+
+	deficit := spend - p.state.Plant.Cash
+	p.state.Plant.Cash = 0
+	p.state.Plant.Debt += deficit
+}
+
+func (p *roundPhase) appendEvent(eventType domain.RoundEventType, actorID domain.ActorID, summary string, payload map[string]any) {
+	p.eventSeq++
+	p.round.Events = append(p.round.Events, domain.RoundEvent{
+		EventID: domain.EventID(fmt.Sprintf("round-%d-event-%03d", p.currentRound, p.eventSeq)),
+		MatchID: p.state.MatchID,
+		Round:   p.currentRound,
+		Type:    eventType,
+		ActorID: actorID,
+		Summary: summary,
+		Payload: clonePayload(payload),
+	})
+}
+
+func normalizeActions(state domain.MatchState, actions []domain.ActionSubmission) ([]domain.ActionSubmission, error) {
+	byRole := map[domain.RoleID]domain.ActionSubmission{}
+	for _, action := range actions {
+		if action.MatchID != state.MatchID {
+			return nil, fmt.Errorf("engine: action %q match id %q does not match state %q", action.ActionID, action.MatchID, state.MatchID)
+		}
+		if action.Round != state.CurrentRound {
+			return nil, fmt.Errorf("engine: action %q round %d does not match state round %d", action.ActionID, action.Round, state.CurrentRound)
+		}
+		if _, exists := byRole[action.RoleID]; exists {
+			return nil, fmt.Errorf("engine: duplicate action for role %q", action.RoleID)
+		}
+		byRole[action.RoleID] = action.Clone()
+	}
+
+	ordered := make([]domain.ActionSubmission, 0, len(actions))
+	for _, roleID := range domain.CanonicalRoles() {
+		action, ok := byRole[roleID]
+		if !ok {
+			continue
+		}
+		ordered = append(ordered, action)
+		delete(byRole, roleID)
+	}
+
+	if len(byRole) > 0 {
+		return nil, fmt.Errorf("engine: unsupported roles in action set: %s", strings.Join(sortedRoleNames(byRole), ", "))
+	}
+
+	return ordered, nil
+}
+
+func collectCommentary(state domain.MatchState, actions []domain.ActionSubmission) []domain.CommentaryRecord {
+	commentary := make([]domain.CommentaryRecord, 0, len(actions))
+	for _, action := range actions {
+		if strings.TrimSpace(action.Commentary.Body) == "" {
+			continue
+		}
+
+		record := action.Commentary.Clone()
+		record.MatchID = state.MatchID
+		record.Round = state.CurrentRound
+		record.RoleID = action.RoleID
+		if record.ActorID == "" {
+			record.ActorID = domain.ActorID(action.RoleID)
+		}
+		if record.Visibility == "" {
+			record.Visibility = domain.CommentaryPublic
+		}
+		if record.CommentaryID == "" {
+			record.CommentaryID = domain.CommentaryID(fmt.Sprintf("%s-commentary", action.ActionID))
+		}
+		commentary = append(commentary, record)
+	}
+
+	return commentary
+}
+
+func cloneActions(actions []domain.ActionSubmission) []domain.ActionSubmission {
+	if actions == nil {
+		return nil
+	}
+
+	cloned := make([]domain.ActionSubmission, len(actions))
+	for i := range actions {
+		cloned[i] = actions[i].Clone()
+	}
+	return cloned
+}
+
+func actionForRole(actions []domain.ActionSubmission, roleID domain.RoleID) *domain.ActionSubmission {
+	for index := range actions {
+		if actions[index].RoleID == roleID {
+			return &actions[index]
+		}
+	}
+	return nil
+}
+
+func appendRecentRound(history domain.RoundHistory, round domain.RoundRecord, limit int) domain.RoundHistory {
+	rounds := cloneRoundHistory(history.RecentRounds)
+	rounds = append(rounds, round.Clone())
+	if limit > 0 && len(rounds) > limit {
+		rounds = rounds[len(rounds)-limit:]
+	}
+	return domain.RoundHistory{RecentRounds: rounds}
+}
+
+func cloneRoundHistory(rounds []domain.RoundRecord) []domain.RoundRecord {
+	if rounds == nil {
+		return nil
+	}
+
+	cloned := make([]domain.RoundRecord, len(rounds))
+	for i := range rounds {
+		cloned[i] = rounds[i].Clone()
+	}
+	return cloned
+}
+
+func effectiveBacklog(state domain.MatchState) []domain.BacklogEntry {
+	if len(state.Plant.Backlog) > 0 {
+		return slices.Clone(state.Plant.Backlog)
+	}
+
+	var backlog []domain.BacklogEntry
+	for _, customer := range state.Customers {
+		backlog = append(backlog, slices.Clone(customer.Backlog)...)
+	}
+	return backlog
+}
+
+func availableSpendCapacity(plant domain.PlantState) domain.Money {
+	if plant.DebtCeiling <= 0 {
+		return plant.Cash
+	}
+	return plant.Cash + max(plant.DebtCeiling-plant.Debt, 0)
+}
+
+func cappedBudget(target domain.Money) domain.Money {
+	if target <= 0 {
+		return 0
+	}
+	return target + target/10
+}
+
+func addPartInventory(items *[]domain.PartInventory, partID domain.PartID, quantity domain.Units) {
+	for index := range *items {
+		if (*items)[index].PartID == partID {
+			(*items)[index].OnHandQty += quantity
+			return
+		}
+	}
+	*items = append(*items, domain.PartInventory{PartID: partID, OnHandQty: quantity})
+}
+
+func addWIPInventory(items *[]domain.WIPInventory, productID domain.ProductID, workstationID domain.WorkstationID, quantity domain.Units) {
+	for index := range *items {
+		if (*items)[index].ProductID == productID && (*items)[index].WorkstationID == workstationID {
+			(*items)[index].Quantity += quantity
+			return
+		}
+	}
+	*items = append(*items, domain.WIPInventory{ProductID: productID, WorkstationID: workstationID, Quantity: quantity})
+}
+
+func wipQuantity(items []domain.WIPInventory, productID domain.ProductID, workstationID domain.WorkstationID) domain.Units {
+	for _, item := range items {
+		if item.ProductID == productID && item.WorkstationID == workstationID {
+			return item.Quantity
+		}
+	}
+	return 0
+}
+
+func takeWIPInventory(items *[]domain.WIPInventory, productID domain.ProductID, workstationID domain.WorkstationID, quantity domain.Units) {
+	filtered := (*items)[:0]
+	for _, item := range *items {
+		if item.ProductID == productID && item.WorkstationID == workstationID {
+			item.Quantity -= quantity
+		}
+		if item.Quantity > 0 {
+			filtered = append(filtered, item)
+		}
+	}
+	*items = filtered
+}
+
+func addFinishedInventory(items *[]domain.FinishedInventory, productID domain.ProductID, quantity domain.Units) {
+	for index := range *items {
+		if (*items)[index].ProductID == productID {
+			(*items)[index].OnHandQty += quantity
+			return
+		}
+	}
+	*items = append(*items, domain.FinishedInventory{ProductID: productID, OnHandQty: quantity})
+}
+
+func finishedQuantity(items []domain.FinishedInventory, productID domain.ProductID) domain.Units {
+	for _, item := range items {
+		if item.ProductID == productID {
+			return item.OnHandQty
+		}
+	}
+	return 0
+}
+
+func takeFinishedInventory(items *[]domain.FinishedInventory, productID domain.ProductID, quantity domain.Units) {
+	filtered := (*items)[:0]
+	for _, item := range *items {
+		if item.ProductID == productID {
+			item.OnHandQty -= quantity
+		}
+		if item.OnHandQty > 0 {
+			filtered = append(filtered, item)
+		}
+	}
+	*items = filtered
+}
+
+func workstationIndex(items []domain.WorkstationState, workstationID domain.WorkstationID) int {
+	for index, item := range items {
+		if item.WorkstationID == workstationID {
+			return index
+		}
+	}
+	return -1
+}
+
+func resetCapacityUsage(items []domain.WorkstationState) []domain.WorkstationState {
+	cloned := slices.Clone(items)
+	for index := range cloned {
+		cloned[index].CapacityUsed = 0
+	}
+	return cloned
+}
+
+func findCustomer(customers []domain.CustomerState, customerID domain.CustomerID) *domain.CustomerState {
+	for index := range customers {
+		if customers[index].CustomerID == customerID {
+			return &customers[index]
+		}
+	}
+	return nil
+}
+
+func sortedRoleNames(items map[domain.RoleID]domain.ActionSubmission) []string {
+	names := make([]string, 0, len(items))
+	for roleID := range items {
+		names = append(names, string(roleID))
+	}
+	slices.Sort(names)
+	return names
+}
+
+func clonePayload(payload map[string]any) map[string]any {
+	if payload == nil {
+		return nil
+	}
+
+	cloned := maps.Clone(payload)
+	for key, value := range cloned {
+		switch typed := value.(type) {
+		case map[string]any:
+			cloned[key] = clonePayload(typed)
+		case []any:
+			items := make([]any, len(typed))
+			copy(items, typed)
+			cloned[key] = items
+		}
+	}
+	return cloned
+}
+
+func normalizedHistoryLimit(limit int) int {
+	if limit <= 0 {
+		return 10
+	}
+	return limit
+}
+
+func minUnits(values ...domain.Units) domain.Units {
+	result := values[0]
+	for _, value := range values[1:] {
+		if value < result {
+			result = value
+		}
+	}
+	return result
+}
+
+func defaultProcurementTerms(hook ProcurementTermsHook) ProcurementTermsHook {
+	if hook != nil {
+		return hook
+	}
+
+	return func(_ ProcurementTermsContext) ProcurementTerms {
+		return ProcurementTerms{UnitCost: 1}
+	}
+}
+
+func defaultProductionRoute(hook ProductionRouteHook) ProductionRouteHook {
+	if hook != nil {
+		return hook
+	}
+
+	return func(ctx ProductionRouteContext) ProductionRouteStep {
+		index := workstationIndex(ctx.State.Plant.Workstations, ctx.CurrentStationID)
+		if index < 0 || index == len(ctx.State.Plant.Workstations)-1 {
+			return ProductionRouteStep{Finished: true}
+		}
+		return ProductionRouteStep{NextWorkstationID: ctx.State.Plant.Workstations[index+1].WorkstationID}
+	}
+}
+
+func spendForQuantity(quantity domain.Units, unitCost domain.Money) domain.Money {
+	return domain.Money(quantity) * unitCost
+}
+
+func affordableQuantity(available domain.Money, unitCost domain.Money) domain.Units {
+	if available <= 0 || unitCost <= 0 {
+		return 0
+	}
+	return domain.Units(available / unitCost)
+}
+
+func minCapacity(values ...domain.CapacityUnits) domain.CapacityUnits {
+	result := values[0]
+	for _, value := range values[1:] {
+		if value < result {
+			result = value
+		}
+	}
+	return result
+}
+
+func minMoney(values ...domain.Money) domain.Money {
+	result := values[0]
+	for _, value := range values[1:] {
+		if value < result {
+			result = value
+		}
+	}
+	return result
+}
