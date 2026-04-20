@@ -66,8 +66,8 @@ func TestResolverExecutesRoundPhasesAndSchedulesNextTargets(t *testing.T) {
 	if result.NextState.ActiveTargets.EffectiveRound != 3 {
 		t.Fatalf("ActiveTargets.EffectiveRound = %d, want 3", result.NextState.ActiveTargets.EffectiveRound)
 	}
-	if result.NextState.Plant.Cash != 24 {
-		t.Fatalf("Plant.Cash = %d, want 24", result.NextState.Plant.Cash)
+	if result.NextState.Plant.Cash != 19 {
+		t.Fatalf("Plant.Cash = %d, want 19", result.NextState.Plant.Cash)
 	}
 	if result.NextState.Plant.Debt != 0 {
 		t.Fatalf("Plant.Debt = %d, want 0", result.NextState.Plant.Debt)
@@ -89,6 +89,24 @@ func TestResolverExecutesRoundPhasesAndSchedulesNextTargets(t *testing.T) {
 	}
 	if result.Round.Metrics.ThroughputRevenue != 18 {
 		t.Fatalf("ThroughputRevenue = %d, want 18", result.Round.Metrics.ThroughputRevenue)
+	}
+	if result.Round.Metrics.ProcurementSpend != 4 {
+		t.Fatalf("ProcurementSpend = %d, want 4", result.Round.Metrics.ProcurementSpend)
+	}
+	if result.Round.Metrics.ProductionSpend != 4 {
+		t.Fatalf("ProductionSpend = %d, want 4", result.Round.Metrics.ProductionSpend)
+	}
+	if result.Round.Metrics.HoldingCost != 1 {
+		t.Fatalf("HoldingCost = %d, want 1", result.Round.Metrics.HoldingCost)
+	}
+	if result.Round.Metrics.OperatingExpense != 9 {
+		t.Fatalf("OperatingExpense = %d, want 9", result.Round.Metrics.OperatingExpense)
+	}
+	if result.Round.Metrics.InventoryValue != 4 {
+		t.Fatalf("InventoryValue = %d, want 4", result.Round.Metrics.InventoryValue)
+	}
+	if result.Round.Metrics.RoundProfit != 9 {
+		t.Fatalf("RoundProfit = %d, want 9", result.Round.Metrics.RoundProfit)
 	}
 	if result.Round.Metrics.BacklogUnits != 0 {
 		t.Fatalf("BacklogUnits = %d, want 0", result.Round.Metrics.BacklogUnits)
@@ -138,8 +156,11 @@ func TestResolverUsesWorldUpdateHookAfterSales(t *testing.T) {
 	if result.NextState.Customers[0].Sentiment != 7 {
 		t.Fatalf("Customer sentiment = %d, want 7", result.NextState.Customers[0].Sentiment)
 	}
-	if result.Round.Events[len(result.Round.Events)-2].Type != domain.EventRuleAdjustment {
-		t.Fatalf("World update event order = %#v, want rule adjustment before metric snapshot", result.Round.Events[len(result.Round.Events)-2].Type)
+	if result.Round.Events[len(result.Round.Events)-1].Type != domain.EventMetricSnapshot {
+		t.Fatalf("last event type = %#v, want metric snapshot", result.Round.Events[len(result.Round.Events)-1].Type)
+	}
+	if result.Round.Events[len(result.Round.Events)-3].Type != domain.EventRuleAdjustment {
+		t.Fatalf("World update event order = %#v, want rule adjustment before round-end cash update and metric snapshot", result.Round.Events[len(result.Round.Events)-3].Type)
 	}
 }
 
@@ -193,6 +214,52 @@ func TestResolverUsesScenarioProcurementTermsAndRoutingHooks(t *testing.T) {
 	}
 	if got := wipQty(result.NextState.Plant.WIPInventory, "widget", "paint"); got != 2 {
 		t.Fatalf("WIP paint quantity = %d, want 2", got)
+	}
+}
+
+func TestResolverUsesScenarioProductionAndInventoryCostHooks(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{
+		ProductionBOM: widgetBOM,
+		ProductionCost: func(ctx engine.ProductionCostContext) engine.ProductionCost {
+			switch ctx.WorkstationID {
+			case "fabrication":
+				return engine.ProductionCost{CostPerCapacityUnit: 2}
+			case "assembly":
+				return engine.ProductionCost{CostPerCapacityUnit: 3}
+			default:
+				return engine.ProductionCost{CostPerCapacityUnit: 1}
+			}
+		},
+		InventoryCost: func(ctx engine.InventoryCarryingCostContext) domain.Money {
+			if ctx.InventoryValue <= 0 {
+				return 0
+			}
+			switch ctx.InventoryClass {
+			case engine.InventoryClassParts:
+				return 1
+			case engine.InventoryClassWIP:
+				return 2
+			case engine.InventoryClassFinished:
+				return 3
+			default:
+				return 0
+			}
+		},
+	})
+
+	result, err := resolver.ResolveRound(fixtureState(), fixtureActions(), seeded.New(7))
+	if err != nil {
+		t.Fatalf("ResolveRound() error = %v", err)
+	}
+
+	if got := result.Round.Metrics.ProductionSpend; got != 10 {
+		t.Fatalf("ProductionSpend = %d, want 10", got)
+	}
+	if got := result.Round.Metrics.HoldingCost; got != 6 {
+		t.Fatalf("HoldingCost = %d, want 6", got)
+	}
+	if got := result.Round.Metrics.OperatingExpense; got != 20 {
+		t.Fatalf("OperatingExpense = %d, want 20", got)
 	}
 }
 
@@ -400,6 +467,73 @@ func TestResolverRejectsUnknownProductsWhenProductionBOMMarksThemUnknown(t *test
 	}
 }
 
+func TestResolverTrimsProductionToBudgetAndAvailableCash(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{
+		ProductionBOM: widgetBOM,
+	})
+	state := fixtureState()
+	state.ActiveTargets.ProductionSpendBudget = 1
+	actions := fixtureActions()
+
+	result, err := resolver.ResolveRound(state, actions, seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() error = %v", err)
+	}
+
+	if got := result.Round.Metrics.ProductionSpend; got != 1 {
+		t.Fatalf("ProductionSpend = %d, want 1", got)
+	}
+	if got := result.NextState.Plant.Workstations[0].CapacityUsed; got != 1 {
+		t.Fatalf("fabrication capacity used = %d, want 1", got)
+	}
+
+	trimmed := false
+	for _, event := range result.Round.Events {
+		if event.Type == domain.EventRuleAdjustment && event.Summary == "Trimmed production advance to available work or capacity" {
+			if got := event.Payload["accepted_capacity"]; got == 1 {
+				trimmed = true
+			}
+		}
+	}
+	if !trimmed {
+		t.Fatalf("Round.Events missing production budget trim: %#v", result.Round.Events)
+	}
+}
+
+func TestResolverTracksLostSalesAndDebtServiceInMetrics(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{})
+	state := fixtureState()
+	state.Plant.Cash = 0
+	state.Plant.Debt = 10
+	state.Plant.DebtCeiling = 20
+	state.Plant.Backlog = []domain.BacklogEntry{
+		{CustomerID: "cust-1", ProductID: "widget", Quantity: 3, OriginRound: 1, AgeInRounds: 2},
+	}
+	state.Plant.FinishedInventory = nil
+	state.Plant.InTransitSupply = nil
+
+	actions := fixtureActions()
+	actions[0].Action.Procurement.Orders = nil
+	actions[1].Action.Production.Releases = nil
+	actions[1].Action.Production.CapacityAllocation = nil
+	actions[2].Action.Sales.ProductOffers = nil
+
+	result, err := resolver.ResolveRound(state, actions, seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() error = %v", err)
+	}
+
+	if got := result.Round.Metrics.LostSalesUnits; got != 3 {
+		t.Fatalf("LostSalesUnits = %d, want 3", got)
+	}
+	if got := result.Round.Metrics.DebtServiceCost; got != 1 {
+		t.Fatalf("DebtServiceCost = %d, want 1", got)
+	}
+	if got := result.NextState.Customers[0].Sentiment; got != 4 {
+		t.Fatalf("Customer sentiment = %d, want 4", got)
+	}
+}
+
 func fixtureState() domain.MatchState {
 	return domain.MatchState{
 		MatchID:      "match-1",
@@ -418,13 +552,13 @@ func fixtureState() domain.MatchState {
 			Debt:        0,
 			DebtCeiling: 5,
 			PartsInventory: []domain.PartInventory{
-				{PartID: "housing", OnHandQty: 1},
+				{PartID: "housing", OnHandQty: 1, UnitCost: 1},
 			},
 			WIPInventory: []domain.WIPInventory{
-				{ProductID: "widget", WorkstationID: "assembly", Quantity: 1},
+				{ProductID: "widget", WorkstationID: "assembly", Quantity: 1, UnitCost: 1},
 			},
 			FinishedInventory: []domain.FinishedInventory{
-				{ProductID: "widget", OnHandQty: 1},
+				{ProductID: "widget", OnHandQty: 1, UnitCost: 1},
 			},
 			InTransitSupply: []domain.SupplyLot{
 				{

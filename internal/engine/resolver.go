@@ -17,6 +17,8 @@ type Options struct {
 	ProcurementTerms ProcurementTermsHook
 	ProductionBOM    ProductionBOMHook
 	ProductionRoute  ProductionRouteHook
+	ProductionCost   ProductionCostHook
+	InventoryCost    InventoryCarryingCostHook
 	WorldUpdate      WorldUpdateHook
 }
 
@@ -66,6 +68,41 @@ type ProductionRouteStep struct {
 	Finished          bool
 }
 
+// ProductionCostHook lets scenario data define operating expense per unit of advanced capacity.
+// The default implementation charges 1 money unit per unit of advanced work.
+type ProductionCostHook func(ProductionCostContext) ProductionCost
+
+type ProductionCostContext struct {
+	State         domain.MatchState
+	CurrentRound  domain.RoundNumber
+	ProductID     domain.ProductID
+	WorkstationID domain.WorkstationID
+	Quantity      domain.CapacityUnits
+}
+
+type ProductionCost struct {
+	CostPerCapacityUnit domain.Money
+}
+
+// InventoryCarryingCostHook lets scenario data define carrying cost by inventory class.
+// The default implementation charges a flat 10% round-end carrying cost with a minimum of 1.
+type InventoryCarryingCostHook func(InventoryCarryingCostContext) domain.Money
+
+type InventoryCarryingCostContext struct {
+	State          domain.MatchState
+	CurrentRound   domain.RoundNumber
+	InventoryClass InventoryClass
+	InventoryValue domain.Money
+}
+
+type InventoryClass string
+
+const (
+	InventoryClassParts    InventoryClass = "parts"
+	InventoryClassWIP      InventoryClass = "wip"
+	InventoryClassFinished InventoryClass = "finished"
+)
+
 // WorldUpdateHook is the extension point for scenario-owned demand generation, market behavior,
 // and other seeded world events that should stay outside the deterministic core resolver.
 type WorldUpdateHook func(*WorldUpdateContext) error
@@ -87,6 +124,8 @@ type Resolver struct {
 	procurementTerms ProcurementTermsHook
 	productionBOM    ProductionBOMHook
 	productionRoute  ProductionRouteHook
+	productionCost   ProductionCostHook
+	inventoryCost    InventoryCarryingCostHook
 	worldUpdate      WorldUpdateHook
 }
 
@@ -96,6 +135,8 @@ func NewResolver(options Options) *Resolver {
 		procurementTerms: defaultProcurementTerms(options.ProcurementTerms),
 		productionBOM:    defaultProductionBOM(options.ProductionBOM),
 		productionRoute:  defaultProductionRoute(options.ProductionRoute),
+		productionCost:   defaultProductionCost(options.ProductionCost),
+		inventoryCost:    options.InventoryCost,
 		worldUpdate:      options.WorldUpdate,
 	}
 }
@@ -130,6 +171,8 @@ func (r *Resolver) ResolveRound(state domain.MatchState, actions []domain.Action
 		procurementTerms: r.procurementTerms,
 		productionBOM:    r.productionBOM,
 		productionRoute:  r.productionRoute,
+		productionCost:   r.productionCost,
+		inventoryCost:    r.inventoryCost,
 	}
 
 	if nextState.ActiveTargets.EffectiveRound == state.CurrentRound {
@@ -181,6 +224,8 @@ type roundPhase struct {
 	procurementTerms ProcurementTermsHook
 	productionBOM    ProductionBOMHook
 	productionRoute  ProductionRouteHook
+	productionCost   ProductionCostHook
+	inventoryCost    InventoryCarryingCostHook
 	eventSeq         int
 }
 
@@ -188,8 +233,11 @@ type resolutionStats struct {
 	revenue          domain.Money
 	procurementSpend domain.Money
 	productionSpend  domain.Money
+	holdingCost      domain.Money
+	debtServiceCost  domain.Money
 	shippedUnits     domain.Units
 	producedUnits    domain.Units
+	lostSalesUnits   domain.Units
 }
 
 func (p *roundPhase) resolveProcurement(action *domain.ActionSubmission) {
@@ -307,11 +355,12 @@ func (p *roundPhase) receiveSupply() {
 
 	p.state.Plant.InTransitSupply = remaining
 	for _, lot := range arrivals {
-		addPartInventory(&p.state.Plant.PartsInventory, lot.PartID, lot.Quantity)
+		addPartInventory(&p.state.Plant.PartsInventory, lot.PartID, lot.Quantity, lot.UnitCost)
 		p.appendEvent(domain.EventSupplyArrived, domain.ActorPlantSystem, fmt.Sprintf("Received %d %s", lot.Quantity, lot.PartID), map[string]any{
 			"purchase_order_id": lot.PurchaseOrderID,
 			"part_id":           string(lot.PartID),
 			"quantity":          int(lot.Quantity),
+			"unit_cost":         int(lot.UnitCost),
 		})
 	}
 }
@@ -365,15 +414,18 @@ func (p *roundPhase) resolveProduction(action *domain.ActionSubmission) {
 			continue
 		}
 
-		consumePartInventory(&p.state.Plant.PartsInventory, bom.Parts, allowed)
-		addWIPInventory(&p.state.Plant.WIPInventory, release.ProductID, firstStation, allowed)
+		materialCost := consumePartInventory(&p.state.Plant.PartsInventory, bom.Parts, allowed)
+		addWIPInventory(&p.state.Plant.WIPInventory, release.ProductID, firstStation, allowed, perUnitCost(materialCost, allowed))
 		p.appendEvent(domain.EventProductionReleased, domain.ActorPlantSystem, fmt.Sprintf("Released %d %s into production", allowed, release.ProductID), map[string]any{
 			"product_id":     string(release.ProductID),
 			"quantity":       int(allowed),
 			"workstation_id": string(firstStation),
+			"material_cost":  int(materialCost),
 		})
 	}
 
+	hardCap := cappedBudget(p.state.ActiveTargets.ProductionSpendBudget)
+	spendUsed := domain.Money(0)
 	for _, allocation := range action.Action.Production.CapacityAllocation {
 		if allocation.Capacity <= 0 {
 			continue
@@ -391,6 +443,26 @@ func (p *roundPhase) resolveProduction(action *domain.ActionSubmission) {
 		remainingCapacity := p.state.Plant.Workstations[wsIndex].CapacityPerRound - p.state.Plant.Workstations[wsIndex].CapacityUsed
 		availableWIP := wipQuantity(p.state.Plant.WIPInventory, allocation.ProductID, allocation.WorkstationID)
 		advance := minCapacity(allocation.Capacity, remainingCapacity, domain.CapacityUnits(availableWIP))
+		costing := p.productionCost(ProductionCostContext{
+			State:         p.state.Clone(),
+			CurrentRound:  p.currentRound,
+			ProductID:     allocation.ProductID,
+			WorkstationID: allocation.WorkstationID,
+			Quantity:      advance,
+		})
+		if costing.CostPerCapacityUnit <= 0 {
+			costing.CostPerCapacityUnit = 1
+		}
+		if hardCap > 0 {
+			remainingBudget := hardCap - spendUsed
+			if remainingBudget <= 0 {
+				advance = 0
+			} else {
+				advance = minCapacity(advance, domain.CapacityUnits(affordableQuantity(remainingBudget, costing.CostPerCapacityUnit)))
+			}
+		}
+		affordable := availableSpendCapacity(p.state.Plant)
+		advance = minCapacity(advance, domain.CapacityUnits(affordableQuantity(affordable, costing.CostPerCapacityUnit)))
 		if advance < allocation.Capacity {
 			p.appendEvent(domain.EventRuleAdjustment, domain.ActorPlantSystem, "Trimmed production advance to available work or capacity", map[string]any{
 				"workstation_id":     string(allocation.WorkstationID),
@@ -403,8 +475,11 @@ func (p *roundPhase) resolveProduction(action *domain.ActionSubmission) {
 			continue
 		}
 
-		takeWIPInventory(&p.state.Plant.WIPInventory, allocation.ProductID, allocation.WorkstationID, domain.Units(advance))
+		advancedCost := takeWIPInventory(&p.state.Plant.WIPInventory, allocation.ProductID, allocation.WorkstationID, domain.Units(advance))
 		p.state.Plant.Workstations[wsIndex].CapacityUsed += advance
+		lineSpend := spendForQuantity(domain.Units(advance), costing.CostPerCapacityUnit)
+		spendUsed += lineSpend
+		p.stats.productionSpend += lineSpend
 
 		if wsIndex == len(p.state.Plant.Workstations)-1 {
 			route := p.productionRoute(ProductionRouteContext{
@@ -414,12 +489,13 @@ func (p *roundPhase) resolveProduction(action *domain.ActionSubmission) {
 				CurrentStationID: allocation.WorkstationID,
 			})
 			if route.Finished {
-				addFinishedInventory(&p.state.Plant.FinishedInventory, allocation.ProductID, domain.Units(advance))
+				addFinishedInventory(&p.state.Plant.FinishedInventory, allocation.ProductID, domain.Units(advance), perUnitCost(advancedCost, domain.Units(advance)))
 				p.stats.producedUnits += domain.Units(advance)
 				p.appendEvent(domain.EventFinishedGoodsProduced, domain.ActorPlantSystem, fmt.Sprintf("Finished %d %s", advance, allocation.ProductID), map[string]any{
 					"product_id":     string(allocation.ProductID),
 					"quantity":       int(advance),
 					"workstation_id": string(allocation.WorkstationID),
+					"inventory_cost": int(advancedCost),
 				})
 				continue
 			}
@@ -432,12 +508,13 @@ func (p *roundPhase) resolveProduction(action *domain.ActionSubmission) {
 			CurrentStationID: allocation.WorkstationID,
 		})
 		if route.Finished {
-			addFinishedInventory(&p.state.Plant.FinishedInventory, allocation.ProductID, domain.Units(advance))
+			addFinishedInventory(&p.state.Plant.FinishedInventory, allocation.ProductID, domain.Units(advance), perUnitCost(advancedCost, domain.Units(advance)))
 			p.stats.producedUnits += domain.Units(advance)
 			p.appendEvent(domain.EventFinishedGoodsProduced, domain.ActorPlantSystem, fmt.Sprintf("Finished %d %s", advance, allocation.ProductID), map[string]any{
 				"product_id":     string(allocation.ProductID),
 				"quantity":       int(advance),
 				"workstation_id": string(allocation.WorkstationID),
+				"inventory_cost": int(advancedCost),
 			})
 			continue
 		}
@@ -449,15 +526,24 @@ func (p *roundPhase) resolveProduction(action *domain.ActionSubmission) {
 				"workstation_id": string(allocation.WorkstationID),
 				"quantity":       int(advance),
 			})
-			addWIPInventory(&p.state.Plant.WIPInventory, allocation.ProductID, allocation.WorkstationID, domain.Units(advance))
+			addWIPInventory(&p.state.Plant.WIPInventory, allocation.ProductID, allocation.WorkstationID, domain.Units(advance), perUnitCost(advancedCost, domain.Units(advance)))
 			continue
 		}
-		addWIPInventory(&p.state.Plant.WIPInventory, allocation.ProductID, nextStation, domain.Units(advance))
+		addWIPInventory(&p.state.Plant.WIPInventory, allocation.ProductID, nextStation, domain.Units(advance), perUnitCost(advancedCost, domain.Units(advance)))
 		p.appendEvent(domain.EventWorkAdvanced, domain.ActorPlantSystem, fmt.Sprintf("Advanced %d %s to %s", advance, allocation.ProductID, nextStation), map[string]any{
 			"product_id":          string(allocation.ProductID),
 			"quantity":            int(advance),
 			"from_workstation_id": string(allocation.WorkstationID),
 			"to_workstation_id":   string(nextStation),
+		})
+	}
+
+	if spendUsed > 0 {
+		p.applyCashDelta(-spendUsed)
+		p.appendEvent(domain.EventCashChanged, domain.ActorPlantSystem, "Production spending applied", map[string]any{
+			"delta": -int(spendUsed),
+			"cash":  int(p.state.Plant.Cash),
+			"debt":  int(p.state.Plant.Debt),
 		})
 	}
 }
@@ -536,6 +622,7 @@ func (p *roundPhase) finalizeRound(action *domain.ActionSubmission) {
 	for _, entry := range backlog {
 		entry.AgeInRounds++
 		if entry.AgeInRounds > 2 {
+			p.stats.lostSalesUnits += entry.Quantity
 			p.appendEvent(domain.EventBacklogExpired, domain.ActorPlantSystem, fmt.Sprintf("Expired backlog for %s/%s", entry.CustomerID, entry.ProductID), map[string]any{
 				"customer_id": string(entry.CustomerID),
 				"product_id":  string(entry.ProductID),
@@ -562,9 +649,14 @@ func (p *roundPhase) finalizeRound(action *domain.ActionSubmission) {
 		p.state.ActiveTargets = targets
 	}
 
+	holdingCost, debtCost := p.applyRoundOperatingCosts()
+	p.stats.holdingCost = holdingCost
+	p.stats.debtServiceCost = debtCost
+
 	metrics := p.computeMetrics()
 	p.round.Metrics = metrics
 	p.appendEvent(domain.EventMetricSnapshot, domain.ActorPlantSystem, "Recorded round metrics", map[string]any{
+		"operating_expense":       int(metrics.OperatingExpense),
 		"round_profit":            int(metrics.RoundProfit),
 		"throughput_revenue":      int(metrics.ThroughputRevenue),
 		"backlog_units":           int(metrics.BacklogUnits),
@@ -582,17 +674,24 @@ func (p *roundPhase) computeMetrics() domain.PlantMetrics {
 	inventoryValue := domain.Money(0)
 	for _, part := range p.state.Plant.PartsInventory {
 		partsUnits += part.OnHandQty
-		inventoryValue += domain.Money(part.OnHandQty)
+		inventoryValue += inventoryCost(part.OnHandQty, part.UnitCost)
+	}
+
+	wipUnits := domain.Units(0)
+	for _, item := range p.state.Plant.WIPInventory {
+		wipUnits += item.Quantity
+		inventoryValue += inventoryCost(item.Quantity, item.UnitCost)
 	}
 
 	finishedUnits := domain.Units(0)
 	for _, item := range p.state.Plant.FinishedInventory {
 		finishedUnits += item.OnHandQty
-		inventoryValue += domain.Money(item.OnHandQty)
+		inventoryValue += inventoryCost(item.OnHandQty, item.UnitCost)
 	}
 
-	netCashChange := p.stats.revenue - p.stats.procurementSpend - p.stats.productionSpend
-	demandUnits := p.stats.shippedUnits + backlogUnits
+	operatingExpense := p.stats.procurementSpend + p.stats.productionSpend + p.stats.holdingCost + p.stats.debtServiceCost
+	netCashChange := p.stats.revenue - operatingExpense
+	demandUnits := p.stats.shippedUnits + backlogUnits + p.stats.lostSalesUnits
 	onTime := domain.Percentage(100)
 	if demandUnits > 0 {
 		onTime = domain.Percentage(int(p.stats.shippedUnits) * 100 / int(demandUnits))
@@ -600,16 +699,72 @@ func (p *roundPhase) computeMetrics() domain.PlantMetrics {
 
 	return domain.PlantMetrics{
 		ThroughputRevenue:     p.stats.revenue,
-		OperatingExpense:      p.stats.procurementSpend + p.stats.productionSpend,
+		OperatingExpense:      operatingExpense,
+		ProcurementSpend:      p.stats.procurementSpend,
+		ProductionSpend:       p.stats.productionSpend,
+		HoldingCost:           p.stats.holdingCost,
+		DebtServiceCost:       p.stats.debtServiceCost,
 		InventoryValue:        inventoryValue,
 		NetCashChange:         netCashChange,
-		RoundProfit:           p.stats.revenue - p.stats.procurementSpend - p.stats.productionSpend,
+		RoundProfit:           p.stats.revenue - operatingExpense,
 		OnTimeShipmentRate:    onTime,
 		BacklogUnits:          backlogUnits,
+		LostSalesUnits:        p.stats.lostSalesUnits,
 		PartsOnHandUnits:      partsUnits,
 		FinishedGoodsUnits:    finishedUnits,
 		ProductionOutputUnits: p.stats.producedUnits,
 	}
+}
+
+func (p *roundPhase) applyRoundOperatingCosts() (domain.Money, domain.Money) {
+	partsValue := domain.Money(0)
+	for _, part := range p.state.Plant.PartsInventory {
+		partsValue += inventoryCost(part.OnHandQty, part.UnitCost)
+	}
+	wipValue := domain.Money(0)
+	for _, item := range p.state.Plant.WIPInventory {
+		wipValue += inventoryCost(item.Quantity, item.UnitCost)
+	}
+	finishedValue := domain.Money(0)
+	for _, item := range p.state.Plant.FinishedInventory {
+		finishedValue += inventoryCost(item.OnHandQty, item.UnitCost)
+	}
+
+	holdingCost := carryingCost(partsValue + wipValue + finishedValue)
+	if p.inventoryCost != nil {
+		holdingCost = p.inventoryCost(InventoryCarryingCostContext{
+			State:          p.state.Clone(),
+			CurrentRound:   p.currentRound,
+			InventoryClass: InventoryClassParts,
+			InventoryValue: partsValue,
+		})
+		holdingCost += p.inventoryCost(InventoryCarryingCostContext{
+			State:          p.state.Clone(),
+			CurrentRound:   p.currentRound,
+			InventoryClass: InventoryClassWIP,
+			InventoryValue: wipValue,
+		})
+		holdingCost += p.inventoryCost(InventoryCarryingCostContext{
+			State:          p.state.Clone(),
+			CurrentRound:   p.currentRound,
+			InventoryClass: InventoryClassFinished,
+			InventoryValue: finishedValue,
+		})
+	}
+	debtCost := carryingCost(p.state.Plant.Debt)
+	total := holdingCost + debtCost
+	if total > 0 {
+		p.applyCashDelta(-total)
+		p.appendEvent(domain.EventCashChanged, domain.ActorPlantSystem, "Round-end carrying costs applied", map[string]any{
+			"delta":             -int(total),
+			"cash":              int(p.state.Plant.Cash),
+			"debt":              int(p.state.Plant.Debt),
+			"holding_cost":      int(holdingCost),
+			"debt_service_cost": int(debtCost),
+		})
+	}
+
+	return holdingCost, debtCost
 }
 
 func (p *roundPhase) syncCustomerBacklog(backlog []domain.BacklogEntry) {
@@ -921,14 +1076,29 @@ func cappedBudget(target domain.Money) domain.Money {
 	return target + target/10
 }
 
-func addPartInventory(items *[]domain.PartInventory, partID domain.PartID, quantity domain.Units) {
+func addPartInventory(items *[]domain.PartInventory, partID domain.PartID, quantity domain.Units, unitCost domain.Money) {
+	if quantity <= 0 {
+		return
+	}
+
 	for index := range *items {
 		if (*items)[index].PartID == partID {
+			if (*items)[index].UnitCost <= 0 {
+				(*items)[index].OnHandQty += quantity
+				(*items)[index].UnitCost = unitCost
+				return
+			}
+			if unitCost <= 0 {
+				(*items)[index].OnHandQty += quantity
+				return
+			}
+			totalValue := inventoryCost((*items)[index].OnHandQty, (*items)[index].UnitCost) + inventoryCost(quantity, unitCost)
 			(*items)[index].OnHandQty += quantity
+			(*items)[index].UnitCost = perUnitCost(totalValue, (*items)[index].OnHandQty)
 			return
 		}
 	}
-	*items = append(*items, domain.PartInventory{PartID: partID, OnHandQty: quantity})
+	*items = append(*items, domain.PartInventory{PartID: partID, OnHandQty: quantity, UnitCost: unitCost})
 }
 
 func partQuantity(items []domain.PartInventory, partID domain.PartID) domain.Units {
@@ -940,16 +1110,20 @@ func partQuantity(items []domain.PartInventory, partID domain.PartID) domain.Uni
 	return 0
 }
 
-func consumePartInventory(items *[]domain.PartInventory, bom []domain.BOMLine, quantity domain.Units) {
+func consumePartInventory(items *[]domain.PartInventory, bom []domain.BOMLine, quantity domain.Units) domain.Money {
+	totalCost := domain.Money(0)
 	for _, line := range bom {
-		takePartInventory(items, line.PartID, line.Quantity*quantity)
+		totalCost += takePartInventory(items, line.PartID, line.Quantity*quantity)
 	}
+	return totalCost
 }
 
-func takePartInventory(items *[]domain.PartInventory, partID domain.PartID, quantity domain.Units) {
+func takePartInventory(items *[]domain.PartInventory, partID domain.PartID, quantity domain.Units) domain.Money {
+	totalCost := domain.Money(0)
 	filtered := (*items)[:0]
 	for _, item := range *items {
 		if item.PartID == partID {
+			totalCost = inventoryCost(quantity, item.UnitCost)
 			item.OnHandQty -= quantity
 		}
 		if item.OnHandQty > 0 {
@@ -957,6 +1131,7 @@ func takePartInventory(items *[]domain.PartInventory, partID domain.PartID, quan
 		}
 	}
 	*items = filtered
+	return totalCost
 }
 
 func maxBuildableQuantity(items []domain.PartInventory, bom []domain.BOMLine) domain.Units {
@@ -980,14 +1155,29 @@ func maxBuildableQuantity(items []domain.PartInventory, bom []domain.BOMLine) do
 	return allowed
 }
 
-func addWIPInventory(items *[]domain.WIPInventory, productID domain.ProductID, workstationID domain.WorkstationID, quantity domain.Units) {
+func addWIPInventory(items *[]domain.WIPInventory, productID domain.ProductID, workstationID domain.WorkstationID, quantity domain.Units, unitCost domain.Money) {
+	if quantity <= 0 {
+		return
+	}
+
 	for index := range *items {
 		if (*items)[index].ProductID == productID && (*items)[index].WorkstationID == workstationID {
+			if (*items)[index].UnitCost <= 0 {
+				(*items)[index].Quantity += quantity
+				(*items)[index].UnitCost = unitCost
+				return
+			}
+			if unitCost <= 0 {
+				(*items)[index].Quantity += quantity
+				return
+			}
+			totalValue := inventoryCost((*items)[index].Quantity, (*items)[index].UnitCost) + inventoryCost(quantity, unitCost)
 			(*items)[index].Quantity += quantity
+			(*items)[index].UnitCost = perUnitCost(totalValue, (*items)[index].Quantity)
 			return
 		}
 	}
-	*items = append(*items, domain.WIPInventory{ProductID: productID, WorkstationID: workstationID, Quantity: quantity})
+	*items = append(*items, domain.WIPInventory{ProductID: productID, WorkstationID: workstationID, Quantity: quantity, UnitCost: unitCost})
 }
 
 func wipQuantity(items []domain.WIPInventory, productID domain.ProductID, workstationID domain.WorkstationID) domain.Units {
@@ -999,10 +1189,12 @@ func wipQuantity(items []domain.WIPInventory, productID domain.ProductID, workst
 	return 0
 }
 
-func takeWIPInventory(items *[]domain.WIPInventory, productID domain.ProductID, workstationID domain.WorkstationID, quantity domain.Units) {
+func takeWIPInventory(items *[]domain.WIPInventory, productID domain.ProductID, workstationID domain.WorkstationID, quantity domain.Units) domain.Money {
+	totalCost := domain.Money(0)
 	filtered := (*items)[:0]
 	for _, item := range *items {
 		if item.ProductID == productID && item.WorkstationID == workstationID {
+			totalCost = inventoryCost(quantity, item.UnitCost)
 			item.Quantity -= quantity
 		}
 		if item.Quantity > 0 {
@@ -1010,16 +1202,32 @@ func takeWIPInventory(items *[]domain.WIPInventory, productID domain.ProductID, 
 		}
 	}
 	*items = filtered
+	return totalCost
 }
 
-func addFinishedInventory(items *[]domain.FinishedInventory, productID domain.ProductID, quantity domain.Units) {
+func addFinishedInventory(items *[]domain.FinishedInventory, productID domain.ProductID, quantity domain.Units, unitCost domain.Money) {
+	if quantity <= 0 {
+		return
+	}
+
 	for index := range *items {
 		if (*items)[index].ProductID == productID {
+			if (*items)[index].UnitCost <= 0 {
+				(*items)[index].OnHandQty += quantity
+				(*items)[index].UnitCost = unitCost
+				return
+			}
+			if unitCost <= 0 {
+				(*items)[index].OnHandQty += quantity
+				return
+			}
+			totalValue := inventoryCost((*items)[index].OnHandQty, (*items)[index].UnitCost) + inventoryCost(quantity, unitCost)
 			(*items)[index].OnHandQty += quantity
+			(*items)[index].UnitCost = perUnitCost(totalValue, (*items)[index].OnHandQty)
 			return
 		}
 	}
-	*items = append(*items, domain.FinishedInventory{ProductID: productID, OnHandQty: quantity})
+	*items = append(*items, domain.FinishedInventory{ProductID: productID, OnHandQty: quantity, UnitCost: unitCost})
 }
 
 func finishedQuantity(items []domain.FinishedInventory, productID domain.ProductID) domain.Units {
@@ -1149,8 +1357,29 @@ func defaultProductionRoute(hook ProductionRouteHook) ProductionRouteHook {
 	}
 }
 
+func defaultProductionCost(hook ProductionCostHook) ProductionCostHook {
+	if hook != nil {
+		return hook
+	}
+
+	return func(_ ProductionCostContext) ProductionCost {
+		return ProductionCost{CostPerCapacityUnit: 1}
+	}
+}
+
 func spendForQuantity(quantity domain.Units, unitCost domain.Money) domain.Money {
 	return domain.Money(quantity) * unitCost
+}
+
+func inventoryCost(quantity domain.Units, unitCost domain.Money) domain.Money {
+	return domain.Money(quantity) * unitCost
+}
+
+func perUnitCost(totalCost domain.Money, quantity domain.Units) domain.Money {
+	if quantity <= 0 {
+		return 0
+	}
+	return totalCost / domain.Money(quantity)
 }
 
 func affordableQuantity(available domain.Money, unitCost domain.Money) domain.Units {
@@ -1158,6 +1387,13 @@ func affordableQuantity(available domain.Money, unitCost domain.Money) domain.Un
 		return 0
 	}
 	return domain.Units(available / unitCost)
+}
+
+func carryingCost(amount domain.Money) domain.Money {
+	if amount <= 0 {
+		return 0
+	}
+	return max(1, (amount+9)/10)
 }
 
 func minCapacity(values ...domain.CapacityUnits) domain.CapacityUnits {

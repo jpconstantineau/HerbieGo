@@ -65,17 +65,20 @@ type PlantState struct {
 type PartInventory struct {
 	PartID    PartID
 	OnHandQty Units
+	UnitCost  Money
 }
 
 type WIPInventory struct {
 	ProductID     ProductID
 	WorkstationID WorkstationID
 	Quantity      Units
+	UnitCost      Money
 }
 
 type FinishedInventory struct {
 	ProductID ProductID
 	OnHandQty Units
+	UnitCost  Money
 }
 
 type SupplyLot struct {
@@ -132,6 +135,10 @@ type BudgetTargets struct {
 type PlantMetrics struct {
 	ThroughputRevenue     Money
 	OperatingExpense      Money
+	ProcurementSpend      Money
+	ProductionSpend       Money
+	HoldingCost           Money
+	DebtServiceCost       Money
 	InventoryValue        Money
 	NetCashChange         Money
 	RoundProfit           Money
