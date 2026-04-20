@@ -18,11 +18,13 @@ func TestRoundCollectorCollectsMixedPlayersWithoutBranching(t *testing.T) {
 	now := time.Date(2026, time.April, 19, 16, 0, 0, 0, time.UTC)
 
 	collectedViews := map[domain.RoleID]domain.RoundView{}
+	collectedReports := map[domain.RoleID]domain.RoleRoundReport{}
 	collector := app.RoundCollector{
 		Now: func() time.Time { return now },
 		Players: map[domain.RoleID]ports.Player{
 			domain.RoleProcurementManager: human.New(func(_ context.Context, request ports.RoundRequest) (domain.ActionSubmission, error) {
 				collectedViews[request.Assignment.RoleID] = request.RoleView.Clone()
+				collectedReports[request.Assignment.RoleID] = request.RoleReport.Clone()
 				return domain.ActionSubmission{
 					Action: domain.RoleAction{
 						Procurement: &domain.ProcurementAction{
@@ -36,6 +38,7 @@ func TestRoundCollectorCollectsMixedPlayersWithoutBranching(t *testing.T) {
 			}),
 			domain.RoleProductionManager: llm.New(func(_ context.Context, request ports.RoundRequest) (domain.ActionSubmission, error) {
 				collectedViews[request.Assignment.RoleID] = request.RoleView.Clone()
+				collectedReports[request.Assignment.RoleID] = request.RoleReport.Clone()
 				return domain.ActionSubmission{
 					Action: domain.RoleAction{
 						Production: &domain.ProductionAction{
@@ -52,6 +55,7 @@ func TestRoundCollectorCollectsMixedPlayersWithoutBranching(t *testing.T) {
 			}),
 			domain.RoleSalesManager: human.New(func(_ context.Context, request ports.RoundRequest) (domain.ActionSubmission, error) {
 				collectedViews[request.Assignment.RoleID] = request.RoleView.Clone()
+				collectedReports[request.Assignment.RoleID] = request.RoleReport.Clone()
 				return domain.ActionSubmission{
 					Action: domain.RoleAction{
 						Sales: &domain.SalesAction{
@@ -65,6 +69,7 @@ func TestRoundCollectorCollectsMixedPlayersWithoutBranching(t *testing.T) {
 			}),
 			domain.RoleFinanceController: llm.New(func(_ context.Context, request ports.RoundRequest) (domain.ActionSubmission, error) {
 				collectedViews[request.Assignment.RoleID] = request.RoleView.Clone()
+				collectedReports[request.Assignment.RoleID] = request.RoleReport.Clone()
 				return domain.ActionSubmission{
 					Action: domain.RoleAction{
 						Finance: &domain.FinanceAction{
@@ -98,6 +103,16 @@ func TestRoundCollectorCollectsMixedPlayersWithoutBranching(t *testing.T) {
 		}
 		if view.ViewerRoleID != assignment.RoleID {
 			t.Fatalf("view.ViewerRoleID for %q = %q, want %q", assignment.RoleID, view.ViewerRoleID, assignment.RoleID)
+		}
+		report, ok := collectedReports[assignment.RoleID]
+		if !ok {
+			t.Fatalf("role %q did not receive a role report", assignment.RoleID)
+		}
+		if report.Department.RoleID != assignment.RoleID {
+			t.Fatalf("report.Department.RoleID for %q = %q, want %q", assignment.RoleID, report.Department.RoleID, assignment.RoleID)
+		}
+		if report.BonusReminder == "" {
+			t.Fatalf("report.BonusReminder for %q is empty", assignment.RoleID)
 		}
 	}
 	for _, action := range actions {
@@ -177,6 +192,59 @@ func TestRoundCollectorReusesPreviousActionWhenAIPlayerTimesOut(t *testing.T) {
 	}
 }
 
+func TestRoundCollectorUsesRoleSpecificAIFallbackPolicy(t *testing.T) {
+	state := fixtureMatchState()
+
+	collector := app.RoundCollector{
+		Players: map[domain.RoleID]ports.Player{
+			domain.RoleProcurementManager: human.New(func(_ context.Context, _ ports.RoundRequest) (domain.ActionSubmission, error) {
+				return procurementSubmission(), nil
+			}),
+			domain.RoleProductionManager: human.New(func(_ context.Context, _ ports.RoundRequest) (domain.ActionSubmission, error) {
+				return productionSubmission(), nil
+			}),
+			domain.RoleSalesManager: llm.New(
+				func(_ context.Context, _ ports.RoundRequest) (domain.ActionSubmission, error) {
+					return domain.ActionSubmission{}, ports.ErrNonResponsive
+				},
+				llm.WithFallbackPolicy(func(request ports.RoundRequest, cause error) (domain.ActionSubmission, bool, error) {
+					return domain.ActionSubmission{
+						Action: domain.RoleAction{
+							Sales: &domain.SalesAction{
+								ProductOffers: []domain.ProductOffer{
+									{ProductID: "pump", UnitPrice: 12},
+								},
+							},
+						},
+						Commentary: domain.CommentaryRecord{
+							Body: "Role-specific fallback policy submitted a conservative price.",
+						},
+					}, true, nil
+				}),
+			),
+			domain.RoleFinanceController: human.New(func(_ context.Context, _ ports.RoundRequest) (domain.ActionSubmission, error) {
+				return financeSubmission(), nil
+			}),
+		},
+	}
+
+	actions, err := collector.Collect(context.Background(), state, nil)
+	if err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+
+	sales := findAction(actions, domain.RoleSalesManager)
+	if sales == nil {
+		t.Fatal("sales action missing from collected results")
+	}
+	if got := sales.Action.Sales.ProductOffers[0].UnitPrice; got != 12 {
+		t.Fatalf("sales.ProductOffers[0].UnitPrice = %d, want 12", got)
+	}
+	if got := sales.Commentary.Body; got != "Role-specific fallback policy submitted a conservative price." {
+		t.Fatalf("sales.Commentary.Body = %q, want custom fallback commentary", got)
+	}
+}
+
 func TestRoundCollectorReturnsErrorWhenHumanPlayerDoesNotRespond(t *testing.T) {
 	state := fixtureMatchState()
 
@@ -240,6 +308,39 @@ func fixtureMatchState() domain.MatchState {
 			RecentRounds: []domain.RoundRecord{
 				{
 					Round: 1,
+					Events: []domain.RoundEvent{
+						{
+							Type: domain.EventDemandRealized,
+							Payload: map[string]any{
+								"product_id":         "pump",
+								"quantity":           2,
+								"offered_unit_price": 14,
+							},
+						},
+						{
+							Type: domain.EventFinishedGoodsProduced,
+							Payload: map[string]any{
+								"product_id":     "pump",
+								"quantity":       1,
+								"inventory_cost": 5,
+							},
+						},
+						{
+							Type: domain.EventProductionReleased,
+							Payload: map[string]any{
+								"product_id":    "pump",
+								"material_cost": 3,
+							},
+						},
+						{
+							Type: domain.EventShipmentCompleted,
+							Payload: map[string]any{
+								"product_id": "pump",
+								"quantity":   1,
+								"unit_price": 14,
+							},
+						},
+					},
 					Commentary: []domain.CommentaryRecord{
 						{Body: "Round one commentary."},
 					},

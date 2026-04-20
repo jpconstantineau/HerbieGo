@@ -20,5 +20,6 @@ type Player interface {
 type RoundRequest struct {
 	Assignment             domain.RoleAssignment
 	RoleView               domain.RoundView
+	RoleReport             domain.RoleRoundReport
 	PreviousAcceptedAction *domain.ActionSubmission
 }

@@ -38,6 +38,7 @@ func (c RoundCollector) Collect(ctx context.Context, state domain.MatchState, pr
 		request := ports.RoundRequest{
 			Assignment:             assignment,
 			RoleView:               projection.BuildRoundView(state, assignment.RoleID),
+			RoleReport:             projection.BuildRoleRoundReport(state, assignment.RoleID),
 			PreviousAcceptedAction: clonePrevious(previous[assignment.RoleID]),
 		}
 

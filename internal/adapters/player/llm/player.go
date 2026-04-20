@@ -11,14 +11,30 @@ import (
 )
 
 type SubmitFunc func(context.Context, ports.RoundRequest) (domain.ActionSubmission, error)
+type FallbackPolicy func(ports.RoundRequest, error) (domain.ActionSubmission, bool, error)
 
 // Player adapts an AI-backed controller to the shared player port.
 type Player struct {
-	submit SubmitFunc
+	submit   SubmitFunc
+	fallback FallbackPolicy
 }
 
-func New(submit SubmitFunc) *Player {
-	return &Player{submit: submit}
+type Option func(*Player)
+
+func WithFallbackPolicy(policy FallbackPolicy) Option {
+	return func(player *Player) {
+		player.fallback = policy
+	}
+}
+
+func New(submit SubmitFunc, options ...Option) *Player {
+	player := &Player{submit: submit}
+	for _, option := range options {
+		if option != nil {
+			option(player)
+		}
+	}
+	return player
 }
 
 func (p *Player) SubmitRound(ctx context.Context, request ports.RoundRequest) (domain.ActionSubmission, error) {
@@ -31,6 +47,16 @@ func (p *Player) SubmitRound(ctx context.Context, request ports.RoundRequest) (d
 func (p *Player) RecoverFromNonResponse(_ context.Context, request ports.RoundRequest, cause error) (domain.ActionSubmission, error) {
 	if !nonResponsive(cause) {
 		return domain.ActionSubmission{}, fmt.Errorf("llm player %q: submit round: %w", request.Assignment.RoleID, cause)
+	}
+
+	if p != nil && p.fallback != nil {
+		submission, handled, err := p.fallback(request, cause)
+		if err != nil {
+			return domain.ActionSubmission{}, fmt.Errorf("llm player %q: fallback policy: %w", request.Assignment.RoleID, err)
+		}
+		if handled {
+			return submission, nil
+		}
 	}
 
 	if request.PreviousAcceptedAction != nil {
