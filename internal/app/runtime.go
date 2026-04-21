@@ -25,6 +25,12 @@ func Bootstrap(options BootstrapOptions) (Runtime, error) {
 		return Runtime{}, fmt.Errorf("load runtime config: %w", err)
 	}
 
+	catalog, err := LoadLLMCatalog(resolveLLMCatalogPath(options.ConfigPath, options.LLMCatalogPath))
+	if err != nil {
+		return Runtime{}, fmt.Errorf("load llm catalog: %w", err)
+	}
+	cfg.WithLLMCatalog(catalog)
+
 	cfg = cfg.ApplyOverrides(options)
 	return NewRuntime(cfg)
 }

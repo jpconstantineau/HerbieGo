@@ -9,11 +9,17 @@ func TestNewRuntimeSeedsDefaultStarterMatch(t *testing.T) {
 		Random: RandomConfig{
 			Seed: 9,
 		},
+		LLMCatalog: LLMCatalog{
+			Entries: []LLMCatalogEntry{
+				{Provider: "ollama-localhost", Model: "gemma4:e4b", URL: "http://localhost:11434/", APISDKType: APISDKTypeOllama},
+				{Provider: "openrouter", Model: "openai/gpt-5-mini", URL: "https://openrouter.ai/api/v1/", APISDKType: APISDKTypeOpenAI},
+			},
+		},
 		RoleConfigs: []RoleConfigFile{
-			{RoleID: "procurement_manager", Provider: "ollama", Model: "llama3.2:3b"},
-			{RoleID: "production_manager", Provider: "ollama", Model: "llama3.2:3b"},
-			{RoleID: "sales_manager", Provider: "openrouter", Model: "openai/gpt-5-mini"},
-			{RoleID: "finance_controller", Provider: "ollama", Model: "llama3.2:3b"},
+			{RoleID: "procurement_manager", Provider: "ollama-localhost"},
+			{RoleID: "production_manager", Provider: "ollama-localhost"},
+			{RoleID: "sales_manager", Provider: "openrouter"},
+			{RoleID: "finance_controller", Provider: "ollama-localhost"},
 		},
 	})
 	if err != nil {

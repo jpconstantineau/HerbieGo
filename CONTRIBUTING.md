@@ -18,7 +18,7 @@ The repository tracks its preferred toolchain in [go.mod](go.mod), so a recent G
    go mod download
    ```
 
-3. Review the checked-in runtime config in [herbiego.yaml](herbiego.yaml).
+3. Review the checked-in runtime config in [herbiego.yaml](herbiego.yaml) and the provider/model catalog in [llm.yaml](llm.yaml).
 
 ## Run the app
 
@@ -80,23 +80,40 @@ Today, runtime provider selection is driven by YAML configuration, not by enviro
 
 ## How AI providers are configured
 
-AI role configuration lives in [herbiego.yaml](herbiego.yaml).
+AI role assignments live in [herbiego.yaml](herbiego.yaml). Provider/model connection details live in [llm.yaml](llm.yaml).
 
 Each entry under `roles` configures one canonical role with:
 
 - `role_id`: the role being configured
-- `provider`: the AI backend name, currently `ollama` or `openrouter`
-- `model`: the model identifier to use for that role
+- `provider`: the named provider entry to use from `llm.yaml`
 
 Example:
 
 ```yaml
 roles:
   - role_id: sales_manager
-    provider: openrouter
-    model: openai/gpt-5-mini
+    provider: ollama-localhost
 ```
 
-`human_players` determines which roles stay human-controlled during startup. The application assigns human control in a fixed order and keeps provider/model values on every role so contributors can switch to AI-only runs with a CLI override instead of rewriting config.
+Each entry under `models` in `llm.yaml` defines:
 
-At the moment, the provider adapter packages are still placeholders, so the YAML file mainly captures intended runtime wiring and validation rules rather than a fully implemented remote-provider session.
+- `provider_name`: the named provider referenced by `herbiego.yaml`
+- `model_name`: the concrete model identifier
+- `url`: the provider base URL
+- `api_sdk_type`: the transport family, currently `ollama` or `openai`
+- `api_key`: the configured API key value, if any
+
+Example:
+
+```yaml
+models:
+  - provider_name: openrouter
+    model_name: openai/gpt-5-mini
+    url: https://openrouter.ai/api/v1/
+    api_sdk_type: openai
+    api_key: ""
+```
+
+`human_players` determines which roles stay human-controlled during startup. The application assigns human control in a fixed order and keeps the provider label on every role so contributors can switch to AI-only runs with a CLI override instead of rewriting config.
+
+Today, the Ollama API is implemented. Providers cataloged with the `openai` SDK type are still validated and surfaced in config, but startup fails fast if their concrete adapter has not landed yet.
