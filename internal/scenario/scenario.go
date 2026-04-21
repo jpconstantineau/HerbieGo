@@ -130,10 +130,14 @@ func (d Definition) InitialState(matchID domain.MatchID, roles []domain.RoleAssi
 	}
 
 	return domain.MatchState{
-		MatchID:       matchID,
-		ScenarioID:    d.ID,
-		CurrentRound:  1,
-		Roles:         slices.Clone(roles),
+		MatchID:      matchID,
+		ScenarioID:   d.ID,
+		CurrentRound: 1,
+		Roles:        slices.Clone(roles),
+		RoundFlow: domain.RoundFlowState{
+			Phase:          domain.RoundPhaseCollecting,
+			WaitingOnRoles: roleIDs(roles),
+		},
 		Plant:         plant,
 		Customers:     customers,
 		ActiveTargets: d.StartingConditions.StartingTargets,
@@ -357,4 +361,12 @@ func roleNames(roleIDs []domain.RoleID) []string {
 		names = append(names, string(roleID))
 	}
 	return names
+}
+
+func roleIDs(assignments []domain.RoleAssignment) []domain.RoleID {
+	ids := make([]domain.RoleID, 0, len(assignments))
+	for _, assignment := range assignments {
+		ids = append(ids, assignment.RoleID)
+	}
+	return ids
 }

@@ -18,6 +18,7 @@ func BuildRoundView(state domain.MatchState, viewerRoleID domain.RoleID) domain.
 		MatchID:          state.MatchID,
 		Round:            state.CurrentRound,
 		ViewerRoleID:     viewerRoleID,
+		RoundFlow:        state.RoundFlow.Clone(),
 		Plant:            state.Plant.Clone(),
 		Customers:        cloneCustomers(state.Customers),
 		ActiveTargets:    state.ActiveTargets,

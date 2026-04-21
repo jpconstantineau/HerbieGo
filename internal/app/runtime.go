@@ -42,11 +42,14 @@ func NewRuntime(cfg Config) (Runtime, error) {
 	}
 
 	starter := scenario.Default()
+	initialMatch := starter.InitialState("starter-match", runtimeRoles(cfg))
+	initialMatch.RoundFlow.AIRevealDelaySeconds = cfg.UI.AIRevealDelaySeconds
+
 	return Runtime{
 		Config:       cfg,
 		Random:       seeded.New(cfg.Random.Seed),
 		Scenario:     starter,
-		InitialMatch: starter.InitialState("starter-match", runtimeRoles(cfg)),
+		InitialMatch: initialMatch,
 	}, nil
 }
 

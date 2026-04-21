@@ -35,6 +35,7 @@ type MatchState struct {
 	ScenarioID    ScenarioID
 	CurrentRound  RoundNumber
 	Roles         []RoleAssignment
+	RoundFlow     RoundFlowState
 	Plant         PlantState
 	Customers     []CustomerState
 	ActiveTargets BudgetTargets
@@ -48,6 +49,21 @@ type RoleAssignment struct {
 	IsHuman   bool
 	Provider  string
 	ModelName string
+}
+
+type RoundPhase string
+
+const (
+	RoundPhaseCollecting RoundPhase = "collecting"
+	RoundPhaseResolving  RoundPhase = "resolving"
+	RoundPhaseRevealed   RoundPhase = "revealed"
+)
+
+type RoundFlowState struct {
+	Phase                RoundPhase
+	SubmittedRoles       []RoleID
+	WaitingOnRoles       []RoleID
+	AIRevealDelaySeconds int
 }
 
 type PlantState struct {
@@ -298,6 +314,7 @@ type RoundView struct {
 	MatchID          MatchID
 	Round            RoundNumber
 	ViewerRoleID     RoleID
+	RoundFlow        RoundFlowState
 	Plant            PlantState
 	Customers        []CustomerState
 	ActiveTargets    BudgetTargets
@@ -327,6 +344,7 @@ func (s MatchState) Clone() MatchState {
 		ScenarioID:    s.ScenarioID,
 		CurrentRound:  s.CurrentRound,
 		Roles:         slices.Clone(s.Roles),
+		RoundFlow:     s.RoundFlow.Clone(),
 		Plant:         s.Plant.Clone(),
 		Customers:     cloneSlice(s.Customers, CustomerState.Clone),
 		ActiveTargets: s.ActiveTargets,
@@ -429,6 +447,15 @@ func (r CommentaryRecord) Clone() CommentaryRecord {
 	return r
 }
 
+func (f RoundFlowState) Clone() RoundFlowState {
+	return RoundFlowState{
+		Phase:                f.Phase,
+		SubmittedRoles:       slices.Clone(f.SubmittedRoles),
+		WaitingOnRoles:       slices.Clone(f.WaitingOnRoles),
+		AIRevealDelaySeconds: f.AIRevealDelaySeconds,
+	}
+}
+
 func (e RoundEvent) Clone() RoundEvent {
 	return RoundEvent{
 		EventID: e.EventID,
@@ -446,6 +473,7 @@ func (v RoundView) Clone() RoundView {
 		MatchID:          v.MatchID,
 		Round:            v.Round,
 		ViewerRoleID:     v.ViewerRoleID,
+		RoundFlow:        v.RoundFlow.Clone(),
 		Plant:            v.Plant.Clone(),
 		Customers:        cloneSlice(v.Customers, CustomerState.Clone),
 		ActiveTargets:    v.ActiveTargets,

@@ -24,6 +24,12 @@ func (s testStateSource) Updates() <-chan domain.MatchState {
 
 func TestModelLoadsInitialSnapshotAndRendersShell(t *testing.T) {
 	initial := scenario.Starter().InitialState("starter-match", starterAssignments())
+	initial.RoundFlow.SubmittedRoles = []domain.RoleID{domain.RoleProcurementManager}
+	initial.RoundFlow.WaitingOnRoles = []domain.RoleID{
+		domain.RoleProductionManager,
+		domain.RoleSalesManager,
+		domain.RoleFinanceController,
+	}
 	initial.History.RecentRounds = []domain.RoundRecord{
 		{
 			Round: 1,
@@ -54,6 +60,10 @@ func TestModelLoadsInitialSnapshotAndRendersShell(t *testing.T) {
 		"Departments [focus]",
 		"Center Workspace",
 		"Mode: round feed",
+		"The round is waiting for simultaneous submissions.",
+		"Submissions received: 1/4",
+		"Current-turn actions remain hidden until every role is",
+		"collected and the round resolves.",
 		"Plant Stats",
 		"Command Bar",
 		"Procurement Manager",
@@ -61,6 +71,7 @@ func TestModelLoadsInitialSnapshotAndRendersShell(t *testing.T) {
 		"Event: Assembly shipped one pump.",
 		"Sales Manager: Demand stayed healthy.",
 		"Inspect mode",
+		"Phase: collecting",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() missing %q\n%s", want, view)
@@ -175,9 +186,11 @@ func TestModelUsesCompactLayoutAndEmptyStatesOnSmallerTerminal(t *testing.T) {
 		"Departments [focus]",
 		"Plant Stats",
 		"Center Workspace",
-		"No prior rounds recorded yet.",
+		"The round is waiting for simultaneous submissions.",
+		"Current-turn actions remain hidden until every role is",
 		"Workstations: waiting for first telemetry",
-		"Mode: inspect | Focus: departments | Role: Procurement Manager | Round: 1",
+		"Mode: inspect | Focus: departments | Role: Procurement Manager | Round: 1 | Phase:",
+		"collecting | Round 1 loaded for Procurement Manager",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("compact View() missing %q\n%s", want, view)
@@ -200,10 +213,60 @@ func TestModelActionWorkspaceExplainsDeferredEntrySurface(t *testing.T) {
 	for _, want := range []string{
 		"Mode: action entry",
 		"Decision workspace for Procurement Manager",
-		"Action entry is intentionally deferred from issue #23",
+		"Current-turn decisions stay hidden from the shared round",
+		"feed until the round resolves.",
+		"Action entry is still deferred while the shell",
+		"stabilizes, so this workspace currently serves as the",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("action workspace missing %q\n%s", want, view)
+		}
+	}
+}
+
+func TestModelRoundFeedExplainsResolvingAndRevealedStates(t *testing.T) {
+	model := NewModel("Prairie Pump Starter Plant", testStateSource{
+		snapshot: scenario.Starter().InitialState("starter-match", starterAssignments()),
+	})
+
+	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
+	shell := loaded.(Model)
+	shell.width = 120
+	shell.height = 30
+
+	shell.state.RoundFlow.Phase = domain.RoundPhaseResolving
+	resolvingView := shell.View()
+	for _, want := range []string{
+		"View: resolving simultaneous turn",
+		"The round is resolving.",
+		"All current-turn actions are locked in.",
+		"The plant is resolving simultaneous decisions before",
+		"reveal.",
+	} {
+		if !strings.Contains(resolvingView, want) {
+			t.Fatalf("resolving view missing %q\n%s", want, resolvingView)
+		}
+	}
+
+	shell.state.RoundFlow.Phase = domain.RoundPhaseRevealed
+	shell.state.RoundFlow.AIRevealDelaySeconds = 15
+	shell.state.Roles = []domain.RoleAssignment{
+		{RoleID: domain.RoleProcurementManager, PlayerID: "procurement-player", IsHuman: false},
+		{RoleID: domain.RoleProductionManager, PlayerID: "production-player", IsHuman: false},
+		{RoleID: domain.RoleSalesManager, PlayerID: "sales-player", IsHuman: false},
+		{RoleID: domain.RoleFinanceController, PlayerID: "finance-player", IsHuman: false},
+	}
+	revealedView := shell.View()
+	for _, want := range []string{
+		"View: revealed round results",
+		"The round has been revealed.",
+		"Round results are now visible in the resolved history",
+		"below.",
+		"AI-only rounds hold the reveal for 15 seconds before",
+		"advancing.",
+	} {
+		if !strings.Contains(revealedView, want) {
+			t.Fatalf("revealed view missing %q\n%s", want, revealedView)
 		}
 	}
 }
