@@ -31,6 +31,8 @@ type AIDecisionRequest struct {
 	RoundView       domain.RoundView
 	RoleReport      domain.RoleRoundReport
 	AllowedActions  AllowedActionSchema
+	Tools           []LookupToolSpec
+	ToolResults     []LookupToolResult
 	ResponseSpec    ResponseFormatSpec
 	RetryContext    *RetryFeedback
 	PreviousAction  *domain.ActionSubmission
@@ -63,6 +65,34 @@ type RetryFeedback struct {
 type ValidationError struct {
 	Path    string
 	Message string
+}
+
+// LookupToolSpec describes one read-only game lookup that an AI role may call
+// before returning a final decision.
+type LookupToolSpec struct {
+	Name        string               `json:"name"`
+	Description string               `json:"description"`
+	Arguments   []LookupToolArgument `json:"arguments"`
+}
+
+// LookupToolArgument describes one tool argument.
+type LookupToolArgument struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Required    bool   `json:"required"`
+}
+
+// LookupToolCall is the JSON envelope used when a model requests a lookup.
+type LookupToolCall struct {
+	ToolName  string            `json:"tool_name"`
+	Arguments map[string]string `json:"arguments"`
+}
+
+// LookupToolResult captures one executed tool lookup for prompt reuse and audit.
+type LookupToolResult struct {
+	ToolName  string            `json:"tool_name"`
+	Arguments map[string]string `json:"arguments"`
+	Result    any               `json:"result"`
 }
 
 // AIDecisionResponse is the strict JSON contract returned by the model.

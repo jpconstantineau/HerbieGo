@@ -10,6 +10,7 @@ import (
 	"github.com/jpconstantineau/herbiego/internal/app"
 	"github.com/jpconstantineau/herbiego/internal/domain"
 	"github.com/jpconstantineau/herbiego/internal/ports"
+	"github.com/jpconstantineau/herbiego/internal/scenario"
 )
 
 func TestAIOrchestratorBuildsPromptAndParsesValidDecision(t *testing.T) {
@@ -26,7 +27,7 @@ func TestAIOrchestratorBuildsPromptAndParsesValidDecision(t *testing.T) {
 		},
 	}
 
-	orchestrator := app.NewAIOrchestrator(client)
+	orchestrator := app.NewAIOrchestrator(scenario.Starter(), client)
 	request := aiRoundRequest(domain.RoleSalesManager)
 
 	submission, audit, err := orchestrator.Decide(context.Background(), orchestrator.BuildRequest(request))
@@ -52,6 +53,9 @@ func TestAIOrchestratorBuildsPromptAndParsesValidDecision(t *testing.T) {
 	if !strings.Contains(client.requests[0].UserPrompt, "## Allowed Action Schema") {
 		t.Fatalf("UserPrompt = %q, want schema section", client.requests[0].UserPrompt)
 	}
+	if !strings.Contains(client.requests[0].UserPrompt, "## Tool Lookup") {
+		t.Fatalf("UserPrompt = %q, want tool lookup section", client.requests[0].UserPrompt)
+	}
 	if submission.Action.Sales == nil {
 		t.Fatal("submission.Action.Sales = nil, want populated sales payload")
 	}
@@ -71,7 +75,7 @@ func TestAIOrchestratorRetriesWithValidationFeedback(t *testing.T) {
 		},
 	}
 
-	orchestrator := app.NewAIOrchestrator(client)
+	orchestrator := app.NewAIOrchestrator(scenario.Starter(), client)
 	request := aiRoundRequest(domain.RoleSalesManager)
 
 	submission, audit, err := orchestrator.Decide(context.Background(), orchestrator.BuildRequest(request))
@@ -105,7 +109,7 @@ func TestAIOrchestratorFallsBackAfterInvalidResponses(t *testing.T) {
 		},
 	}
 
-	orchestrator := app.NewAIOrchestrator(client)
+	orchestrator := app.NewAIOrchestrator(scenario.Starter(), client)
 	request := aiRoundRequest(domain.RoleSalesManager)
 	request.PreviousAcceptedAction = &domain.ActionSubmission{
 		MatchID: "match-17",
@@ -141,7 +145,7 @@ func TestRoundCollectorUsesAIOrchestratorThroughLLMPlayer(t *testing.T) {
 		},
 	}
 
-	orchestrator := app.NewAIOrchestrator(client)
+	orchestrator := app.NewAIOrchestrator(scenario.Starter(), client)
 	state := fixtureMatchState()
 	state.Roles = []domain.RoleAssignment{
 		{RoleID: domain.RoleProductionManager, PlayerID: "ai-prod", Provider: "ollama", ModelName: "llama3.2:3b"},
@@ -171,7 +175,7 @@ func TestAIOrchestratorReturnsTransportErrors(t *testing.T) {
 		err: errors.New("provider unavailable"),
 	}
 
-	orchestrator := app.NewAIOrchestrator(client)
+	orchestrator := app.NewAIOrchestrator(scenario.Starter(), client)
 
 	_, _, err := orchestrator.Decide(context.Background(), orchestrator.BuildRequest(aiRoundRequest(domain.RoleSalesManager)))
 	if err == nil {
@@ -260,5 +264,34 @@ func buildAIReport(roleID domain.RoleID) domain.RoleRoundReport {
 			RoleID: roleID,
 		},
 		BonusReminder: "Protect plant-wide flow.",
+	}
+}
+func TestAIOrchestratorExecutesLookupToolCallsBeforeFinalDecision(t *testing.T) {
+	client := &stubDecisionClient{
+		responses: []ports.ProviderDecisionResult{
+			{RawResponse: `{"tool_call":{"tool_name":"show_product_route","arguments":{"product_id":"pump"}}}`},
+			{RawResponse: `{"contract_version":"herbiego.ai.v1","match_id":"match-17","round":2,"role_id":"production_manager","action":{"production":{"releases":[{"product_id":"pump","quantity":1}],"capacity_allocation":[{"workstation_id":"fabrication","product_id":"pump","capacity":1}]}},"commentary":{"public_summary":"Using the route lookup to release only work that fits the line.","focus_tags":["throughput"]}}`},
+		},
+	}
+
+	orchestrator := app.NewAIOrchestrator(scenario.Starter(), client)
+	request := aiRoundRequest(domain.RoleProductionManager)
+
+	submission, audit, err := orchestrator.Decide(context.Background(), orchestrator.BuildRequest(request))
+	if err != nil {
+		t.Fatalf("Decide() error = %v", err)
+	}
+
+	if audit.AttemptCount != 2 {
+		t.Fatalf("audit.AttemptCount = %d, want 2", audit.AttemptCount)
+	}
+	if got := len(client.requests); got != 2 {
+		t.Fatalf("client request count = %d, want 2", got)
+	}
+	if !strings.Contains(client.requests[1].UserPrompt, "## Tool Results") {
+		t.Fatalf("second UserPrompt = %q, want tool results section", client.requests[1].UserPrompt)
+	}
+	if got := submission.Commentary.Body; got != "Using the route lookup to release only work that fits the line." {
+		t.Fatalf("Commentary.Body = %q, want final commentary", got)
 	}
 }

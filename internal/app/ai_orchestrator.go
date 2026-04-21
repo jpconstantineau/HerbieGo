@@ -10,25 +10,32 @@ import (
 
 	"github.com/jpconstantineau/herbiego/internal/domain"
 	"github.com/jpconstantineau/herbiego/internal/ports"
+	"github.com/jpconstantineau/herbiego/internal/prompting"
+	"github.com/jpconstantineau/herbiego/internal/scenario"
 )
 
 const (
 	defaultAIMaxAttempts   = 3
 	defaultAIMaxCommentary = 280
 	defaultAIMaxFocusTags  = 4
+	defaultAIMaxToolCalls  = 2
 )
 
 // AIOrchestrator assembles provider-neutral decision requests, executes them
 // through a narrow transport client, and validates the returned JSON contract.
 type AIOrchestrator struct {
-	Client      ports.DecisionClient
-	MaxAttempts int
+	Client       ports.DecisionClient
+	Scenario     scenario.Definition
+	MaxAttempts  int
+	MaxToolCalls int
 }
 
-func NewAIOrchestrator(client ports.DecisionClient) AIOrchestrator {
+func NewAIOrchestrator(definition scenario.Definition, client ports.DecisionClient) AIOrchestrator {
 	return AIOrchestrator{
-		Client:      client,
-		MaxAttempts: defaultAIMaxAttempts,
+		Client:       client,
+		Scenario:     definition,
+		MaxAttempts:  defaultAIMaxAttempts,
+		MaxToolCalls: defaultAIMaxToolCalls,
 	}
 }
 
@@ -52,6 +59,7 @@ func (o AIOrchestrator) BuildRequest(request ports.RoundRequest) ports.AIDecisio
 		RoundView:       request.RoleView.Clone(),
 		RoleReport:      request.RoleReport.Clone(),
 		AllowedActions:  allowedActionSchema(request.Assignment.RoleID),
+		Tools:           lookupTools(),
 		ResponseSpec: ports.ResponseFormatSpec{
 			RequireJSONOnly:     true,
 			AllowMarkdownFences: true,
@@ -75,6 +83,7 @@ func (o AIOrchestrator) Decide(ctx context.Context, request ports.AIDecisionRequ
 	attempts := max(1, o.MaxAttempts)
 	audit := ports.AIDecisionAudit{}
 	retryContext := request.RetryContext
+	toolCalls := 0
 
 	for attempt := range attempts {
 		audit.AttemptCount = attempt + 1
@@ -82,8 +91,8 @@ func (o AIOrchestrator) Decide(ctx context.Context, request ports.AIDecisionRequ
 		providerRequest := ports.ProviderDecisionRequest{
 			Provider:            request.Provider,
 			Model:               request.Model,
-			SystemPrompt:        buildSystemPrompt(request),
-			UserPrompt:          buildUserPrompt(request, retryContext),
+			SystemPrompt:        prompting.BuildSystemPrompt(request),
+			UserPrompt:          prompting.BuildUserPrompt(request, retryContext),
 			RequireJSONOnly:     request.ResponseSpec.RequireJSONOnly,
 			AllowMarkdownFences: request.ResponseSpec.AllowMarkdownFences,
 		}
@@ -93,9 +102,26 @@ func (o AIOrchestrator) Decide(ctx context.Context, request ports.AIDecisionRequ
 			return domain.ActionSubmission{}, audit, fmt.Errorf("app: ai decision runner: request decision: %w", err)
 		}
 
-		response, validationErrors, err := parseAndValidateDecision(result.RawResponse, request)
+		response, toolCall, validationErrors, err := parseAndValidateDecision(result.RawResponse, request)
 		if err == nil {
-			return responseToSubmission(response), audit, nil
+			if toolCall != nil {
+				toolCalls++
+				if toolCalls > max(0, o.MaxToolCalls) && o.MaxToolCalls > 0 {
+					validationErrors = []ports.ValidationError{{Path: "tool_call", Message: fmt.Sprintf("tool call budget exceeded; at most %d tool calls allowed", o.MaxToolCalls)}}
+				} else {
+					toolResult, toolErr := o.executeToolCall(*toolCall)
+					if toolErr != nil {
+						validationErrors = []ports.ValidationError{{Path: "tool_call", Message: toolErr.Error()}}
+					} else {
+						request.ToolResults = append(request.ToolResults, toolResult)
+						retryContext = nil
+						audit.ValidationErrors = nil
+						continue
+					}
+				}
+			} else {
+				return responseToSubmission(response), audit, nil
+			}
 		}
 
 		audit.ValidationErrors = validationErrors
@@ -139,96 +165,36 @@ func validateDecisionRequest(request ports.AIDecisionRequest) error {
 	return errorsJoin(errs...)
 }
 
-func buildSystemPrompt(request ports.AIDecisionRequest) string {
-	briefing := request.Briefing
-	var lines []string
-	lines = append(lines, "You are playing HerbieGo as one role in a hidden simultaneous-turn factory simulation.")
-	lines = append(lines, fmt.Sprintf("Return exactly one JSON object that matches contract version %s.", request.ContractVersion))
-	lines = append(lines, fmt.Sprintf("Role: %s (%s)", briefing.DisplayName, briefing.RoleID))
-	lines = append(lines, "Public responsibilities:")
-	for _, item := range briefing.PublicResponsibilities {
-		lines = append(lines, "- "+item)
-	}
-	lines = append(lines, "Hidden incentives:")
-	for _, item := range briefing.HiddenIncentives {
-		lines = append(lines, "- "+item)
-	}
-	lines = append(lines, "Decision principles:")
-	for _, item := range briefing.DecisionPrinciples {
-		lines = append(lines, "- "+item)
-	}
-	return strings.Join(lines, "\n")
-}
-
-func buildUserPrompt(request ports.AIDecisionRequest, retry *ports.RetryFeedback) string {
-	var sections []string
-
-	sections = append(sections, "## Contract Header\n"+mustJSON(map[string]any{
-		"contract_version": request.ContractVersion,
-		"match_id":         request.MatchID,
-		"round":            request.Round,
-		"role_id":          request.RoleID,
-		"provider":         request.Provider,
-		"model":            request.Model,
-	}))
-
-	sections = append(sections, "## Role Briefing\n"+mustJSON(request.Briefing))
-	sections = append(sections, "## Current Round Facts\n"+mustJSON(map[string]any{
-		"round_view":      request.RoundView,
-		"role_report":     request.RoleReport,
-		"previous_action": request.PreviousAction,
-	}))
-	sections = append(sections, "## Allowed Action Schema\n"+mustJSON(request.AllowedActions))
-	sections = append(sections, "## Response Format\n"+mustJSON(map[string]any{
-		"response_spec": request.ResponseSpec,
-		"example": map[string]any{
-			"contract_version": request.ContractVersion,
-			"match_id":         request.MatchID,
-			"round":            request.Round,
-			"role_id":          request.RoleID,
-			"action":           exampleAction(request.RoleID, request.RoundView.ActiveTargets),
-			"commentary": map[string]any{
-				"public_summary": "Explain the decision in one short player-facing sentence.",
-				"focus_tags":     []string{"throughput"},
-			},
-		},
-	}))
-
-	if retry != nil {
-		sections = append(sections, "## Retry Feedback\n"+mustJSON(retry))
-	}
-
-	sections = append(sections, "Return JSON only. Do not add prose before or after the JSON object.")
-	return strings.Join(sections, "\n\n")
-}
-
-func mustJSON(value any) string {
-	data, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		panic(fmt.Sprintf("app: ai decision runner: marshal prompt section: %v", err))
-	}
-	return string(data)
-}
-
-func parseAndValidateDecision(raw string, request ports.AIDecisionRequest) (ports.AIDecisionResponse, []ports.ValidationError, error) {
+func parseAndValidateDecision(raw string, request ports.AIDecisionRequest) (ports.AIDecisionResponse, *ports.LookupToolCall, []ports.ValidationError, error) {
 	payload, err := extractJSONObject(raw)
 	if err != nil {
 		validationErrors := []ports.ValidationError{{Path: "$", Message: err.Error()}}
-		return ports.AIDecisionResponse{}, validationErrors, err
+		return ports.AIDecisionResponse{}, nil, validationErrors, err
+	}
+
+	var toolEnvelope struct {
+		ToolCall *ports.LookupToolCall `json:"tool_call"`
+	}
+	if err := json.Unmarshal([]byte(payload), &toolEnvelope); err == nil && toolEnvelope.ToolCall != nil {
+		validationErrors := validateToolCall(*toolEnvelope.ToolCall, request.Tools)
+		if len(validationErrors) > 0 {
+			return ports.AIDecisionResponse{}, nil, validationErrors, fmt.Errorf("tool call failed validation")
+		}
+		return ports.AIDecisionResponse{}, toolEnvelope.ToolCall, nil, nil
 	}
 
 	var response ports.AIDecisionResponse
 	if err := json.Unmarshal([]byte(payload), &response); err != nil {
 		validationErrors := []ports.ValidationError{{Path: "$", Message: fmt.Sprintf("invalid JSON payload: %v", err)}}
-		return ports.AIDecisionResponse{}, validationErrors, err
+		return ports.AIDecisionResponse{}, nil, validationErrors, err
 	}
 
 	validationErrors := validateDecisionResponse(response, request)
 	if len(validationErrors) > 0 {
-		return ports.AIDecisionResponse{}, validationErrors, fmt.Errorf("response failed validation")
+		return ports.AIDecisionResponse{}, nil, validationErrors, fmt.Errorf("response failed validation")
 	}
 
-	return response, nil, nil
+	return response, nil, nil, nil
 }
 
 func extractJSONObject(raw string) (string, error) {
@@ -362,6 +328,32 @@ func validateDecisionResponse(response ports.AIDecisionResponse, request ports.A
 		}
 	}
 
+	return errs
+}
+
+func validateToolCall(call ports.LookupToolCall, tools []ports.LookupToolSpec) []ports.ValidationError {
+	var errs []ports.ValidationError
+	if strings.TrimSpace(call.ToolName) == "" {
+		errs = append(errs, ports.ValidationError{Path: "tool_call.tool_name", Message: "must not be empty"})
+		return errs
+	}
+
+	var selected *ports.LookupToolSpec
+	for i := range tools {
+		if tools[i].Name == call.ToolName {
+			selected = &tools[i]
+			break
+		}
+	}
+	if selected == nil {
+		return []ports.ValidationError{{Path: "tool_call.tool_name", Message: fmt.Sprintf("must match one of the available tools; got %q", call.ToolName)}}
+	}
+
+	for _, argument := range selected.Arguments {
+		if argument.Required && strings.TrimSpace(call.Arguments[argument.Name]) == "" {
+			errs = append(errs, ports.ValidationError{Path: fmt.Sprintf("tool_call.arguments.%s", argument.Name), Message: "must not be empty"})
+		}
+	}
 	return errs
 }
 
@@ -575,36 +567,6 @@ func allowedActionSchema(roleID domain.RoleID) ports.AllowedActionSchema {
 	}
 }
 
-func exampleAction(roleID domain.RoleID, targets domain.BudgetTargets) domain.RoleAction {
-	switch roleID {
-	case domain.RoleProcurementManager:
-		return domain.RoleAction{
-			Procurement: &domain.ProcurementAction{
-				Orders: []domain.PurchaseOrderIntent{{PartID: "housing", SupplierID: "forgeco", Quantity: 1}},
-			},
-		}
-	case domain.RoleProductionManager:
-		return domain.RoleAction{
-			Production: &domain.ProductionAction{
-				Releases:           []domain.ProductionRelease{{ProductID: "pump", Quantity: 1}},
-				CapacityAllocation: []domain.CapacityAllocation{{WorkstationID: "fabrication", ProductID: "pump", Capacity: 1}},
-			},
-		}
-	case domain.RoleSalesManager:
-		return domain.RoleAction{
-			Sales: &domain.SalesAction{
-				ProductOffers: []domain.ProductOffer{{ProductID: "pump", UnitPrice: 14}},
-			},
-		}
-	case domain.RoleFinanceController:
-		return domain.RoleAction{
-			Finance: &domain.FinanceAction{NextRoundTargets: targets},
-		}
-	default:
-		return domain.RoleAction{}
-	}
-}
-
 func productSet(view domain.RoundView) map[domain.ProductID]bool {
 	products := make(map[domain.ProductID]bool)
 	for _, item := range view.Plant.WIPInventory {
@@ -645,4 +607,126 @@ func clonePreviousForDecision(previous *domain.ActionSubmission) *domain.ActionS
 
 func errorsJoin(errs ...error) error {
 	return errors.Join(errs...)
+}
+
+func lookupTools() []ports.LookupToolSpec {
+	return []ports.LookupToolSpec{
+		{
+			Name:        "list_valid_suppliers",
+			Description: "Return the valid suppliers for one part in the active scenario.",
+			Arguments: []ports.LookupToolArgument{
+				{Name: "part_id", Description: "Canonical part identifier.", Required: true},
+			},
+		},
+		{
+			Name:        "show_product_route",
+			Description: "Return the ordered workstation route for one product.",
+			Arguments: []ports.LookupToolArgument{
+				{Name: "product_id", Description: "Canonical product identifier.", Required: true},
+			},
+		},
+		{
+			Name:        "show_product_bom",
+			Description: "Return the bill of materials for one product.",
+			Arguments: []ports.LookupToolArgument{
+				{Name: "product_id", Description: "Canonical product identifier.", Required: true},
+			},
+		},
+		{
+			Name:        "show_customer_demand_profile",
+			Description: "Return the known demand settings for one customer and product pair.",
+			Arguments: []ports.LookupToolArgument{
+				{Name: "customer_id", Description: "Canonical customer identifier.", Required: true},
+				{Name: "product_id", Description: "Canonical product identifier.", Required: true},
+			},
+		},
+	}
+}
+
+func (o AIOrchestrator) executeToolCall(call ports.LookupToolCall) (ports.LookupToolResult, error) {
+	if o.Scenario.ID == "" {
+		return ports.LookupToolResult{}, fmt.Errorf("scenario lookups are not configured")
+	}
+
+	switch call.ToolName {
+	case "list_valid_suppliers":
+		partID := domain.PartID(call.Arguments["part_id"])
+		part, ok := o.Scenario.Part(partID)
+		if !ok {
+			return ports.LookupToolResult{}, fmt.Errorf("unknown part_id %q", partID)
+		}
+		return ports.LookupToolResult{
+			ToolName:  call.ToolName,
+			Arguments: mapsClone(call.Arguments),
+			Result: map[string]any{
+				"part_id":      part.ID,
+				"display_name": part.DisplayName,
+				"suppliers":    []domain.SupplierID{part.SupplierID},
+			},
+		}, nil
+	case "show_product_route":
+		productID := domain.ProductID(call.Arguments["product_id"])
+		product, ok := o.Scenario.Product(productID)
+		if !ok {
+			return ports.LookupToolResult{}, fmt.Errorf("unknown product_id %q", productID)
+		}
+		return ports.LookupToolResult{
+			ToolName:  call.ToolName,
+			Arguments: mapsClone(call.Arguments),
+			Result: map[string]any{
+				"product_id":    product.ID,
+				"display_name":  product.DisplayName,
+				"route":         slices.Clone(product.Route),
+				"bottleneck_id": o.Scenario.ProductionModel.Bottleneck.WorkstationID,
+			},
+		}, nil
+	case "show_product_bom":
+		productID := domain.ProductID(call.Arguments["product_id"])
+		product, ok := o.Scenario.Product(productID)
+		if !ok {
+			return ports.LookupToolResult{}, fmt.Errorf("unknown product_id %q", productID)
+		}
+		return ports.LookupToolResult{
+			ToolName:  call.ToolName,
+			Arguments: mapsClone(call.Arguments),
+			Result: map[string]any{
+				"product_id":   product.ID,
+				"display_name": product.DisplayName,
+				"bom":          slices.Clone(product.BOM),
+			},
+		}, nil
+	case "show_customer_demand_profile":
+		customerID := domain.CustomerID(call.Arguments["customer_id"])
+		productID := domain.ProductID(call.Arguments["product_id"])
+		customer, ok := o.Scenario.Customer(customerID)
+		if !ok {
+			return ports.LookupToolResult{}, fmt.Errorf("unknown customer_id %q", customerID)
+		}
+		profile, ok := customer.DemandByProduct[productID]
+		if !ok {
+			return ports.LookupToolResult{}, fmt.Errorf("customer %q has no demand profile for product %q", customerID, productID)
+		}
+		return ports.LookupToolResult{
+			ToolName:  call.ToolName,
+			Arguments: mapsClone(call.Arguments),
+			Result: map[string]any{
+				"customer_id":       customer.ID,
+				"customer_name":     customer.DisplayName,
+				"product_id":        productID,
+				"reference_price":   profile.ReferencePrice,
+				"base_demand":       profile.BaseDemand,
+				"price_sensitivity": profile.PriceSensitivity,
+			},
+		}, nil
+	default:
+		return ports.LookupToolResult{}, fmt.Errorf("unsupported tool %q", call.ToolName)
+	}
+}
+
+func mapsClone(items map[string]string) map[string]string {
+	cloned := make(map[string]string, len(items))
+	for key, value := range items {
+		cloned[key] = value
+	}
+	return cloned
 }
