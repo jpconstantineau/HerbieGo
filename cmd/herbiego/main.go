@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/jpconstantineau/herbiego/internal/adapters/player/human"
-	"github.com/jpconstantineau/herbiego/internal/adapters/player/llm"
 	"github.com/jpconstantineau/herbiego/internal/app"
 	"github.com/jpconstantineau/herbiego/internal/domain"
 	"github.com/jpconstantineau/herbiego/internal/engine"
@@ -36,6 +35,10 @@ func main() {
 	runtime, err := app.Bootstrap(options)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "bootstrap failed:\n%v\n", err)
+		os.Exit(1)
+	}
+	if err := requireAllHuman(runtime); err != nil {
+		fmt.Fprintf(os.Stderr, "startup rejected:\n%v\n", err)
 		os.Exit(1)
 	}
 
@@ -71,16 +74,24 @@ func main() {
 func buildPlayers(runtime app.Runtime, controller *terminalController) map[domain.RoleID]ports.Player {
 	players := make(map[domain.RoleID]ports.Player, len(runtime.InitialMatch.Roles))
 	for _, assignment := range runtime.InitialMatch.Roles {
-		if assignment.IsHuman {
-			players[assignment.RoleID] = human.New(controller.submitRound)
-			continue
-		}
-
-		players[assignment.RoleID] = llm.New(func(context.Context, ports.RoundRequest) (domain.ActionSubmission, error) {
-			return domain.ActionSubmission{}, ports.ErrNonResponsive
-		})
+		players[assignment.RoleID] = human.New(controller.submitRound)
 	}
 	return players
+}
+
+func requireAllHuman(runtime app.Runtime) error {
+	required := len(runtime.InitialMatch.Roles)
+	if runtime.Config.HumanPlayers != required {
+		return fmt.Errorf("terminal gameplay currently requires -human-players=%d until AI turn submission is wired into the CLI", required)
+	}
+
+	for _, assignment := range runtime.InitialMatch.Roles {
+		if !assignment.IsHuman {
+			return fmt.Errorf("role %q is not human-controlled; terminal gameplay currently requires all four roles to be human-controlled", assignment.RoleID)
+		}
+	}
+
+	return nil
 }
 
 func printRuntimeSummary(runtime app.Runtime) {
@@ -99,10 +110,6 @@ func printRuntimeSummary(runtime app.Runtime) {
 		len(runtime.InitialMatch.Plant.Backlog),
 		runtime.RoleSummaries(),
 	)
-
-	if runtime.Config.HumanPlayers < len(runtime.InitialMatch.Roles) {
-		fmt.Fprintln(os.Stdout, "Non-human roles currently use a safe placeholder no-op action until provider-backed AI submissions are wired in.")
-	}
 }
 
 func summarizeCollectedSubmission(action domain.ActionSubmission) []string {
