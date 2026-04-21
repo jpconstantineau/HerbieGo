@@ -51,13 +51,15 @@ func TestModelLoadsInitialSnapshotAndRendersShell(t *testing.T) {
 	view := shell.View()
 
 	for _, want := range []string{
-		"Departments",
+		"Departments [focus]",
 		"History",
 		"Plant Stats",
 		"Command Bar",
 		"Procurement Manager",
-		"[R1] Event: Assembly shipped one pump.",
-		"[R1] Sales Manager: Demand stayed healthy.",
+		"[R1] 1 events | 1 commentary",
+		"Event: Assembly shipped one pump.",
+		"Sales Manager: Demand stayed healthy.",
+		"Inspect mode",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() missing %q\n%s", want, view)
@@ -85,9 +87,11 @@ func TestHistoryFeedEntriesMergesRoundsIntoSingleChronologicalFeed(t *testing.T)
 	})
 
 	want := []string{
-		"[R2] Event: Shipped two valves.",
-		"[R2] Finance Controller: Margins improved.",
-		"[R3] Production Manager: Assembly stayed constrained.",
+		"[R2] 1 events | 1 commentary",
+		"  Event: Shipped two valves.",
+		"  Finance Controller: Margins improved.",
+		"[R3] 0 events | 1 commentary",
+		"  Production Manager: Assembly stayed constrained.",
 	}
 	if len(entries) != len(want) {
 		t.Fatalf("len(entries) = %d, want %d (%v)", len(entries), len(want), entries)
@@ -143,6 +147,34 @@ func TestModelResubscribesToStateUpdates(t *testing.T) {
 	}
 	if got := resynced.(Model).state.CurrentRound; got != 2 {
 		t.Fatalf("CurrentRound = %d, want 2", got)
+	}
+}
+
+func TestModelUsesCompactLayoutAndEmptyStatesOnSmallerTerminal(t *testing.T) {
+	model := NewModel("Prairie Pump Starter Plant", testStateSource{
+		snapshot: scenario.Starter().InitialState("starter-match", starterAssignments()),
+	})
+
+	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
+	shell := loaded.(Model)
+	shell.width = 96
+	shell.height = 22
+	shell.state.History = domain.RoundHistory{}
+	shell.state.Plant.Workstations = nil
+
+	view := shell.View()
+
+	for _, want := range []string{
+		"Departments [focus]",
+		"Plant Stats",
+		"History",
+		"No prior rounds recorded yet.",
+		"Workstations: waiting for first telemetry",
+		"Mode: inspect | Focus: departments | Role: Procurement Manager | Round: 1",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("compact View() missing %q\n%s", want, view)
+		}
 	}
 }
 
