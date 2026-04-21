@@ -124,12 +124,12 @@ type CustomerState struct {
 }
 
 type BudgetTargets struct {
-	EffectiveRound        RoundNumber
-	ProcurementBudget     Money
-	ProductionSpendBudget Money
-	RevenueTarget         Money
-	CashFloorTarget       Money
-	DebtCeilingTarget     Money
+	EffectiveRound        RoundNumber `json:"effective_round"`
+	ProcurementBudget     Money       `json:"procurement_budget"`
+	ProductionSpendBudget Money       `json:"production_spend_budget"`
+	RevenueTarget         Money       `json:"revenue_target"`
+	CashFloorTarget       Money       `json:"cash_floor_target"`
+	DebtCeilingTarget     Money       `json:"debt_ceiling_target"`
 }
 
 type PlantMetrics struct {
@@ -167,49 +167,49 @@ type ActionSubmission struct {
 }
 
 type RoleAction struct {
-	Procurement *ProcurementAction
-	Production  *ProductionAction
-	Sales       *SalesAction
-	Finance     *FinanceAction
+	Procurement *ProcurementAction `json:"procurement,omitempty"`
+	Production  *ProductionAction  `json:"production,omitempty"`
+	Sales       *SalesAction       `json:"sales,omitempty"`
+	Finance     *FinanceAction     `json:"finance,omitempty"`
 }
 
 type ProcurementAction struct {
-	Orders []PurchaseOrderIntent
+	Orders []PurchaseOrderIntent `json:"orders"`
 }
 
 type PurchaseOrderIntent struct {
-	PartID     PartID
-	SupplierID SupplierID
-	Quantity   Units
+	PartID     PartID     `json:"part_id"`
+	SupplierID SupplierID `json:"supplier_id"`
+	Quantity   Units      `json:"quantity"`
 }
 
 type ProductionAction struct {
-	Releases           []ProductionRelease
-	CapacityAllocation []CapacityAllocation
+	Releases           []ProductionRelease  `json:"releases"`
+	CapacityAllocation []CapacityAllocation `json:"capacity_allocation"`
 }
 
 type ProductionRelease struct {
-	ProductID ProductID
-	Quantity  Units
+	ProductID ProductID `json:"product_id"`
+	Quantity  Units     `json:"quantity"`
 }
 
 type CapacityAllocation struct {
-	WorkstationID WorkstationID
-	ProductID     ProductID
-	Capacity      CapacityUnits
+	WorkstationID WorkstationID `json:"workstation_id"`
+	ProductID     ProductID     `json:"product_id"`
+	Capacity      CapacityUnits `json:"capacity"`
 }
 
 type SalesAction struct {
-	ProductOffers []ProductOffer
+	ProductOffers []ProductOffer `json:"product_offers"`
 }
 
 type ProductOffer struct {
-	ProductID ProductID
-	UnitPrice Money
+	ProductID ProductID `json:"product_id"`
+	UnitPrice Money     `json:"unit_price"`
 }
 
 type FinanceAction struct {
-	NextRoundTargets BudgetTargets
+	NextRoundTargets BudgetTargets `json:"next_round_targets"`
 }
 
 type CustomerOrder struct {
