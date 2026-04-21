@@ -25,6 +25,15 @@ const (
 
 type layoutMode int
 
+const (
+	workspaceRoleReport workspaceMode = iota
+	workspaceRoundFeed
+	workspaceHistoryArchive
+	workspaceActionEntry
+)
+
+type workspaceMode int
+
 type stateLoadedMsg struct {
 	state domain.MatchState
 }
@@ -39,6 +48,7 @@ type Model struct {
 	state        domain.MatchState
 	selectedRole int
 	focusedPane  int
+	workspace    workspaceMode
 	width        int
 	height       int
 	status       string
@@ -51,6 +61,7 @@ func NewModel(scenarioName string, source StateSource) Model {
 		scenarioName: scenarioName,
 		source:       source,
 		updates:      source.Updates(),
+		workspace:    workspaceRoundFeed,
 		status:       "Loading round state...",
 	}
 }
@@ -77,6 +88,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "shift+tab":
 			m.focusedPane = (m.focusedPane + 3) % 4
 			m.status = fmt.Sprintf("Focused %s pane", paneName(m.focusedPane))
+		case "]":
+			m.moveWorkspace(1)
+		case "[":
+			m.moveWorkspace(-1)
 		case "left", "h", "p":
 			m.moveRole(-1)
 		case "right", "l", "n":
@@ -148,6 +163,12 @@ func (m *Model) moveRole(delta int) {
 	m.status = fmt.Sprintf("Selected %s", m.roleTitle())
 }
 
+func (m *Model) moveWorkspace(delta int) {
+	modeCount := int(workspaceActionEntry) + 1
+	m.workspace = workspaceMode((int(m.workspace) + delta + modeCount) % modeCount)
+	m.status = fmt.Sprintf("Workspace switched to %s", m.workspace.label())
+}
+
 func (m Model) roleTitle() string {
 	if len(m.state.Roles) == 0 {
 		return "No role selected"
@@ -207,11 +228,30 @@ func (m Model) renderDepartmentsPane(width, height int) string {
 }
 
 func (m Model) renderHistoryPane(width, height int) string {
+	lines := []string{
+		fmt.Sprintf("Mode: %s", m.workspace.label()),
+	}
+
+	switch m.workspace {
+	case workspaceRoleReport:
+		lines = append(lines, m.renderRoleReportWorkspace(width)...)
+	case workspaceHistoryArchive:
+		lines = append(lines, m.renderHistoryArchiveWorkspace(width)...)
+	case workspaceActionEntry:
+		lines = append(lines, m.renderActionEntryWorkspace(width)...)
+	default:
+		lines = append(lines, m.renderRoundFeedWorkspace(width)...)
+	}
+
+	return renderPane(workspacePaneTitle(), lines, width, height, m.focusedPane == paneHistory)
+}
+
+func (m Model) renderRoundFeedWorkspace(width int) []string {
 	view := m.selectedRoleView()
 
 	lines := []string{
 		fmt.Sprintf("Round %d for %s", view.Round, m.roleTitle()),
-		"Presentation: merged round feed",
+		"View: current round feed",
 	}
 	if len(view.RecentRounds) == 0 {
 		lines = append(lines, "No prior rounds recorded yet.", "Resolved events and role commentary will appear here after round one.")
@@ -221,8 +261,70 @@ func (m Model) renderHistoryPane(width, height int) string {
 	for _, entry := range historyFeedEntries(view.RecentRounds) {
 		lines = append(lines, wrapLine(entry, width-4))
 	}
+	return lines
+}
 
-	return renderPane("History", lines, width, height, m.focusedPane == paneHistory)
+func (m Model) renderRoleReportWorkspace(width int) []string {
+	report := m.selectedRoleReport()
+
+	lines := []string{
+		fmt.Sprintf("Role report for %s", m.roleTitle()),
+		"View: briefing and department metrics",
+	}
+	if report.BonusReminder != "" {
+		lines = append(lines, wrapLine("Bonus reminder: "+report.BonusReminder, width-4))
+	}
+	if len(report.Department.KeyMetrics) > 0 {
+		lines = append(lines, "", "Key metrics")
+		for _, metric := range report.Department.KeyMetrics {
+			lines = append(lines, fmt.Sprintf("- %s: %d %s", metric.MetricID, metric.Value, metric.DisplayUnit))
+		}
+	}
+	if len(report.Department.DetailLines) > 0 {
+		lines = append(lines, "", "Role notes")
+		for _, detail := range report.Department.DetailLines {
+			lines = append(lines, wrapLine("- "+detail, width-4))
+		}
+	}
+	if len(lines) == 2 {
+		lines = append(lines, "No additional role report content is available yet.")
+	}
+	return lines
+}
+
+func (m Model) renderHistoryArchiveWorkspace(width int) []string {
+	lines := []string{
+		fmt.Sprintf("Archive for %s", m.roleTitle()),
+		"View: full history retained by the current state source",
+	}
+	if len(m.state.History.RecentRounds) == 0 {
+		lines = append(lines, "No historical rounds are retained yet.")
+		return lines
+	}
+	lines = append(lines, "")
+	for _, entry := range historyFeedEntries(historyEntriesFromRecords(m.state.History.RecentRounds)) {
+		lines = append(lines, wrapLine(entry, width-4))
+	}
+	return lines
+}
+
+func (m Model) renderActionEntryWorkspace(width int) []string {
+	assignment := m.selectedAssignment()
+	lines := []string{
+		fmt.Sprintf("Decision workspace for %s", m.roleTitle()),
+		"View: future round action entry surface",
+	}
+	if assignment.IsHuman {
+		lines = append(lines, "This role is human-controlled, so round decisions will land in this workspace.")
+	} else {
+		lines = append(lines, "This role is AI-controlled right now. Human decision entry will appear here when a human role is selected.")
+	}
+	lines = append(lines,
+		"",
+		wrapLine("Action entry is intentionally deferred from issue #23 so the four-pane shell can stabilize first.", width-4),
+		wrapLine("Use the workspace navigation keys to switch back to reports or the round feed.", width-4),
+	)
+	return lines
 }
 
 func (m Model) renderStatsPane(width, height int) string {
@@ -264,7 +366,7 @@ func (m Model) renderCommandBar(width, height int) string {
 	}
 
 	lines := []string{
-		"Inspect mode | tab/shift+tab focus panes | left/right cycle roles | q quit",
+		"Inspect mode | tab/shift+tab focus panes | left/right cycle roles | [/] workspace | q quit",
 		wrapLine(status, width-4),
 	}
 	return renderPane("Command Bar", lines, width, height, m.focusedPane == paneCommandBar)
@@ -449,13 +551,30 @@ func paneName(index int) string {
 	case paneDepartments:
 		return "departments"
 	case paneHistory:
-		return "history"
+		return "center workspace"
 	case paneStats:
 		return "plant stats"
 	case paneCommandBar:
 		return "command bar"
 	default:
 		return "unknown"
+	}
+}
+
+func workspacePaneTitle() string {
+	return "Center Workspace"
+}
+
+func (mode workspaceMode) label() string {
+	switch mode {
+	case workspaceRoleReport:
+		return "role report"
+	case workspaceHistoryArchive:
+		return "history archive"
+	case workspaceActionEntry:
+		return "action entry"
+	default:
+		return "round feed"
 	}
 }
 
@@ -496,4 +615,43 @@ func historyFeedEntries(rounds []domain.RoundHistoryEntry) []string {
 	}
 
 	return lines
+}
+
+func historyEntriesFromRecords(rounds []domain.RoundRecord) []domain.RoundHistoryEntry {
+	if len(rounds) == 0 {
+		return nil
+	}
+
+	entries := make([]domain.RoundHistoryEntry, 0, len(rounds))
+	for _, round := range rounds {
+		entries = append(entries, domain.RoundHistoryEntry{
+			Round:      round.Round,
+			Events:     cloneEvents(round.Events),
+			Commentary: cloneCommentary(round.Commentary),
+		})
+	}
+
+	return entries
+}
+
+func cloneEvents(events []domain.RoundEvent) []domain.RoundEvent {
+	if events == nil {
+		return nil
+	}
+
+	cloned := make([]domain.RoundEvent, len(events))
+	for i := range events {
+		cloned[i] = events[i].Clone()
+	}
+	return cloned
+}
+
+func cloneCommentary(commentary []domain.CommentaryRecord) []domain.CommentaryRecord {
+	if commentary == nil {
+		return nil
+	}
+
+	cloned := make([]domain.CommentaryRecord, len(commentary))
+	copy(cloned, commentary)
+	return cloned
 }

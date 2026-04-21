@@ -52,7 +52,8 @@ func TestModelLoadsInitialSnapshotAndRendersShell(t *testing.T) {
 
 	for _, want := range []string{
 		"Departments [focus]",
-		"History",
+		"Center Workspace",
+		"Mode: round feed",
 		"Plant Stats",
 		"Command Bar",
 		"Procurement Manager",
@@ -122,6 +123,12 @@ func TestModelCyclesRoleSelectionAndPaneFocus(t *testing.T) {
 	if focusedShell.focusedPane != paneHistory {
 		t.Fatalf("focusedPane = %d, want %d", focusedShell.focusedPane, paneHistory)
 	}
+
+	switched, _ := focusedShell.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
+	switchedShell := switched.(Model)
+	if switchedShell.workspace != workspaceHistoryArchive {
+		t.Fatalf("workspace = %v, want %v", switchedShell.workspace, workspaceHistoryArchive)
+	}
 }
 
 func TestModelResubscribesToStateUpdates(t *testing.T) {
@@ -167,13 +174,36 @@ func TestModelUsesCompactLayoutAndEmptyStatesOnSmallerTerminal(t *testing.T) {
 	for _, want := range []string{
 		"Departments [focus]",
 		"Plant Stats",
-		"History",
+		"Center Workspace",
 		"No prior rounds recorded yet.",
 		"Workstations: waiting for first telemetry",
 		"Mode: inspect | Focus: departments | Role: Procurement Manager | Round: 1",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("compact View() missing %q\n%s", want, view)
+		}
+	}
+}
+
+func TestModelActionWorkspaceExplainsDeferredEntrySurface(t *testing.T) {
+	model := NewModel("Prairie Pump Starter Plant", testStateSource{
+		snapshot: scenario.Starter().InitialState("starter-match", starterAssignments()),
+	})
+
+	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
+	shell := loaded.(Model)
+	shell.workspace = workspaceActionEntry
+	shell.width = 120
+	shell.height = 30
+
+	view := shell.View()
+	for _, want := range []string{
+		"Mode: action entry",
+		"Decision workspace for Procurement Manager",
+		"Action entry is intentionally deferred from issue #23",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("action workspace missing %q\n%s", want, view)
 		}
 	}
 }
