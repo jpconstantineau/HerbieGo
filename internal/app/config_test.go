@@ -18,16 +18,12 @@ human_players: 1
 roles:
   - role_id: procurement_manager
     provider: ollama-localhost
-    model: llama3.2:3b
   - role_id: production_manager
     provider: ollama-localhost
-    model: llama3.2:3b
   - role_id: sales_manager
     provider: openrouter
-    model: openai/gpt-5-mini
   - role_id: finance_controller
     provider: ollama-localhost
-    model: llama3.2:3b
 `)
 
 	cfg, err := LoadConfig(configPath)
@@ -87,16 +83,12 @@ func TestConfigApplyOverridesSupportsAITestMode(t *testing.T) {
 roles:
   - role_id: procurement_manager
     provider: ollama-localhost
-    model: llama3.2:3b
   - role_id: production_manager
     provider: ollama-localhost
-    model: llama3.2:3b
   - role_id: sales_manager
     provider: openrouter
-    model: openai/gpt-5-mini
   - role_id: finance_controller
     provider: ollama-localhost
-    model: llama3.2:3b
 `)
 
 	cfg, err := LoadConfig(configPath)
@@ -164,7 +156,6 @@ roles:
 		"human_players must be between 0 and 4",
 		"roles must include exactly 4 canonical roles",
 		"procurement_manager provider must not be empty",
-		"procurement_manager model must not be empty",
 	} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("error %q does not contain %q", message, want)
@@ -181,7 +172,7 @@ models:
     api_sdk_type: ollama
     api_key: ""
   - provider_name: ollama-localhost
-    model_name: gemma4:e4b
+    model_name: llama3.2:3b
     url: https://ollama.com/
     api_sdk_type: ollama
     api_key: ""
@@ -191,7 +182,7 @@ models:
 	if err == nil {
 		t.Fatal("LoadLLMCatalog() error = nil, want duplicate-entry validation error")
 	}
-	if !strings.Contains(err.Error(), `must be unique`) {
+	if !strings.Contains(err.Error(), `provider_name "ollama-localhost" must be unique`) {
 		t.Fatalf("LoadLLMCatalog() error = %v, want duplicate-entry validation", err)
 	}
 }
@@ -209,16 +200,16 @@ func TestNewRuntimeRejectsRolesMissingCatalogEntries(t *testing.T) {
 			},
 		},
 		RoleConfigs: []RoleConfigFile{
-			{RoleID: "procurement_manager", Provider: "ollama-localhost", Model: "gemma4:e4b"},
-			{RoleID: "production_manager", Provider: "ollama-localhost", Model: "gemma4:e4b"},
-			{RoleID: "sales_manager", Provider: "openrouter", Model: "openai/gpt-5-mini"},
-			{RoleID: "finance_controller", Provider: "ollama-localhost", Model: "gemma4:e4b"},
+			{RoleID: "procurement_manager", Provider: "ollama-localhost"},
+			{RoleID: "production_manager", Provider: "ollama-localhost"},
+			{RoleID: "sales_manager", Provider: "openrouter"},
+			{RoleID: "finance_controller", Provider: "ollama-localhost"},
 		},
 	})
 	if err == nil {
 		t.Fatal("NewRuntime() error = nil, want missing-catalog validation error")
 	}
-	if !strings.Contains(err.Error(), "llm catalog") {
+	if !strings.Contains(err.Error(), "provider label") {
 		t.Fatalf("NewRuntime() error = %v, want llm-catalog validation", err)
 	}
 }

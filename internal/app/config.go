@@ -240,7 +240,10 @@ func (c *Config) normalize() {
 				Provider: ProviderName(strings.ToLower(strings.TrimSpace(string(roleFile.Provider)))),
 				Model:    strings.TrimSpace(roleFile.Model),
 			}
-			if entry, ok := c.LLMCatalog.Lookup(roleCfg.Provider, roleCfg.Model); ok {
+			if entry, ok := c.LLMCatalog.Lookup(roleCfg.Provider); ok {
+				if roleCfg.Model == "" {
+					roleCfg.Model = entry.Model
+				}
 				roleCfg.URL = entry.URL
 				roleCfg.APISDKType = entry.APISDKType
 				roleCfg.APIKey = entry.APIKey
@@ -285,26 +288,23 @@ func validateRoleConfig(roleID domain.RoleID, roleCfg RoleConfig, requireCatalog
 		if roleCfg.Provider == "" {
 			errs = append(errs, fmt.Errorf("%s provider must not be empty", roleID))
 		}
-		if roleCfg.Model == "" {
-			errs = append(errs, fmt.Errorf("%s model must not be empty", roleID))
-		}
 	case PlayerKindAI:
 		if roleCfg.Provider == "" {
 			errs = append(errs, fmt.Errorf("%s provider must not be empty", roleID))
-		}
-		if roleCfg.Model == "" {
-			errs = append(errs, fmt.Errorf("%s model must not be empty", roleID))
 		}
 	default:
 		errs = append(errs, fmt.Errorf("%s kind must be %q or %q", roleID, PlayerKindHuman, PlayerKindAI))
 	}
 
-	if requireCatalog && roleCfg.Provider != "" && roleCfg.Model != "" {
+	if requireCatalog && roleCfg.Provider != "" {
+		if strings.TrimSpace(roleCfg.Model) == "" {
+			errs = append(errs, fmt.Errorf("%s provider label must exist in llm catalog with a model", roleID))
+		}
 		if strings.TrimSpace(roleCfg.URL) == "" {
-			errs = append(errs, fmt.Errorf("%s provider/model must exist in llm catalog with a non-empty URL", roleID))
+			errs = append(errs, fmt.Errorf("%s provider label must exist in llm catalog with a non-empty URL", roleID))
 		}
 		if roleCfg.APISDKType == "" {
-			errs = append(errs, fmt.Errorf("%s provider/model must exist in llm catalog with a non-empty api_sdk_type", roleID))
+			errs = append(errs, fmt.Errorf("%s provider label must exist in llm catalog with a non-empty api_sdk_type", roleID))
 		}
 	}
 
@@ -319,11 +319,10 @@ func (c *Config) WithLLMCatalog(catalog LLMCatalog) {
 	c.LLMCatalog = catalog
 }
 
-func (c LLMCatalog) Lookup(provider ProviderName, model string) (LLMCatalogEntry, bool) {
+func (c LLMCatalog) Lookup(provider ProviderName) (LLMCatalogEntry, bool) {
 	name := strings.ToLower(strings.TrimSpace(string(provider)))
-	model = strings.TrimSpace(model)
 	for _, entry := range c.Entries {
-		if strings.ToLower(strings.TrimSpace(string(entry.Provider))) == name && strings.TrimSpace(entry.Model) == model {
+		if strings.ToLower(strings.TrimSpace(string(entry.Provider))) == name {
 			return entry, true
 		}
 	}
@@ -344,7 +343,7 @@ func (c LLMCatalog) Validate() error {
 	var errs []error
 	seen := make(map[string]bool, len(c.Entries))
 	for _, entry := range c.Entries {
-		key := fmt.Sprintf("%s::%s", entry.Provider, entry.Model)
+		key := string(entry.Provider)
 		if strings.TrimSpace(string(entry.Provider)) == "" {
 			errs = append(errs, errors.New("llm catalog provider_name must not be empty"))
 		}
@@ -362,7 +361,7 @@ func (c LLMCatalog) Validate() error {
 			errs = append(errs, fmt.Errorf("llm catalog entry %q/%q api_sdk_type must be %q or %q", entry.Provider, entry.Model, APISDKTypeOllama, APISDKTypeOpenAI))
 		}
 		if seen[key] {
-			errs = append(errs, fmt.Errorf("llm catalog entry %q/%q must be unique", entry.Provider, entry.Model))
+			errs = append(errs, fmt.Errorf("llm catalog provider_name %q must be unique", entry.Provider))
 		}
 		seen[key] = true
 	}

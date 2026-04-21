@@ -16,10 +16,10 @@ func TestNewRuntimeSeedsDefaultStarterMatch(t *testing.T) {
 			},
 		},
 		RoleConfigs: []RoleConfigFile{
-			{RoleID: "procurement_manager", Provider: "ollama-localhost", Model: "gemma4:e4b"},
-			{RoleID: "production_manager", Provider: "ollama-localhost", Model: "gemma4:e4b"},
-			{RoleID: "sales_manager", Provider: "openrouter", Model: "openai/gpt-5-mini"},
-			{RoleID: "finance_controller", Provider: "ollama-localhost", Model: "gemma4:e4b"},
+			{RoleID: "procurement_manager", Provider: "ollama-localhost"},
+			{RoleID: "production_manager", Provider: "ollama-localhost"},
+			{RoleID: "sales_manager", Provider: "openrouter"},
+			{RoleID: "finance_controller", Provider: "ollama-localhost"},
 		},
 	})
 	if err != nil {

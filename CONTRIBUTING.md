@@ -86,7 +86,6 @@ Each entry under `roles` configures one canonical role with:
 
 - `role_id`: the role being configured
 - `provider`: the named provider entry to use from `llm.yaml`
-- `model`: the model identifier to use for that role
 
 Example:
 
@@ -94,7 +93,6 @@ Example:
 roles:
   - role_id: sales_manager
     provider: ollama-localhost
-    model: gemma4:e4b
 ```
 
 Each entry under `models` in `llm.yaml` defines:
@@ -116,6 +114,6 @@ models:
     api_key: ""
 ```
 
-`human_players` determines which roles stay human-controlled during startup. The application assigns human control in a fixed order and keeps provider/model values on every role so contributors can switch to AI-only runs with a CLI override instead of rewriting config.
+`human_players` determines which roles stay human-controlled during startup. The application assigns human control in a fixed order and keeps the provider label on every role so contributors can switch to AI-only runs with a CLI override instead of rewriting config.
 
 Today, the Ollama API is implemented. Providers cataloged with the `openai` SDK type are still validated and surfaced in config, but startup fails fast if their concrete adapter has not landed yet.
