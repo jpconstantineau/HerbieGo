@@ -1,15 +1,16 @@
 package main
 
 import (
-	"strings"
 	"testing"
 
+	"github.com/jpconstantineau/herbiego/internal/adapters/player/human"
+	"github.com/jpconstantineau/herbiego/internal/adapters/player/llm"
 	"github.com/jpconstantineau/herbiego/internal/app"
 	"github.com/jpconstantineau/herbiego/internal/domain"
 	"github.com/jpconstantineau/herbiego/internal/scenario"
 )
 
-func TestRequireAllHumanRejectsMixedRuntime(t *testing.T) {
+func TestBuildPlayersCreatesMixedHumanAndAIPlayers(t *testing.T) {
 	runtime := app.Runtime{
 		Config: app.Config{
 			HumanPlayers: 1,
@@ -18,39 +19,43 @@ func TestRequireAllHumanRejectsMixedRuntime(t *testing.T) {
 		InitialMatch: domain.MatchState{
 			Roles: []domain.RoleAssignment{
 				{RoleID: domain.RoleProductionManager, IsHuman: true},
-				{RoleID: domain.RoleProcurementManager, IsHuman: false},
-				{RoleID: domain.RoleSalesManager, IsHuman: false},
-				{RoleID: domain.RoleFinanceController, IsHuman: false},
+				{RoleID: domain.RoleProcurementManager, IsHuman: false, Provider: "ollama", ModelName: "gemma4:e4b"},
+				{RoleID: domain.RoleSalesManager, IsHuman: false, Provider: "ollama", ModelName: "gemma4:e4b"},
+				{RoleID: domain.RoleFinanceController, IsHuman: false, Provider: "ollama", ModelName: "gemma4:e4b"},
 			},
 		},
 	}
 
-	err := requireAllHuman(runtime)
-	if err == nil {
-		t.Fatal("requireAllHuman() error = nil, want mixed-runtime rejection")
+	players, err := buildPlayers(runtime, &terminalController{})
+	if err != nil {
+		t.Fatalf("buildPlayers() error = %v, want nil", err)
 	}
-	if !strings.Contains(err.Error(), "-human-players=4") {
-		t.Fatalf("requireAllHuman() error = %v, want flag guidance", err)
+	if _, ok := players[domain.RoleProductionManager].(*human.Player); !ok {
+		t.Fatalf("production player type = %T, want *human.Player", players[domain.RoleProductionManager])
+	}
+	if _, ok := players[domain.RoleProcurementManager].(*llm.Player); !ok {
+		t.Fatalf("procurement player type = %T, want *llm.Player", players[domain.RoleProcurementManager])
 	}
 }
 
-func TestRequireAllHumanAcceptsFullyHumanRuntime(t *testing.T) {
+func TestBuildPlayersRejectsUnsupportedAIProvider(t *testing.T) {
 	runtime := app.Runtime{
 		Config: app.Config{
-			HumanPlayers: 4,
+			HumanPlayers: 0,
 		},
 		Scenario: scenario.Starter(),
 		InitialMatch: domain.MatchState{
 			Roles: []domain.RoleAssignment{
-				{RoleID: domain.RoleProductionManager, IsHuman: true},
-				{RoleID: domain.RoleProcurementManager, IsHuman: true},
-				{RoleID: domain.RoleSalesManager, IsHuman: true},
-				{RoleID: domain.RoleFinanceController, IsHuman: true},
+				{RoleID: domain.RoleProductionManager, IsHuman: false, Provider: "openrouter", ModelName: "openai/gpt-5-mini"},
 			},
 		},
 	}
 
-	if err := requireAllHuman(runtime); err != nil {
-		t.Fatalf("requireAllHuman() error = %v, want nil", err)
+	_, err := buildPlayers(runtime, &terminalController{})
+	if err == nil {
+		t.Fatal("buildPlayers() error = nil, want unsupported-provider error")
+	}
+	if got, want := err.Error(), `role "production_manager" uses unsupported AI provider "openrouter"`; got != want {
+		t.Fatalf("buildPlayers() error = %q, want %q", got, want)
 	}
 }

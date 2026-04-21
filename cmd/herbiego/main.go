@@ -7,7 +7,10 @@ import (
 	"os"
 	"strings"
 
+	"github.com/jpconstantineau/herbiego/internal/adapters/ai"
+	"github.com/jpconstantineau/herbiego/internal/adapters/ai/ollama"
 	"github.com/jpconstantineau/herbiego/internal/adapters/player/human"
+	"github.com/jpconstantineau/herbiego/internal/adapters/player/llm"
 	"github.com/jpconstantineau/herbiego/internal/app"
 	"github.com/jpconstantineau/herbiego/internal/domain"
 	"github.com/jpconstantineau/herbiego/internal/engine"
@@ -37,14 +40,15 @@ func main() {
 		fmt.Fprintf(os.Stderr, "bootstrap failed:\n%v\n", err)
 		os.Exit(1)
 	}
-	if err := requireAllHuman(runtime); err != nil {
+	controller := newTerminalController(runtime.Scenario, os.Stdin, os.Stdout)
+	players, err := buildPlayers(runtime, controller)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "startup rejected:\n%v\n", err)
 		os.Exit(1)
 	}
 
-	controller := newTerminalController(runtime.Scenario, os.Stdin, os.Stdout)
 	collector := app.RoundCollector{
-		Players: buildPlayers(runtime, controller),
+		Players: players,
 	}
 
 	printRuntimeSummary(runtime)
@@ -71,27 +75,28 @@ func main() {
 	printRoundResolution(result)
 }
 
-func buildPlayers(runtime app.Runtime, controller *terminalController) map[domain.RoleID]ports.Player {
+func buildPlayers(runtime app.Runtime, controller *terminalController) (map[domain.RoleID]ports.Player, error) {
+	ollamaClient, err := ollama.New()
+	if err != nil {
+		return nil, fmt.Errorf("configure ollama adapter: %w", err)
+	}
+	decisionClient := ai.NewRoutingClient(map[string]ports.DecisionClient{
+		string(app.ProviderOllama): ollamaClient,
+	})
+	orchestrator := app.NewAIOrchestrator(runtime.Scenario, decisionClient)
+
 	players := make(map[domain.RoleID]ports.Player, len(runtime.InitialMatch.Roles))
 	for _, assignment := range runtime.InitialMatch.Roles {
-		players[assignment.RoleID] = human.New(controller.submitRound)
-	}
-	return players
-}
-
-func requireAllHuman(runtime app.Runtime) error {
-	required := len(runtime.InitialMatch.Roles)
-	if runtime.Config.HumanPlayers != required {
-		return fmt.Errorf("terminal gameplay currently requires -human-players=%d until AI turn submission is wired into the CLI", required)
-	}
-
-	for _, assignment := range runtime.InitialMatch.Roles {
-		if !assignment.IsHuman {
-			return fmt.Errorf("role %q is not human-controlled; terminal gameplay currently requires all four roles to be human-controlled", assignment.RoleID)
+		if assignment.IsHuman {
+			players[assignment.RoleID] = human.New(controller.submitRound)
+			continue
 		}
+		if !decisionClient.SupportsProvider(assignment.Provider) {
+			return nil, fmt.Errorf("role %q uses unsupported AI provider %q", assignment.RoleID, assignment.Provider)
+		}
+		players[assignment.RoleID] = llm.New(orchestrator.SubmitRound)
 	}
-
-	return nil
+	return players, nil
 }
 
 func printRuntimeSummary(runtime app.Runtime) {
