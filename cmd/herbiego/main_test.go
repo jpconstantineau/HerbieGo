@@ -60,11 +60,11 @@ func TestBuildPlayersRejectsUnsupportedAIProvider(t *testing.T) {
 		},
 	}
 
-	_, err := buildPlayers(runtime, &terminalController{})
-	if err == nil {
-		t.Fatal("buildPlayers() error = nil, want unsupported-provider error")
+	players, err := buildPlayers(runtime, &terminalController{})
+	if err != nil {
+		t.Fatalf("buildPlayers() error = %v, want nil", err)
 	}
-	if got, want := err.Error(), `role "production_manager" uses unsupported AI provider "openrouter"`; got != want {
-		t.Fatalf("buildPlayers() error = %q, want %q", got, want)
+	if _, ok := players[domain.RoleProductionManager].(*llm.Player); !ok {
+		t.Fatalf("production player type = %T, want *llm.Player", players[domain.RoleProductionManager])
 	}
 }
