@@ -211,21 +211,34 @@ func (m Model) renderHistoryPane(width, height int) string {
 	if len(view.RecentEvents) == 0 && len(view.RecentCommentary) == 0 {
 		lines = append(lines, "No prior rounds recorded yet.")
 	}
-	for _, round := range view.RecentRounds {
-		lines = append(lines, fmt.Sprintf("Round %d summary", round.Round))
-		for _, event := range round.Events {
-			lines = append(lines, wrapLine("E "+event.Summary, width-4))
-		}
-		for _, commentary := range round.Commentary {
-			lines = append(lines, wrapLine(fmt.Sprintf("C %s: %s", displayRoleName(commentary.RoleID), commentary.Body), width-4))
-		}
-		if len(round.Events) == 0 && len(round.Commentary) == 0 {
-			lines = append(lines, "No visible history.")
-		}
-		lines = append(lines, "")
+	for _, entry := range historyFeedEntries(view.RecentRounds) {
+		lines = append(lines, wrapLine(entry, width-4))
 	}
 
 	return renderPane("History", lines, width, height, m.focusedPane == paneHistory)
+}
+
+func historyFeedEntries(rounds []domain.RoundHistoryEntry) []string {
+	if len(rounds) == 0 {
+		return nil
+	}
+
+	lines := make([]string, 0, len(rounds))
+	for _, round := range rounds {
+		if len(round.Events) == 0 && len(round.Commentary) == 0 {
+			lines = append(lines, fmt.Sprintf("[R%d] No visible history.", round.Round))
+			continue
+		}
+
+		for _, event := range round.Events {
+			lines = append(lines, fmt.Sprintf("[R%d] Event: %s", round.Round, event.Summary))
+		}
+		for _, commentary := range round.Commentary {
+			lines = append(lines, fmt.Sprintf("[R%d] %s: %s", round.Round, displayRoleName(commentary.RoleID), commentary.Body))
+		}
+	}
+
+	return lines
 }
 
 func (m Model) renderStatsPane(width, height int) string {

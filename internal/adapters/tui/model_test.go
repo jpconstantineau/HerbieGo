@@ -56,10 +56,45 @@ func TestModelLoadsInitialSnapshotAndRendersShell(t *testing.T) {
 		"Plant Stats",
 		"Command Bar",
 		"Procurement Manager",
-		"Assembly shipped one pump.",
+		"[R1] Event: Assembly shipped one pump.",
+		"[R1] Sales Manager: Demand stayed healthy.",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() missing %q\n%s", want, view)
+		}
+	}
+}
+
+func TestHistoryFeedEntriesMergesRoundsIntoSingleChronologicalFeed(t *testing.T) {
+	entries := historyFeedEntries([]domain.RoundHistoryEntry{
+		{
+			Round: 2,
+			Events: []domain.RoundEvent{
+				{Summary: "Shipped two valves."},
+			},
+			Commentary: []domain.CommentaryRecord{
+				{RoleID: domain.RoleFinanceController, Body: "Margins improved."},
+			},
+		},
+		{
+			Round: 3,
+			Commentary: []domain.CommentaryRecord{
+				{RoleID: domain.RoleProductionManager, Body: "Assembly stayed constrained."},
+			},
+		},
+	})
+
+	want := []string{
+		"[R2] Event: Shipped two valves.",
+		"[R2] Finance Controller: Margins improved.",
+		"[R3] Production Manager: Assembly stayed constrained.",
+	}
+	if len(entries) != len(want) {
+		t.Fatalf("len(entries) = %d, want %d (%v)", len(entries), len(want), entries)
+	}
+	for index := range want {
+		if entries[index] != want[index] {
+			t.Fatalf("entries[%d] = %q, want %q", index, entries[index], want[index])
 		}
 	}
 }
