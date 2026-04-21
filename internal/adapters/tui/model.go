@@ -17,6 +17,23 @@ const (
 	paneCommandBar
 )
 
+const (
+	layoutWide layoutMode = iota
+	layoutCompact
+	layoutStacked
+)
+
+type layoutMode int
+
+const (
+	workspaceRoleReport workspaceMode = iota
+	workspaceRoundFeed
+	workspaceHistoryArchive
+	workspaceActionEntry
+)
+
+type workspaceMode int
+
 type stateLoadedMsg struct {
 	state domain.MatchState
 }
@@ -31,6 +48,7 @@ type Model struct {
 	state        domain.MatchState
 	selectedRole int
 	focusedPane  int
+	workspace    workspaceMode
 	width        int
 	height       int
 	status       string
@@ -43,6 +61,7 @@ func NewModel(scenarioName string, source StateSource) Model {
 		scenarioName: scenarioName,
 		source:       source,
 		updates:      source.Updates(),
+		workspace:    workspaceRoundFeed,
 		status:       "Loading round state...",
 	}
 }
@@ -69,6 +88,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "shift+tab":
 			m.focusedPane = (m.focusedPane + 3) % 4
 			m.status = fmt.Sprintf("Focused %s pane", paneName(m.focusedPane))
+		case "]":
+			m.moveWorkspace(1)
+		case "[":
+			m.moveWorkspace(-1)
 		case "left", "h", "p":
 			m.moveRole(-1)
 		case "right", "l", "n":
@@ -97,22 +120,15 @@ func (m Model) View() string {
 		return "Loading HerbieGo shell..."
 	}
 
-	width := max(m.width, 100)
-	height := max(m.height, 28)
-	commandHeight := 3
-	topHeight := height - commandHeight - 1
-	leftWidth, centerWidth, rightWidth := paneWidths(width)
-
-	top := lipgloss.JoinHorizontal(
-		lipgloss.Top,
-		m.renderDepartmentsPane(leftWidth, topHeight),
-		m.renderHistoryPane(centerWidth, topHeight),
-		m.renderStatsPane(rightWidth, topHeight),
-	)
+	width := fallbackDimension(m.width, 120)
+	height := fallbackDimension(m.height, 32)
+	commandHeight := commandBarHeight(height)
+	contentHeight := max(height-commandHeight, 6)
+	layout := chooseLayout(width, contentHeight)
 
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
-		top,
+		m.renderContentArea(layout, width, contentHeight),
 		m.renderCommandBar(width, commandHeight),
 	)
 }
@@ -147,6 +163,12 @@ func (m *Model) moveRole(delta int) {
 	m.status = fmt.Sprintf("Selected %s", m.roleTitle())
 }
 
+func (m *Model) moveWorkspace(delta int) {
+	modeCount := int(workspaceActionEntry) + 1
+	m.workspace = workspaceMode((int(m.workspace) + delta + modeCount) % modeCount)
+	m.status = fmt.Sprintf("Workspace switched to %s", m.workspace.label())
+}
+
 func (m Model) roleTitle() string {
 	if len(m.state.Roles) == 0 {
 		return "No role selected"
@@ -177,7 +199,11 @@ func (m Model) renderDepartmentsPane(width, height int) string {
 	lines := []string{
 		fmt.Sprintf("Scenario: %s", m.scenarioName),
 		fmt.Sprintf("Match: %s", m.state.MatchID),
+		fmt.Sprintf("Mode: %s", modeLabel(m.focusedPane)),
 		"",
+	}
+	if len(m.state.Roles) == 0 {
+		lines = append(lines, "No role assignments loaded yet.")
 	}
 	for index, assignment := range m.state.Roles {
 		cursor := " "
@@ -202,42 +228,102 @@ func (m Model) renderDepartmentsPane(width, height int) string {
 }
 
 func (m Model) renderHistoryPane(width, height int) string {
+	lines := []string{
+		fmt.Sprintf("Mode: %s", m.workspace.label()),
+	}
+
+	switch m.workspace {
+	case workspaceRoleReport:
+		lines = append(lines, m.renderRoleReportWorkspace(width)...)
+	case workspaceHistoryArchive:
+		lines = append(lines, m.renderHistoryArchiveWorkspace(width)...)
+	case workspaceActionEntry:
+		lines = append(lines, m.renderActionEntryWorkspace(width)...)
+	default:
+		lines = append(lines, m.renderRoundFeedWorkspace(width)...)
+	}
+
+	return renderPane(workspacePaneTitle(), lines, width, height, m.focusedPane == paneHistory)
+}
+
+func (m Model) renderRoundFeedWorkspace(width int) []string {
 	view := m.selectedRoleView()
 
 	lines := []string{
 		fmt.Sprintf("Round %d for %s", view.Round, m.roleTitle()),
-		"",
+		"View: current round feed",
 	}
-	if len(view.RecentEvents) == 0 && len(view.RecentCommentary) == 0 {
-		lines = append(lines, "No prior rounds recorded yet.")
+	if len(view.RecentRounds) == 0 {
+		lines = append(lines, "No prior rounds recorded yet.", "Resolved events and role commentary will appear here after round one.")
+	} else {
+		lines = append(lines, "")
 	}
 	for _, entry := range historyFeedEntries(view.RecentRounds) {
 		lines = append(lines, wrapLine(entry, width-4))
 	}
-
-	return renderPane("History", lines, width, height, m.focusedPane == paneHistory)
+	return lines
 }
 
-func historyFeedEntries(rounds []domain.RoundHistoryEntry) []string {
-	if len(rounds) == 0 {
-		return nil
+func (m Model) renderRoleReportWorkspace(width int) []string {
+	report := m.selectedRoleReport()
+
+	lines := []string{
+		fmt.Sprintf("Role report for %s", m.roleTitle()),
+		"View: briefing and department metrics",
 	}
-
-	lines := make([]string, 0, len(rounds))
-	for _, round := range rounds {
-		if len(round.Events) == 0 && len(round.Commentary) == 0 {
-			lines = append(lines, fmt.Sprintf("[R%d] No visible history.", round.Round))
-			continue
-		}
-
-		for _, event := range round.Events {
-			lines = append(lines, fmt.Sprintf("[R%d] Event: %s", round.Round, event.Summary))
-		}
-		for _, commentary := range round.Commentary {
-			lines = append(lines, fmt.Sprintf("[R%d] %s: %s", round.Round, displayRoleName(commentary.RoleID), commentary.Body))
+	if report.BonusReminder != "" {
+		lines = append(lines, wrapLine("Bonus reminder: "+report.BonusReminder, width-4))
+	}
+	if len(report.Department.KeyMetrics) > 0 {
+		lines = append(lines, "", "Key metrics")
+		for _, metric := range report.Department.KeyMetrics {
+			lines = append(lines, fmt.Sprintf("- %s: %d %s", metric.MetricID, metric.Value, metric.DisplayUnit))
 		}
 	}
+	if len(report.Department.DetailLines) > 0 {
+		lines = append(lines, "", "Role notes")
+		for _, detail := range report.Department.DetailLines {
+			lines = append(lines, wrapLine("- "+detail, width-4))
+		}
+	}
+	if len(lines) == 2 {
+		lines = append(lines, "No additional role report content is available yet.")
+	}
+	return lines
+}
 
+func (m Model) renderHistoryArchiveWorkspace(width int) []string {
+	lines := []string{
+		fmt.Sprintf("Archive for %s", m.roleTitle()),
+		"View: full history retained by the current state source",
+	}
+	if len(m.state.History.RecentRounds) == 0 {
+		lines = append(lines, "No historical rounds are retained yet.")
+		return lines
+	}
+	lines = append(lines, "")
+	for _, entry := range historyFeedEntries(historyEntriesFromRecords(m.state.History.RecentRounds)) {
+		lines = append(lines, wrapLine(entry, width-4))
+	}
+	return lines
+}
+
+func (m Model) renderActionEntryWorkspace(width int) []string {
+	assignment := m.selectedAssignment()
+	lines := []string{
+		fmt.Sprintf("Decision workspace for %s", m.roleTitle()),
+		"View: future round action entry surface",
+	}
+	if assignment.IsHuman {
+		lines = append(lines, "This role is human-controlled, so round decisions will land in this workspace.")
+	} else {
+		lines = append(lines, "This role is AI-controlled right now. Human decision entry will appear here when a human role is selected.")
+	}
+	lines = append(lines,
+		"",
+		wrapLine("Action entry is intentionally deferred from issue #23 so the four-pane shell can stabilize first.", width-4),
+		wrapLine("Use the workspace navigation keys to switch back to reports or the round feed.", width-4),
+	)
 	return lines
 }
 
@@ -249,6 +335,9 @@ func (m Model) renderStatsPane(width, height int) string {
 		fmt.Sprintf("Cash: %d", view.Plant.Cash),
 		fmt.Sprintf("Debt: %d / %d", view.Plant.Debt, view.Plant.DebtCeiling),
 		fmt.Sprintf("Backlog: %d", len(view.Plant.Backlog)),
+		workstationSummary(view.Plant.Workstations),
+		fmt.Sprintf("Parts on hand: %d", view.Metrics.PartsOnHandUnits),
+		fmt.Sprintf("Finished goods: %d", view.Metrics.FinishedGoodsUnits),
 		fmt.Sprintf("Revenue: %d", view.Metrics.ThroughputRevenue),
 		fmt.Sprintf("Profit: %d", view.Metrics.RoundProfit),
 		"",
@@ -271,9 +360,14 @@ func (m Model) renderStatsPane(width, height int) string {
 }
 
 func (m Model) renderCommandBar(width, height int) string {
+	status := fmt.Sprintf("Mode: inspect | Focus: %s | Role: %s | Round: %d", paneName(m.focusedPane), m.roleTitle(), m.state.CurrentRound)
+	if detail := strings.TrimSpace(m.statusLine()); detail != "" {
+		status += " | " + detail
+	}
+
 	lines := []string{
-		"tab/shift+tab focus panes | left/right cycle roles | q quit",
-		m.statusLine(),
+		"Inspect mode | tab/shift+tab focus panes | left/right cycle roles | [/] workspace | q quit",
+		wrapLine(status, width-4),
 	}
 	return renderPane("Command Bar", lines, width, height, m.focusedPane == paneCommandBar)
 }
@@ -289,8 +383,10 @@ func (m Model) statusLine() string {
 func renderPane(title string, lines []string, width, height int, focused bool) string {
 	border := lipgloss.RoundedBorder()
 	borderColor := lipgloss.Color("62")
+	label := title
 	if focused {
 		borderColor = lipgloss.Color("205")
+		label = title + " [focus]"
 	}
 
 	style := lipgloss.NewStyle().
@@ -301,7 +397,7 @@ func renderPane(title string, lines []string, width, height int, focused bool) s
 		Padding(0, 1)
 
 	content := fitLines(lines, max(height-2, 1))
-	return style.Render(title + "\n" + strings.Join(content, "\n"))
+	return style.Render(label + "\n" + strings.Join(content, "\n"))
 }
 
 func fitLines(lines []string, maxLines int) []string {
@@ -331,6 +427,94 @@ func paneWidths(totalWidth int) (int, int, int) {
 	return left, center, right
 }
 
+func chooseLayout(width, height int) layoutMode {
+	switch {
+	case width < 72 || height < 18:
+		return layoutStacked
+	case width < 118 || height < 24:
+		return layoutCompact
+	default:
+		return layoutWide
+	}
+}
+
+func (m Model) renderContentArea(layout layoutMode, width, height int) string {
+	switch layout {
+	case layoutStacked:
+		departmentsHeight, historyHeight, statsHeight := stackedPaneHeights(height)
+		return lipgloss.JoinVertical(
+			lipgloss.Left,
+			m.renderDepartmentsPane(width, departmentsHeight),
+			m.renderHistoryPane(width, historyHeight),
+			m.renderStatsPane(width, statsHeight),
+		)
+	case layoutCompact:
+		topHeight, historyHeight := compactPaneHeights(height)
+		leftWidth, rightWidth := splitWidth(width)
+		top := lipgloss.JoinHorizontal(
+			lipgloss.Top,
+			m.renderDepartmentsPane(leftWidth, topHeight),
+			m.renderStatsPane(rightWidth, topHeight),
+		)
+		return lipgloss.JoinVertical(
+			lipgloss.Left,
+			top,
+			m.renderHistoryPane(width, historyHeight),
+		)
+	default:
+		leftWidth, centerWidth, rightWidth := paneWidths(width)
+		return lipgloss.JoinHorizontal(
+			lipgloss.Top,
+			m.renderDepartmentsPane(leftWidth, height),
+			m.renderHistoryPane(centerWidth, height),
+			m.renderStatsPane(rightWidth, height),
+		)
+	}
+}
+
+func compactPaneHeights(totalHeight int) (int, int) {
+	top := max(totalHeight/3, 7)
+	if history := totalHeight - top; history >= 8 {
+		return top, history
+	}
+	return max(totalHeight/2, 7), max(totalHeight-totalHeight/2, 7)
+}
+
+func stackedPaneHeights(totalHeight int) (int, int, int) {
+	base := max(totalHeight/3, 5)
+	remaining := totalHeight - base
+	history := max(remaining/2, 6)
+	stats := max(totalHeight-base-history, 5)
+	if base+history+stats > totalHeight {
+		stats = max(totalHeight-base-history, 4)
+	}
+	return base, history, stats
+}
+
+func splitWidth(totalWidth int) (int, int) {
+	left := max(totalWidth/3, 28)
+	if left > totalWidth-28 {
+		left = max(totalWidth/2, 24)
+	}
+	return left, max(totalWidth-left, 28)
+}
+
+func commandBarHeight(totalHeight int) int {
+	switch {
+	case totalHeight < 24:
+		return 4
+	default:
+		return 5
+	}
+}
+
+func fallbackDimension(value, fallback int) int {
+	if value > 0 {
+		return value
+	}
+	return fallback
+}
+
 func clampRoleIndex(index, roleCount int) int {
 	if roleCount <= 0 {
 		return 0
@@ -351,18 +535,46 @@ func wrapLine(line string, width int) string {
 	return lipgloss.NewStyle().Width(width).Render(line)
 }
 
+func modeLabel(focusedPane int) string {
+	return fmt.Sprintf("Inspecting %s", paneName(focusedPane))
+}
+
+func workstationSummary(workstations []domain.WorkstationState) string {
+	if len(workstations) == 0 {
+		return "Workstations: waiting for first telemetry"
+	}
+	return fmt.Sprintf("Workstations: %d online", len(workstations))
+}
+
 func paneName(index int) string {
 	switch index {
 	case paneDepartments:
 		return "departments"
 	case paneHistory:
-		return "history"
+		return "center workspace"
 	case paneStats:
 		return "plant stats"
 	case paneCommandBar:
 		return "command bar"
 	default:
 		return "unknown"
+	}
+}
+
+func workspacePaneTitle() string {
+	return "Center Workspace"
+}
+
+func (mode workspaceMode) label() string {
+	switch mode {
+	case workspaceRoleReport:
+		return "role report"
+	case workspaceHistoryArchive:
+		return "history archive"
+	case workspaceActionEntry:
+		return "action entry"
+	default:
+		return "round feed"
 	}
 }
 
@@ -379,4 +591,67 @@ func displayRoleName(roleID domain.RoleID) string {
 	default:
 		return string(roleID)
 	}
+}
+
+func historyFeedEntries(rounds []domain.RoundHistoryEntry) []string {
+	if len(rounds) == 0 {
+		return nil
+	}
+
+	lines := make([]string, 0, len(rounds)*2)
+	for _, round := range rounds {
+		lines = append(lines, fmt.Sprintf("[R%d] %d events | %d commentary", round.Round, len(round.Events), len(round.Commentary)))
+		if len(round.Events) == 0 && len(round.Commentary) == 0 {
+			lines = append(lines, "  No visible history.")
+			continue
+		}
+
+		for _, event := range round.Events {
+			lines = append(lines, fmt.Sprintf("  Event: %s", event.Summary))
+		}
+		for _, commentary := range round.Commentary {
+			lines = append(lines, fmt.Sprintf("  %s: %s", displayRoleName(commentary.RoleID), commentary.Body))
+		}
+	}
+
+	return lines
+}
+
+func historyEntriesFromRecords(rounds []domain.RoundRecord) []domain.RoundHistoryEntry {
+	if len(rounds) == 0 {
+		return nil
+	}
+
+	entries := make([]domain.RoundHistoryEntry, 0, len(rounds))
+	for _, round := range rounds {
+		entries = append(entries, domain.RoundHistoryEntry{
+			Round:      round.Round,
+			Events:     cloneEvents(round.Events),
+			Commentary: cloneCommentary(round.Commentary),
+		})
+	}
+
+	return entries
+}
+
+func cloneEvents(events []domain.RoundEvent) []domain.RoundEvent {
+	if events == nil {
+		return nil
+	}
+
+	cloned := make([]domain.RoundEvent, len(events))
+	for i := range events {
+		cloned[i] = events[i].Clone()
+	}
+	return cloned
+}
+
+func cloneCommentary(commentary []domain.CommentaryRecord) []domain.CommentaryRecord {
+	if commentary == nil {
+		return nil
+	}
+
+	cloned := make([]domain.CommentaryRecord, len(commentary))
+	copy(cloned, commentary)
+	return cloned
 }
