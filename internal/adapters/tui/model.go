@@ -251,10 +251,12 @@ func (m Model) renderRoundFeedWorkspace(width int) []string {
 
 	lines := []string{
 		fmt.Sprintf("Round %d for %s", view.Round, m.roleTitle()),
-		"View: current round feed",
+		fmt.Sprintf("View: %s", roundPhaseLabel(view.RoundFlow.Phase)),
 	}
+	lines = append(lines, roundFlowSummary(view.RoundFlow, m.state.Roles)...)
+
 	if len(view.RecentRounds) == 0 {
-		lines = append(lines, "No prior rounds recorded yet.", "Resolved events and role commentary will appear here after round one.")
+		lines = append(lines, "", "No prior rounds recorded yet.", "Resolved events and role commentary will appear here after round one.")
 	} else {
 		lines = append(lines, "")
 	}
@@ -312,16 +314,17 @@ func (m Model) renderActionEntryWorkspace(width int) []string {
 	assignment := m.selectedAssignment()
 	lines := []string{
 		fmt.Sprintf("Decision workspace for %s", m.roleTitle()),
-		"View: future round action entry surface",
+		fmt.Sprintf("View: %s", roundPhaseLabel(m.state.RoundFlow.Phase)),
 	}
 	if assignment.IsHuman {
-		lines = append(lines, "This role is human-controlled, so round decisions will land in this workspace.")
+		lines = append(lines, "This role is human-controlled, so simultaneous turn entry will land in this workspace.")
 	} else {
 		lines = append(lines, "This role is AI-controlled right now. Human decision entry will appear here when a human role is selected.")
 	}
 	lines = append(lines,
 		"",
-		wrapLine("Action entry is intentionally deferred from issue #23 so the four-pane shell can stabilize first.", width-4),
+		wrapLine("Current-turn decisions stay hidden from the shared round feed until the round resolves.", width-4),
+		wrapLine("Action entry is still deferred while the shell stabilizes, so this workspace currently serves as the dedicated collection surface placeholder.", width-4),
 		wrapLine("Use the workspace navigation keys to switch back to reports or the round feed.", width-4),
 	)
 	return lines
@@ -361,6 +364,7 @@ func (m Model) renderStatsPane(width, height int) string {
 
 func (m Model) renderCommandBar(width, height int) string {
 	status := fmt.Sprintf("Mode: inspect | Focus: %s | Role: %s | Round: %d", paneName(m.focusedPane), m.roleTitle(), m.state.CurrentRound)
+	status += " | Phase: " + roundPhaseShortLabel(m.state.RoundFlow.Phase)
 	if detail := strings.TrimSpace(m.statusLine()); detail != "" {
 		status += " | " + detail
 	}
@@ -544,6 +548,111 @@ func workstationSummary(workstations []domain.WorkstationState) string {
 		return "Workstations: waiting for first telemetry"
 	}
 	return fmt.Sprintf("Workstations: %d online", len(workstations))
+}
+
+func roundFlowSummary(flow domain.RoundFlowState, assignments []domain.RoleAssignment) []string {
+	phase := flow.Phase
+	if phase == "" {
+		phase = domain.RoundPhaseCollecting
+	}
+
+	lines := []string{
+		roundPhaseDescription(phase),
+	}
+
+	switch phase {
+	case domain.RoundPhaseCollecting:
+		submitted := len(flow.SubmittedRoles)
+		waiting := len(flow.WaitingOnRoles)
+		total := submitted + waiting
+		if total == 0 {
+			total = len(assignments)
+		}
+		lines = append(lines,
+			fmt.Sprintf("Submissions received: %d/%d", submitted, total),
+			waitingOnSummary(flow.WaitingOnRoles),
+			"Current-turn actions remain hidden until every role is collected and the round resolves.",
+		)
+	case domain.RoundPhaseResolving:
+		lines = append(lines,
+			"All current-turn actions are locked in.",
+			"The plant is resolving simultaneous decisions before reveal.",
+		)
+	case domain.RoundPhaseRevealed:
+		lines = append(lines,
+			"Round results are now visible in the resolved history below.",
+			revealDelaySummary(flow, assignments),
+		)
+	default:
+		lines = append(lines, "Round flow is waiting for the next engine update.")
+	}
+
+	return lines
+}
+
+func waitingOnSummary(roleIDs []domain.RoleID) string {
+	if len(roleIDs) == 0 {
+		return "Waiting on: none"
+	}
+
+	names := make([]string, 0, len(roleIDs))
+	for _, roleID := range roleIDs {
+		names = append(names, displayRoleName(roleID))
+	}
+	return "Waiting on: " + strings.Join(names, ", ")
+}
+
+func revealDelaySummary(flow domain.RoundFlowState, assignments []domain.RoleAssignment) string {
+	if humanRoleCount(assignments) > 0 {
+		return "Reveal remains visible until the next collection phase begins."
+	}
+	if flow.AIRevealDelaySeconds <= 0 {
+		return "AI-only reveal pause is not configured."
+	}
+	return fmt.Sprintf("AI-only rounds hold the reveal for %d seconds before advancing.", flow.AIRevealDelaySeconds)
+}
+
+func humanRoleCount(assignments []domain.RoleAssignment) int {
+	count := 0
+	for _, assignment := range assignments {
+		if assignment.IsHuman {
+			count++
+		}
+	}
+	return count
+}
+
+func roundPhaseLabel(phase domain.RoundPhase) string {
+	switch phase {
+	case domain.RoundPhaseResolving:
+		return "resolving simultaneous turn"
+	case domain.RoundPhaseRevealed:
+		return "revealed round results"
+	default:
+		return "hidden simultaneous turn collection"
+	}
+}
+
+func roundPhaseShortLabel(phase domain.RoundPhase) string {
+	switch phase {
+	case domain.RoundPhaseResolving:
+		return "resolving"
+	case domain.RoundPhaseRevealed:
+		return "revealed"
+	default:
+		return "collecting"
+	}
+}
+
+func roundPhaseDescription(phase domain.RoundPhase) string {
+	switch phase {
+	case domain.RoundPhaseResolving:
+		return "The round is resolving."
+	case domain.RoundPhaseRevealed:
+		return "The round has been revealed."
+	default:
+		return "The round is waiting for simultaneous submissions."
+	}
 }
 
 func paneName(index int) string {

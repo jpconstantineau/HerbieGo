@@ -6,6 +6,9 @@ func TestNewRuntimeSeedsDefaultStarterMatch(t *testing.T) {
 	runtime, err := NewRuntime(Config{
 		Environment:  "test",
 		HumanPlayers: 1,
+		UI: UIConfig{
+			AIRevealDelaySeconds: 12,
+		},
 		Random: RandomConfig{
 			Seed: 9,
 		},
@@ -46,5 +49,14 @@ func TestNewRuntimeSeedsDefaultStarterMatch(t *testing.T) {
 	}
 	if got := len(runtime.InitialMatch.Plant.Backlog); got != 2 {
 		t.Fatalf("InitialMatch.Plant.Backlog len = %d, want 2", got)
+	}
+	if got := runtime.InitialMatch.RoundFlow.Phase; got != "collecting" {
+		t.Fatalf("InitialMatch.RoundFlow.Phase = %q, want collecting", got)
+	}
+	if got := runtime.InitialMatch.RoundFlow.AIRevealDelaySeconds; got != 12 {
+		t.Fatalf("InitialMatch.RoundFlow.AIRevealDelaySeconds = %d, want 12", got)
+	}
+	if got := len(runtime.InitialMatch.RoundFlow.WaitingOnRoles); got != 4 {
+		t.Fatalf("InitialMatch.RoundFlow.WaitingOnRoles len = %d, want 4", got)
 	}
 }

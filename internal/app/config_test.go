@@ -15,6 +15,8 @@ environment: local
 random:
   seed: 7
 human_players: 1
+ui:
+  ai_reveal_delay_seconds: 9
 roles:
   - role_id: procurement_manager
     provider: ollama-localhost
@@ -61,6 +63,9 @@ models:
 
 	if cfg.HumanPlayers != 1 {
 		t.Fatalf("HumanPlayers = %d, want 1", cfg.HumanPlayers)
+	}
+	if cfg.UI.AIRevealDelaySeconds != 9 {
+		t.Fatalf("UI.AIRevealDelaySeconds = %d, want 9", cfg.UI.AIRevealDelaySeconds)
 	}
 
 	if cfg.Roles[domain.RoleProductionManager].Kind != PlayerKindHuman {
@@ -140,6 +145,8 @@ models:
 func TestLoadConfigReportsValidationErrors(t *testing.T) {
 	configPath := writeConfigFile(t, `
 human_players: 5
+ui:
+  ai_reveal_delay_seconds: 15
 roles:
   - role_id: procurement_manager
     provider: ""

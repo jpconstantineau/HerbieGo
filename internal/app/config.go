@@ -16,6 +16,7 @@ const (
 	defaultLLMCatalogPath = "llm.yaml"
 	defaultEnvironment    = "local"
 	defaultRandomSeed     = uint64(1)
+	defaultAIRevealDelay  = 15
 )
 
 var preferredHumanRoleOrder = []domain.RoleID{
@@ -46,6 +47,7 @@ type Config struct {
 	Environment  string                       `yaml:"environment"`
 	Random       RandomConfig                 `yaml:"random"`
 	HumanPlayers int                          `yaml:"human_players"`
+	UI           UIConfig                     `yaml:"ui"`
 	Roles        map[domain.RoleID]RoleConfig `yaml:"-"`
 	RoleConfigs  []RoleConfigFile             `yaml:"roles"`
 	LLMCatalog   LLMCatalog                   `yaml:"-"`
@@ -54,6 +56,11 @@ type Config struct {
 // RandomConfig controls deterministic randomness for the process.
 type RandomConfig struct {
 	Seed uint64 `yaml:"seed"`
+}
+
+// UIConfig controls player-facing round-flow timing.
+type UIConfig struct {
+	AIRevealDelaySeconds int `yaml:"ai_reveal_delay_seconds"`
 }
 
 // RoleConfig defines runtime settings for a single role.
@@ -120,6 +127,9 @@ func LoadConfig(path string) (Config, error) {
 			Seed: defaultRandomSeed,
 		},
 		HumanPlayers: 1,
+		UI: UIConfig{
+			AIRevealDelaySeconds: defaultAIRevealDelay,
+		},
 	}
 
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
@@ -190,6 +200,9 @@ func (c *Config) Validate() error {
 	if c.HumanPlayers < 0 || c.HumanPlayers > len(expectedRoles) {
 		errs = append(errs, fmt.Errorf("human_players must be between 0 and %d", len(expectedRoles)))
 	}
+	if c.UI.AIRevealDelaySeconds <= 0 {
+		errs = append(errs, errors.New("ui.ai_reveal_delay_seconds must be greater than 0"))
+	}
 
 	if err := c.LLMCatalog.Validate(); err != nil {
 		errs = append(errs, fmt.Errorf("llm catalog: %w", err))
@@ -225,6 +238,9 @@ func (c *Config) normalize() {
 
 	if c.HumanPlayers == 0 && len(c.RoleConfigs) == 0 && len(c.Roles) == 0 {
 		c.HumanPlayers = 1
+	}
+	if c.UI.AIRevealDelaySeconds <= 0 {
+		c.UI.AIRevealDelaySeconds = defaultAIRevealDelay
 	}
 
 	if c.Roles == nil {
