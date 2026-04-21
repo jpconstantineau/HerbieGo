@@ -9,6 +9,7 @@ import (
 
 	"github.com/jpconstantineau/herbiego/internal/adapters/ai"
 	"github.com/jpconstantineau/herbiego/internal/adapters/ai/ollama"
+	"github.com/jpconstantineau/herbiego/internal/adapters/ai/openai"
 	"github.com/jpconstantineau/herbiego/internal/adapters/player/human"
 	"github.com/jpconstantineau/herbiego/internal/adapters/player/llm"
 	"github.com/jpconstantineau/herbiego/internal/app"
@@ -116,7 +117,14 @@ func buildDecisionClients(cfg app.Config) (map[string]ports.DecisionClient, erro
 			}
 			clients[providerName] = client
 		case app.APISDKTypeOpenAI:
-			continue
+			client, err := openai.New(
+				openai.WithBaseURL(roleCfg.URL),
+				openai.WithAPIKey(roleCfg.APIKey),
+			)
+			if err != nil {
+				return nil, fmt.Errorf("configure provider %q: %w", roleCfg.Provider, err)
+			}
+			clients[providerName] = client
 		default:
 			return nil, fmt.Errorf("provider %q uses unsupported api_sdk_type %q", roleCfg.Provider, roleCfg.APISDKType)
 		}
