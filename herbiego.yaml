@@ -4,14 +4,14 @@ random:
 human_players: 1
 roles:
   - role_id: procurement_manager
-    provider: ollama
+    provider: ollama-localhost
     model: gemma4:e4b
   - role_id: production_manager
-    provider: ollama
+    provider: ollama-localhost
     model: gemma4:e4b
   - role_id: sales_manager
-    provider: ollama
+    provider: ollama-localhost
     model: gemma4:e4b
   - role_id: finance_controller
-    provider: ollama
+    provider: ollama-localhost
     model: gemma4:e4b

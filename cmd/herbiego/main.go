@@ -76,13 +76,11 @@ func main() {
 }
 
 func buildPlayers(runtime app.Runtime, controller *terminalController) (map[domain.RoleID]ports.Player, error) {
-	ollamaClient, err := ollama.New()
+	providers, err := buildDecisionClients(runtime.Config)
 	if err != nil {
-		return nil, fmt.Errorf("configure ollama adapter: %w", err)
+		return nil, err
 	}
-	decisionClient := ai.NewRoutingClient(map[string]ports.DecisionClient{
-		string(app.ProviderOllama): ollamaClient,
-	})
+	decisionClient := ai.NewRoutingClient(providers)
 	orchestrator := app.NewAIOrchestrator(runtime.Scenario, decisionClient)
 
 	players := make(map[domain.RoleID]ports.Player, len(runtime.InitialMatch.Roles))
@@ -97,6 +95,33 @@ func buildPlayers(runtime app.Runtime, controller *terminalController) (map[doma
 		players[assignment.RoleID] = llm.New(orchestrator.SubmitRound)
 	}
 	return players, nil
+}
+
+func buildDecisionClients(cfg app.Config) (map[string]ports.DecisionClient, error) {
+	clients := make(map[string]ports.DecisionClient)
+	for _, roleCfg := range cfg.Roles {
+		providerName := string(roleCfg.Provider)
+		if providerName == "" {
+			continue
+		}
+		if _, ok := clients[providerName]; ok {
+			continue
+		}
+
+		switch roleCfg.APISDKType {
+		case app.APISDKTypeOllama:
+			client, err := ollama.New(ollama.WithBaseURL(roleCfg.URL))
+			if err != nil {
+				return nil, fmt.Errorf("configure provider %q: %w", roleCfg.Provider, err)
+			}
+			clients[providerName] = client
+		case app.APISDKTypeOpenAI:
+			continue
+		default:
+			return nil, fmt.Errorf("provider %q uses unsupported api_sdk_type %q", roleCfg.Provider, roleCfg.APISDKType)
+		}
+	}
+	return clients, nil
 }
 
 func printRuntimeSummary(runtime app.Runtime) {

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/jpconstantineau/herbiego/internal/domain"
@@ -11,9 +12,10 @@ import (
 )
 
 const (
-	defaultConfigPath  = "herbiego.yaml"
-	defaultEnvironment = "local"
-	defaultRandomSeed  = uint64(1)
+	defaultConfigPath     = "herbiego.yaml"
+	defaultLLMCatalogPath = "llm.yaml"
+	defaultEnvironment    = "local"
+	defaultRandomSeed     = uint64(1)
 )
 
 var preferredHumanRoleOrder = []domain.RoleID{
@@ -46,6 +48,7 @@ type Config struct {
 	HumanPlayers int                          `yaml:"human_players"`
 	Roles        map[domain.RoleID]RoleConfig `yaml:"-"`
 	RoleConfigs  []RoleConfigFile             `yaml:"roles"`
+	LLMCatalog   LLMCatalog                   `yaml:"-"`
 }
 
 // RandomConfig controls deterministic randomness for the process.
@@ -55,9 +58,12 @@ type RandomConfig struct {
 
 // RoleConfig defines runtime settings for a single role.
 type RoleConfig struct {
-	Kind     PlayerKind
-	Provider ProviderName
-	Model    string
+	Kind       PlayerKind
+	Provider   ProviderName
+	Model      string
+	URL        string
+	APISDKType APISDKType
+	APIKey     string
 }
 
 // RoleConfigFile is the editable YAML representation for a role's runtime options.
@@ -70,8 +76,31 @@ type RoleConfigFile struct {
 // BootstrapOptions controls startup loading behavior.
 type BootstrapOptions struct {
 	ConfigPath           string
+	LLMCatalogPath       string
 	HumanPlayersOverride *int
 	SeedOverride         *uint64
+}
+
+// APISDKType identifies the wire protocol family an external provider uses.
+type APISDKType string
+
+const (
+	APISDKTypeOllama APISDKType = "ollama"
+	APISDKTypeOpenAI APISDKType = "openai"
+)
+
+// LLMCatalog stores named provider/model connection metadata loaded from llm.yaml.
+type LLMCatalog struct {
+	Entries []LLMCatalogEntry `yaml:"models"`
+}
+
+// LLMCatalogEntry is one editable catalog entry for a provider/model pair.
+type LLMCatalogEntry struct {
+	Provider   ProviderName `yaml:"provider_name"`
+	Model      string       `yaml:"model_name"`
+	URL        string       `yaml:"url"`
+	APISDKType APISDKType   `yaml:"api_sdk_type"`
+	APIKey     string       `yaml:"api_key"`
 }
 
 // LoadConfig reads runtime configuration from a YAML file.
@@ -103,6 +132,30 @@ func LoadConfig(path string) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// LoadLLMCatalog reads provider/model connection metadata from a YAML file.
+func LoadLLMCatalog(path string) (LLMCatalog, error) {
+	if strings.TrimSpace(path) == "" {
+		path = defaultLLMCatalogPath
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return LLMCatalog{}, fmt.Errorf("read LLM catalog file %q: %w", path, err)
+	}
+
+	var catalog LLMCatalog
+	if err := yaml.Unmarshal(data, &catalog); err != nil {
+		return LLMCatalog{}, fmt.Errorf("parse LLM catalog file %q: %w", path, err)
+	}
+
+	catalog.normalize()
+	if err := catalog.Validate(); err != nil {
+		return LLMCatalog{}, fmt.Errorf("validate LLM catalog file %q: %w", path, err)
+	}
+
+	return catalog, nil
 }
 
 // ApplyOverrides applies runtime-only startup overrides after config loading.
@@ -138,6 +191,10 @@ func (c *Config) Validate() error {
 		errs = append(errs, fmt.Errorf("human_players must be between 0 and %d", len(expectedRoles)))
 	}
 
+	if err := c.LLMCatalog.Validate(); err != nil {
+		errs = append(errs, fmt.Errorf("llm catalog: %w", err))
+	}
+
 	for _, roleID := range expectedRoles {
 		roleCfg, ok := c.Roles[roleID]
 		if !ok {
@@ -145,7 +202,7 @@ func (c *Config) Validate() error {
 			continue
 		}
 
-		if err := validateRoleConfig(roleID, roleCfg); err != nil {
+		if err := validateRoleConfig(roleID, roleCfg, len(c.LLMCatalog.Entries) > 0); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -178,11 +235,17 @@ func (c *Config) normalize() {
 		c.Roles = make(map[domain.RoleID]RoleConfig, len(c.RoleConfigs))
 		for _, roleFile := range c.RoleConfigs {
 			roleID := roleFile.RoleID
-			c.Roles[roleID] = RoleConfig{
+			roleCfg := RoleConfig{
 				Kind:     PlayerKindAI,
 				Provider: ProviderName(strings.ToLower(strings.TrimSpace(string(roleFile.Provider)))),
 				Model:    strings.TrimSpace(roleFile.Model),
 			}
+			if entry, ok := c.LLMCatalog.Lookup(roleCfg.Provider, roleCfg.Model); ok {
+				roleCfg.URL = entry.URL
+				roleCfg.APISDKType = entry.APISDKType
+				roleCfg.APIKey = entry.APIKey
+			}
+			c.Roles[roleID] = roleCfg
 		}
 
 		for _, roleID := range selectedHumanRoles(c.HumanPlayers) {
@@ -209,7 +272,7 @@ func selectedHumanRoles(humanPlayers int) []domain.RoleID {
 	return preferredHumanRoleOrder[:humanPlayers]
 }
 
-func validateRoleConfig(roleID domain.RoleID, roleCfg RoleConfig) error {
+func validateRoleConfig(roleID domain.RoleID, roleCfg RoleConfig, requireCatalog bool) error {
 	var errs []error
 
 	if roleCfg.Kind == "" {
@@ -236,9 +299,85 @@ func validateRoleConfig(roleID domain.RoleID, roleCfg RoleConfig) error {
 		errs = append(errs, fmt.Errorf("%s kind must be %q or %q", roleID, PlayerKindHuman, PlayerKindAI))
 	}
 
+	if requireCatalog && roleCfg.Provider != "" && roleCfg.Model != "" {
+		if strings.TrimSpace(roleCfg.URL) == "" {
+			errs = append(errs, fmt.Errorf("%s provider/model must exist in llm catalog with a non-empty URL", roleID))
+		}
+		if roleCfg.APISDKType == "" {
+			errs = append(errs, fmt.Errorf("%s provider/model must exist in llm catalog with a non-empty api_sdk_type", roleID))
+		}
+	}
+
 	if len(errs) == 0 {
 		return nil
 	}
 
 	return errors.Join(errs...)
+}
+
+func (c *Config) WithLLMCatalog(catalog LLMCatalog) {
+	c.LLMCatalog = catalog
+}
+
+func (c LLMCatalog) Lookup(provider ProviderName, model string) (LLMCatalogEntry, bool) {
+	name := strings.ToLower(strings.TrimSpace(string(provider)))
+	model = strings.TrimSpace(model)
+	for _, entry := range c.Entries {
+		if strings.ToLower(strings.TrimSpace(string(entry.Provider))) == name && strings.TrimSpace(entry.Model) == model {
+			return entry, true
+		}
+	}
+	return LLMCatalogEntry{}, false
+}
+
+func (c *LLMCatalog) normalize() {
+	for i := range c.Entries {
+		c.Entries[i].Provider = ProviderName(strings.ToLower(strings.TrimSpace(string(c.Entries[i].Provider))))
+		c.Entries[i].Model = strings.TrimSpace(c.Entries[i].Model)
+		c.Entries[i].URL = strings.TrimSpace(c.Entries[i].URL)
+		c.Entries[i].APISDKType = APISDKType(strings.ToLower(strings.TrimSpace(string(c.Entries[i].APISDKType))))
+		c.Entries[i].APIKey = strings.TrimSpace(c.Entries[i].APIKey)
+	}
+}
+
+func (c LLMCatalog) Validate() error {
+	var errs []error
+	seen := make(map[string]bool, len(c.Entries))
+	for _, entry := range c.Entries {
+		key := fmt.Sprintf("%s::%s", entry.Provider, entry.Model)
+		if strings.TrimSpace(string(entry.Provider)) == "" {
+			errs = append(errs, errors.New("llm catalog provider_name must not be empty"))
+		}
+		if strings.TrimSpace(entry.Model) == "" {
+			errs = append(errs, errors.New("llm catalog model_name must not be empty"))
+		}
+		if strings.TrimSpace(entry.URL) == "" {
+			errs = append(errs, fmt.Errorf("llm catalog entry %q/%q url must not be empty", entry.Provider, entry.Model))
+		}
+		switch entry.APISDKType {
+		case APISDKTypeOllama, APISDKTypeOpenAI:
+		case "":
+			errs = append(errs, fmt.Errorf("llm catalog entry %q/%q api_sdk_type must not be empty", entry.Provider, entry.Model))
+		default:
+			errs = append(errs, fmt.Errorf("llm catalog entry %q/%q api_sdk_type must be %q or %q", entry.Provider, entry.Model, APISDKTypeOllama, APISDKTypeOpenAI))
+		}
+		if seen[key] {
+			errs = append(errs, fmt.Errorf("llm catalog entry %q/%q must be unique", entry.Provider, entry.Model))
+		}
+		seen[key] = true
+	}
+	if len(errs) == 0 {
+		return nil
+	}
+	return errors.Join(errs...)
+}
+
+func resolveLLMCatalogPath(configPath, catalogPath string) string {
+	if strings.TrimSpace(catalogPath) != "" {
+		return catalogPath
+	}
+	if strings.TrimSpace(configPath) == "" {
+		return defaultLLMCatalogPath
+	}
+	return filepath.Join(filepath.Dir(configPath), defaultLLMCatalogPath)
 }
