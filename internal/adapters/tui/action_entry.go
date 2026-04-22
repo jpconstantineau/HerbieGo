@@ -128,6 +128,17 @@ func (m *Model) handleActionEntryKey(msg tea.KeyMsg) bool {
 				m.drafts[assignment.RoleID] = draft
 				return true
 			}
+			submission.MatchID = m.state.MatchID
+			submission.Round = m.state.CurrentRound
+			submission.RoleID = assignment.RoleID
+			if m.submit != nil {
+				if err := m.submit(submission); err != nil {
+					draft.errorText = err.Error()
+					draft.status = "Submit blocked until the live match accepts the action"
+					m.drafts[assignment.RoleID] = draft
+					return true
+				}
+			}
 			draft.stage = draftStageSubmitted
 			draft.submission = &submission
 			draft.status = "Submission locked for this round"

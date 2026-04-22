@@ -43,11 +43,19 @@ type stateLoadedMsg struct {
 
 type stateStreamClosedMsg struct{}
 
+// StatusMsg updates the command-bar status from outside the Bubble Tea model.
+type StatusMsg struct {
+	Text string
+}
+
+type SubmitFunc func(domain.ActionSubmission) error
+
 // Model is the Bubble Tea shell for the round-based gameplay UI.
 type Model struct {
 	scenario     scenario.Definition
 	source       StateSource
 	updates      <-chan domain.MatchState
+	submit       SubmitFunc
 	state        domain.MatchState
 	selectedRole int
 	focusedPane  int
@@ -62,10 +70,17 @@ type Model struct {
 
 // NewModel constructs the main gameplay shell model.
 func NewModel(definition scenario.Definition, source StateSource) Model {
+	return NewModelWithSubmit(definition, source, nil)
+}
+
+// NewModelWithSubmit constructs the gameplay shell with an optional live
+// submission hook for forwarding locked human actions into the shared runner.
+func NewModelWithSubmit(definition scenario.Definition, source StateSource, submit SubmitFunc) Model {
 	return Model{
 		scenario:  definition,
 		source:    source,
 		updates:   source.Updates(),
+		submit:    submit,
 		workspace: workspaceActionEntry,
 		status:    "Loading round state...",
 		drafts:    make(map[domain.RoleID]actionDraft),
@@ -128,10 +143,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.selectedRole = clampRoleIndex(m.selectedRole, len(m.state.Roles))
 		m.status = fmt.Sprintf("Round %d loaded for %s", m.state.CurrentRound, m.roleTitle())
 		return m, waitForUpdateCmd(m.updates)
+	case StatusMsg:
+		if strings.TrimSpace(typed.Text) != "" {
+			m.status = typed.Text
+		}
+		return m, nil
 	case stateStreamClosedMsg:
 		m.streamClosed = true
-		if strings.TrimSpace(m.status) == "" {
-			m.status = "State stream closed"
+		if strings.TrimSpace(m.status) == "" || strings.HasPrefix(m.status, "Round ") {
+			m.status = "Match updates complete. Inspect results and press q to exit."
 		}
 		return m, nil
 	}

@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"testing"
 
 	"github.com/jpconstantineau/herbiego/internal/adapters/player/human"
 	"github.com/jpconstantineau/herbiego/internal/adapters/player/llm"
 	"github.com/jpconstantineau/herbiego/internal/app"
 	"github.com/jpconstantineau/herbiego/internal/domain"
+	"github.com/jpconstantineau/herbiego/internal/ports"
 	"github.com/jpconstantineau/herbiego/internal/scenario"
 )
 
@@ -32,9 +34,11 @@ func TestBuildPlayersCreatesMixedHumanAndAIPlayers(t *testing.T) {
 		},
 	}
 
-	players, err := buildPlayers(runtime, &terminalController{})
+	players, err := buildPlayersWithHumanSubmit(runtime, func(context.Context, ports.RoundRequest) (domain.ActionSubmission, error) {
+		return domain.ActionSubmission{}, nil
+	})
 	if err != nil {
-		t.Fatalf("buildPlayers() error = %v, want nil", err)
+		t.Fatalf("buildPlayersWithHumanSubmit() error = %v, want nil", err)
 	}
 	if _, ok := players[domain.RoleProductionManager].(*human.Player); !ok {
 		t.Fatalf("production player type = %T, want *human.Player", players[domain.RoleProductionManager])
@@ -60,9 +64,11 @@ func TestBuildPlayersRejectsUnsupportedAIProvider(t *testing.T) {
 		},
 	}
 
-	players, err := buildPlayers(runtime, &terminalController{})
+	players, err := buildPlayersWithHumanSubmit(runtime, func(context.Context, ports.RoundRequest) (domain.ActionSubmission, error) {
+		return domain.ActionSubmission{}, nil
+	})
 	if err != nil {
-		t.Fatalf("buildPlayers() error = %v, want nil", err)
+		t.Fatalf("buildPlayersWithHumanSubmit() error = %v, want nil", err)
 	}
 	if _, ok := players[domain.RoleProductionManager].(*llm.Player); !ok {
 		t.Fatalf("production player type = %T, want *llm.Player", players[domain.RoleProductionManager])

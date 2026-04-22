@@ -278,6 +278,52 @@ func TestModelSupportsHumanActionDraftReviewAndSubmit(t *testing.T) {
 	}
 }
 
+func TestModelSubmitForwardsLockedDraftToLiveHook(t *testing.T) {
+	var submitted domain.ActionSubmission
+	model := NewModelWithSubmit(
+		scenario.Starter(),
+		testStateSource{snapshot: scenario.Starter().InitialState("starter-match", starterAssignments())},
+		func(action domain.ActionSubmission) error {
+			submitted = action.Clone()
+			return nil
+		},
+	)
+
+	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
+	shell := loaded.(Model)
+
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune("housing=2")},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyDown},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune("Ordering only what assembly can absorb.")},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune{'r'}},
+		{Type: tea.KeyRunes, Runes: []rune{'s'}},
+	} {
+		next, _ := shell.Update(key)
+		shell = next.(Model)
+	}
+
+	if submitted.MatchID != "starter-match" {
+		t.Fatalf("submitted.MatchID = %q, want starter-match", submitted.MatchID)
+	}
+	if submitted.Round != 1 {
+		t.Fatalf("submitted.Round = %d, want 1", submitted.Round)
+	}
+	if submitted.RoleID != domain.RoleProcurementManager {
+		t.Fatalf("submitted.RoleID = %q, want procurement_manager", submitted.RoleID)
+	}
+	if got := submitted.Commentary.Body; got != "Ordering only what assembly can absorb." {
+		t.Fatalf("submitted.Commentary.Body = %q, want submitted commentary", got)
+	}
+	if submitted.Action.Procurement == nil || len(submitted.Action.Procurement.Orders) != 1 {
+		t.Fatalf("submitted.Action.Procurement = %#v, want one order", submitted.Action.Procurement)
+	}
+}
+
 func TestModelAdvancesAcrossHumanRolesAndHidesLockedDrafts(t *testing.T) {
 	model := NewModel(scenario.Starter(), testStateSource{
 		snapshot: scenario.Starter().InitialState("starter-match", multiHumanAssignments()),
