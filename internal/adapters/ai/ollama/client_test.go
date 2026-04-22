@@ -88,3 +88,30 @@ func TestClientReturnsHTTPFailures(t *testing.T) {
 		t.Fatalf("RequestDecision() error = %v, want response body", err)
 	}
 }
+
+func TestClientPreservesConfiguredAPIPrefix(t *testing.T) {
+	var requestPath string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requestPath = request.URL.Path
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"response":"{\"contract_version\":\"herbiego.ai.v1\"}"}`))
+	}))
+	defer server.Close()
+
+	client, err := New(
+		WithBaseURL(server.URL+"/api/"),
+		WithHTTPClient(server.Client()),
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	_, err = client.RequestDecision(context.Background(), ports.ProviderDecisionRequest{Model: "gemma4:e4b"})
+	if err != nil {
+		t.Fatalf("RequestDecision() error = %v", err)
+	}
+
+	if requestPath != "/api/generate" {
+		t.Fatalf("request path = %q, want /api/generate", requestPath)
+	}
+}

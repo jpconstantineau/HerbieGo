@@ -8,6 +8,7 @@ import (
 	"github.com/jpconstantineau/herbiego/internal/domain"
 	"github.com/jpconstantineau/herbiego/internal/ports"
 	"github.com/jpconstantineau/herbiego/internal/projection"
+	"golang.org/x/sync/errgroup"
 )
 
 // RoundCollector gathers one action submission per assigned role through the
@@ -28,8 +29,12 @@ func (c RoundCollector) Collect(ctx context.Context, state domain.MatchState, pr
 	}
 
 	now := c.now()
-	collected := make([]domain.ActionSubmission, 0, len(state.Roles))
-	for _, assignment := range state.Roles {
+	collected := make([]domain.ActionSubmission, len(state.Roles))
+	group, groupCtx := errgroup.WithContext(ctx)
+
+	for i, assignment := range state.Roles {
+		i := i
+		assignment := assignment
 		player, ok := c.Players[assignment.RoleID]
 		if !ok {
 			return nil, fmt.Errorf("app: collect round %d: player missing for role %q", state.CurrentRound, assignment.RoleID)
@@ -42,15 +47,22 @@ func (c RoundCollector) Collect(ctx context.Context, state domain.MatchState, pr
 			PreviousAcceptedAction: clonePrevious(previous[assignment.RoleID]),
 		}
 
-		submission, err := player.SubmitRound(ctx, request)
-		if err != nil {
-			submission, err = player.RecoverFromNonResponse(ctx, request, err)
+		group.Go(func() error {
+			submission, err := player.SubmitRound(groupCtx, request)
 			if err != nil {
-				return nil, fmt.Errorf("app: collect round %d for %q: %w", state.CurrentRound, assignment.RoleID, err)
+				submission, err = player.RecoverFromNonResponse(groupCtx, request, err)
+				if err != nil {
+					return fmt.Errorf("app: collect round %d for %q: %w", state.CurrentRound, assignment.RoleID, err)
+				}
 			}
-		}
 
-		collected = append(collected, normalizeSubmission(submission, request, now))
+			collected[i] = normalizeSubmission(submission, request, now)
+			return nil
+		})
+	}
+
+	if err := group.Wait(); err != nil {
+		return nil, err
 	}
 
 	return collected, nil
