@@ -119,9 +119,7 @@ func (c *Client) endpointURL(path string) string {
 	cleanPath := strings.TrimLeft(path, "/")
 	if trimmedBase := strings.TrimLeft(basePath, "/"); trimmedBase != "" {
 		prefix := trimmedBase + "/"
-		if strings.HasPrefix(cleanPath, prefix) {
-			cleanPath = strings.TrimPrefix(cleanPath, prefix)
-		}
+		cleanPath = strings.TrimPrefix(cleanPath, prefix)
 	}
 	switch {
 	case basePath == "":
