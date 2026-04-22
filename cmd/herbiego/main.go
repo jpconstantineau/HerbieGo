@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jpconstantineau/herbiego/internal/adapters/tui"
 	"github.com/jpconstantineau/herbiego/internal/app"
 	"github.com/jpconstantineau/herbiego/internal/engine"
@@ -45,37 +47,72 @@ func main() {
 		return
 	}
 
-	controller := newTerminalController(runtime.Scenario, os.Stdin, os.Stdout)
-	players, err := buildPlayers(runtime, controller)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "player setup failed:\n%v\n", err)
+	if err := runLiveGameplay(context.Background(), runtime, *rounds); err != nil {
+		fmt.Fprintf(os.Stderr, "match failed:\n%v\n", err)
 		os.Exit(1)
 	}
+}
 
-	fmt.Fprintf(os.Stdout, "HerbieGo MVP match: %s\n", runtime.Scenario.DisplayName)
-	fmt.Fprintf(os.Stdout, "Roles: %v\n", runtime.RoleSummaries())
-	fmt.Fprintf(os.Stdout, "Playing %d rounds. Use -human-players=0 for an unattended AI-only run.\n", *rounds)
+func runLiveGameplay(ctx context.Context, runtime app.Runtime, rounds int) error {
+	controller := newLiveGameplayController(runtime.InitialMatch)
+	players, err := buildPlayersWithHumanSubmit(runtime, controller.SubmitRound)
+	if err != nil {
+		return fmt.Errorf("player setup: %w", err)
+	}
 
 	runner := app.MatchRunner{
 		Collector: app.RoundCollector{Players: players},
 		Resolver:  engine.NewResolver(runtime.Scenario.ResolverOptions()),
 		Random:    runtime.Random,
-		OnRound: func(result engine.Result) {
-			renderRoundOutcome(os.Stdout, result)
-		},
+		OnState:   controller.Publish,
 	}
 
-	final, _, err := runner.Play(context.Background(), runtime.InitialMatch, *rounds)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "match failed:\n%v\n", err)
-		os.Exit(1)
-	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
-	fmt.Fprintf(os.Stdout, "\nMatch complete after round %d. Next round would be %d.\n", final.CurrentRound-1, final.CurrentRound)
-	fmt.Fprintf(os.Stdout, "Final cash %d | debt %d | backlog %d | profit %d\n",
-		final.Plant.Cash,
-		final.Plant.Debt,
-		len(final.Plant.Backlog),
-		final.Metrics.RoundProfit,
+	program := tui.NewProgram(
+		runtime.Scenario,
+		controller,
+		controller.Submit,
+		tea.WithAltScreen(),
+		tea.WithContext(ctx),
 	)
+
+	runnerErr := make(chan error, 1)
+	go func() {
+		defer controller.Close()
+
+		final, _, err := runner.Play(ctx, runtime.InitialMatch, rounds)
+		switch {
+		case err == nil:
+			program.Send(tui.StatusMsg{
+				Text: fmt.Sprintf(
+					"Match complete after round %d. Final cash %d, debt %d, backlog %d, profit %d. Inspect results and press q to exit.",
+					final.CurrentRound-1,
+					final.Plant.Cash,
+					final.Plant.Debt,
+					len(final.Plant.Backlog),
+					final.Metrics.RoundProfit,
+				),
+			})
+		case errors.Is(err, context.Canceled):
+			program.Send(tui.StatusMsg{Text: "Match cancelled. Press q to exit."})
+		default:
+			program.Send(tui.StatusMsg{Text: fmt.Sprintf("Match failed: %v. Press q to exit.", err)})
+		}
+
+		runnerErr <- err
+	}()
+
+	_, err = program.Run()
+	cancel()
+	playErr := <-runnerErr
+
+	if err != nil && !errors.Is(err, tea.ErrProgramKilled) {
+		return fmt.Errorf("bubble tea runtime: %w", err)
+	}
+	if playErr != nil && !errors.Is(playErr, context.Canceled) {
+		return playErr
+	}
+	return nil
 }

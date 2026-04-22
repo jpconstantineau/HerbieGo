@@ -14,6 +14,10 @@ import (
 )
 
 func buildPlayers(runtime app.Runtime, controller *terminalController) (map[domain.RoleID]ports.Player, error) {
+	return buildPlayersWithHumanSubmit(runtime, controller.submitRound)
+}
+
+func buildPlayersWithHumanSubmit(runtime app.Runtime, submit human.SubmitFunc) (map[domain.RoleID]ports.Player, error) {
 	providers, err := buildDecisionClients(runtime.Config)
 	if err != nil {
 		return nil, err
@@ -24,7 +28,7 @@ func buildPlayers(runtime app.Runtime, controller *terminalController) (map[doma
 	players := make(map[domain.RoleID]ports.Player, len(runtime.InitialMatch.Roles))
 	for _, assignment := range runtime.InitialMatch.Roles {
 		if assignment.IsHuman {
-			players[assignment.RoleID] = human.New(controller.submitRound)
+			players[assignment.RoleID] = human.New(submit)
 			continue
 		}
 		if !decisionClient.SupportsProvider(assignment.Provider) {
