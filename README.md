@@ -4,6 +4,24 @@ HerbieGo is a multiplayer computer board game inspired by the manufacturing plan
 
 The project is designed as both a strategy game and a simulation. Over many in-game years, the plant, the market, the available management ideas, and the viable strategies all evolve. New methods can emerge as the simulation progresses, allowing the game to reflect changing thinking in operations and management over time.
 
+## Quick Start
+
+The current supported playtesting path is the Bubble Tea runtime in `cmd/herbiego`.
+
+Install dependencies and verify the repo:
+
+```bash
+go run ./cmd/quality verify
+```
+
+Run the default local mixed match:
+
+```bash
+go run ./cmd/herbiego -rounds 2 -human-players 1
+```
+
+For setup details, config options, launch examples, and a short play guide, see [Configure, Launch, and Play](docs/configure-launch-play.md).
+
 ## Game Overview
 
 ### Premise
@@ -357,6 +375,7 @@ HerbieGo aims to be both a game and a systems-thinking simulation: a place where
 
 - [MVP Game Design](docs/mvp-game-design.md)
 - [Canonical Domain Model](docs/domain-model.md)
+- [Configure, Launch, and Play](docs/configure-launch-play.md)
 - [Architecture Decision Records](docs/adr/README.md)
 - [Contributor Guide](CONTRIBUTING.md)
 
@@ -393,21 +412,3 @@ For CI or other automation, use the non-mutating verification command:
 ```bash
 go run ./cmd/quality verify
 ```
-
-## Manual Smoke Test
-
-The supported local playtesting path is the default Bubble Tea runtime in `cmd/herbiego`.
-
-Run a short mixed match with:
-
-```bash
-go run ./cmd/herbiego -rounds 2 -human-players 1
-```
-
-Quick checks for the current MVP path:
-
-- Confirm the Bubble Tea shell opens immediately without a separate inspect or terminal-prompt mode.
-- Enter a Procurement turn in the action-entry workspace and submit it.
-- Verify the round feed shows submission progress without exposing the current-turn action or commentary before reveal.
-- Wait for the AI-controlled roles to finish and confirm the shell advances through collecting, resolving, and revealed phases.
-- Confirm the revealed feed shows the resolved round commentary and that round two becomes playable without restarting the program.
