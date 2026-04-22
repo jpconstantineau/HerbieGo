@@ -3,6 +3,7 @@ package app_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -271,6 +272,112 @@ func TestRoundCollectorReturnsErrorWhenHumanPlayerDoesNotRespond(t *testing.T) {
 	}
 	if !errors.Is(err, ports.ErrNonResponsive) {
 		t.Fatalf("Collect() error = %v, want ErrNonResponsive", err)
+	}
+}
+
+func TestRoundCollectorStartsAIPlayersBeforeEarlierHumanSubmits(t *testing.T) {
+	state := fixtureMatchState()
+	humanRelease := make(chan struct{})
+	aiStarted := make(chan struct{}, 1)
+
+	collector := app.RoundCollector{
+		Players: map[domain.RoleID]ports.Player{
+			domain.RoleProcurementManager: human.New(func(ctx context.Context, _ ports.RoundRequest) (domain.ActionSubmission, error) {
+				select {
+				case <-humanRelease:
+					return procurementSubmission(), nil
+				case <-ctx.Done():
+					return domain.ActionSubmission{}, ctx.Err()
+				}
+			}),
+			domain.RoleProductionManager: llm.New(func(_ context.Context, _ ports.RoundRequest) (domain.ActionSubmission, error) {
+				select {
+				case aiStarted <- struct{}{}:
+				default:
+				}
+				return productionSubmission(), nil
+			}),
+			domain.RoleSalesManager: human.New(func(_ context.Context, _ ports.RoundRequest) (domain.ActionSubmission, error) {
+				return domain.ActionSubmission{
+					Action: domain.RoleAction{
+						Sales: &domain.SalesAction{
+							ProductOffers: []domain.ProductOffer{{ProductID: "pump", UnitPrice: 14}},
+						},
+					},
+					Commentary: domain.CommentaryRecord{Body: "Sales ready."},
+				}, nil
+			}),
+			domain.RoleFinanceController: llm.New(func(_ context.Context, _ ports.RoundRequest) (domain.ActionSubmission, error) {
+				return financeSubmission(), nil
+			}),
+		},
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := collector.Collect(context.Background(), state, nil)
+		result <- err
+	}()
+
+	select {
+	case <-aiStarted:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("AI player was not started while the earlier human role was still waiting")
+	}
+
+	close(humanRelease)
+
+	if err := <-result; err != nil {
+		t.Fatalf("Collect() error = %v, want nil", err)
+	}
+}
+
+func TestRoundCollectorPreservesCanonicalRoleOrder(t *testing.T) {
+	state := fixtureMatchState()
+
+	collector := app.RoundCollector{
+		Players: map[domain.RoleID]ports.Player{
+			domain.RoleProcurementManager: human.New(func(_ context.Context, _ ports.RoundRequest) (domain.ActionSubmission, error) {
+				time.Sleep(40 * time.Millisecond)
+				return procurementSubmission(), nil
+			}),
+			domain.RoleProductionManager: llm.New(func(_ context.Context, _ ports.RoundRequest) (domain.ActionSubmission, error) {
+				return productionSubmission(), nil
+			}),
+			domain.RoleSalesManager: human.New(func(_ context.Context, _ ports.RoundRequest) (domain.ActionSubmission, error) {
+				time.Sleep(10 * time.Millisecond)
+				return domain.ActionSubmission{
+					Action: domain.RoleAction{
+						Sales: &domain.SalesAction{
+							ProductOffers: []domain.ProductOffer{{ProductID: "pump", UnitPrice: 14}},
+						},
+					},
+					Commentary: domain.CommentaryRecord{Body: "Sales ready."},
+				}, nil
+			}),
+			domain.RoleFinanceController: llm.New(func(_ context.Context, _ ports.RoundRequest) (domain.ActionSubmission, error) {
+				return financeSubmission(), nil
+			}),
+		},
+	}
+
+	actions, err := collector.Collect(context.Background(), state, nil)
+	if err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+
+	got := make([]domain.RoleID, 0, len(actions))
+	for _, action := range actions {
+		got = append(got, action.RoleID)
+	}
+
+	want := make([]domain.RoleID, 0, len(state.Roles))
+	for _, assignment := range state.Roles {
+		want = append(want, assignment.RoleID)
+	}
+
+	if !slices.Equal(got, want) {
+		t.Fatalf("collected role order = %v, want %v", got, want)
 	}
 }
 

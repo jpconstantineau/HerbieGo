@@ -114,7 +114,22 @@ func (c *Client) RequestDecision(ctx context.Context, request ports.ProviderDeci
 }
 
 func (c *Client) endpointURL(path string) string {
-	return c.baseURL.ResolveReference(&url.URL{Path: path}).String()
+	endpoint := *c.baseURL
+	basePath := strings.TrimSuffix(endpoint.Path, "/")
+	cleanPath := strings.TrimLeft(path, "/")
+	if trimmedBase := strings.TrimLeft(basePath, "/"); trimmedBase != "" {
+		prefix := trimmedBase + "/"
+		cleanPath = strings.TrimPrefix(cleanPath, prefix)
+	}
+	switch {
+	case basePath == "":
+		endpoint.Path = "/" + cleanPath
+	case cleanPath == "":
+		endpoint.Path = basePath
+	default:
+		endpoint.Path = basePath + "/" + cleanPath
+	}
+	return endpoint.String()
 }
 
 func parseBaseURL(rawURL string) (*url.URL, error) {
