@@ -42,7 +42,7 @@ func TestModelLoadsInitialSnapshotAndRendersShell(t *testing.T) {
 		},
 	}
 
-	model := NewModel("Prairie Pump Starter Plant", testStateSource{snapshot: initial})
+	model := NewModel(scenario.Starter(), testStateSource{snapshot: initial})
 	cmd := model.Init()
 	msg := cmd()
 
@@ -59,23 +59,19 @@ func TestModelLoadsInitialSnapshotAndRendersShell(t *testing.T) {
 	for _, want := range []string{
 		"Departments [focus]",
 		"Center Workspace",
-		"Mode: round feed",
-		"Navigate: 1 report | [2 feed] | 3 archive | [/] cycle",
-		"The round is waiting for simultaneous submissions.",
-		"Submissions received: 1/4",
-		"Current-turn actions remain hidden until every role is",
-		"collected and the round resolves.",
-		"Recent resolved rounds (1 shown)",
+		"Mode: action entry",
+		"Navigate: [1 action] | 2 report | 3 feed | 4 archive | [/]",
+		"cycle",
+		"Action entry for Procurement Manager",
+		"View: draft, review, and submit a private turn without",
+		"leaving the center workspace",
+		"Editing flow",
+		"Orders: housing=2, seal_kit=1",
 		"Plant Stats",
 		"Command Bar",
 		"Procurement Manager",
-		"[R1] 1 events | 1 commentary",
-		"Player action intake",
-		"1. Sales Manager: Demand stayed healthy.",
-		"Round simulation",
-		"1. Event: Assembly shipped one pump.",
 		"Inspect mode",
-		"Workspace: round feed",
+		"Workspace: action entry",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() missing %q\n%s", want, view)
@@ -123,7 +119,7 @@ func TestHistoryFeedEntriesMergesRoundsIntoSingleChronologicalFeed(t *testing.T)
 }
 
 func TestModelCyclesRoleSelectionAndPaneFocus(t *testing.T) {
-	model := NewModel("Prairie Pump Starter Plant", testStateSource{
+	model := NewModel(scenario.Starter(), testStateSource{
 		snapshot: scenario.Starter().InitialState("starter-match", starterAssignments()),
 	})
 
@@ -144,32 +140,281 @@ func TestModelCyclesRoleSelectionAndPaneFocus(t *testing.T) {
 
 	switched, _ := focusedShell.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
 	switchedShell := switched.(Model)
-	if switchedShell.workspace != workspaceHistoryArchive {
-		t.Fatalf("workspace = %v, want %v", switchedShell.workspace, workspaceHistoryArchive)
+	if switchedShell.workspace != workspaceRoleReport {
+		t.Fatalf("workspace = %v, want %v", switchedShell.workspace, workspaceRoleReport)
 	}
 
 	reset, _ := switchedShell.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
 	resetShell := reset.(Model)
-	if resetShell.workspace != workspaceRoleReport {
-		t.Fatalf("workspace = %v, want %v", resetShell.workspace, workspaceRoleReport)
+	if resetShell.workspace != workspaceActionEntry {
+		t.Fatalf("workspace = %v, want %v", resetShell.workspace, workspaceActionEntry)
 	}
 
 	feed, _ := resetShell.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
 	feedShell := feed.(Model)
-	if feedShell.workspace != workspaceRoundFeed {
-		t.Fatalf("workspace = %v, want %v", feedShell.workspace, workspaceRoundFeed)
+	if feedShell.workspace != workspaceRoleReport {
+		t.Fatalf("workspace = %v, want %v", feedShell.workspace, workspaceRoleReport)
 	}
 
 	archive, _ := feedShell.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'3'}})
 	archiveShell := archive.(Model)
-	if archiveShell.workspace != workspaceHistoryArchive {
-		t.Fatalf("workspace = %v, want %v", archiveShell.workspace, workspaceHistoryArchive)
+	if archiveShell.workspace != workspaceRoundFeed {
+		t.Fatalf("workspace = %v, want %v", archiveShell.workspace, workspaceRoundFeed)
+	}
+
+	history, _ := archiveShell.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'4'}})
+	historyShell := history.(Model)
+	if historyShell.workspace != workspaceHistoryArchive {
+		t.Fatalf("workspace = %v, want %v", historyShell.workspace, workspaceHistoryArchive)
+	}
+}
+
+func TestModelSupportsHumanActionDraftReviewAndSubmit(t *testing.T) {
+	model := NewModel(scenario.Starter(), testStateSource{
+		snapshot: scenario.Starter().InitialState("starter-match", starterAssignments()),
+	})
+
+	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
+	shell := loaded.(Model)
+
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune("housing=2")},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyDown},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune("Ordering only what assembly can absorb.")},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune{'r'}},
+		{Type: tea.KeyRunes, Runes: []rune{'s'}},
+	} {
+		next, _ := shell.Update(key)
+		shell = next.(Model)
+	}
+
+	draft := shell.currentDraft()
+	if draft.stage != draftStageSubmitted {
+		t.Fatalf("draft.stage = %v, want %v", draft.stage, draftStageSubmitted)
+	}
+	if got := len(shell.effectiveRoundFlow().SubmittedRoles); got != 1 {
+		t.Fatalf("submitted roles = %d, want 1", got)
+	}
+	if shell.workspace != workspaceRoundFeed {
+		t.Fatalf("workspace = %v, want %v", shell.workspace, workspaceRoundFeed)
+	}
+
+	shell.width = 120
+	shell.height = 32
+	view := shell.View()
+	for _, want := range []string{
+		"Mode: round feed",
+		"Submissions received: 1/4",
+		"Waiting on: Production Manager, Sales Manager, Finance",
+		"Controller",
+		"Current-turn actions remain hidden until every role is",
+		"collected and the round resolves.",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("submitted round-feed view missing %q\n%s", want, view)
+		}
+	}
+	for _, unwanted := range []string{
+		"Order 2 of housing from forgeco",
+		"Ordering only what assembly can absorb.",
+	} {
+		if strings.Contains(view, unwanted) {
+			t.Fatalf("round feed leaked %q\n%s", unwanted, view)
+		}
+	}
+}
+
+func TestModelAdvancesAcrossHumanRolesAndHidesLockedDrafts(t *testing.T) {
+	model := NewModel(scenario.Starter(), testStateSource{
+		snapshot: scenario.Starter().InitialState("starter-match", multiHumanAssignments()),
+	})
+
+	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
+	shell := loaded.(Model)
+
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune("housing=2")},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyDown},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune("Buying only what we can use.")},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune{'r'}},
+		{Type: tea.KeyRunes, Runes: []rune{'s'}},
+	} {
+		next, _ := shell.Update(key)
+		shell = next.(Model)
+	}
+
+	if got := shell.selectedAssignment().RoleID; got != domain.RoleSalesManager {
+		t.Fatalf("selected role = %q, want sales_manager", got)
+	}
+	if shell.workspace != workspaceActionEntry {
+		t.Fatalf("workspace = %v, want %v", shell.workspace, workspaceActionEntry)
+	}
+
+	shell.width = 120
+	shell.height = 32
+	view := shell.View()
+	for _, want := range []string{
+		"Action entry for Sales Manager",
+		"Procurement Manager submitted. Moved to Sales Manager",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("multi-human view missing %q\n%s", want, view)
+		}
+	}
+
+	shell.selectedRole = 0
+	privateView := shell.View()
+	for _, want := range []string{
+		"Submission locked for this round.",
+		"Locked human entries stay private in multi-human games.",
+	} {
+		if !strings.Contains(privateView, want) {
+			t.Fatalf("private locked view missing %q\n%s", want, privateView)
+		}
+	}
+	for _, unwanted := range []string{
+		"Order 2 of housing from forgeco",
+		"Buying only what we can use.",
+	} {
+		if strings.Contains(privateView, unwanted) {
+			t.Fatalf("private locked view leaked %q\n%s", unwanted, privateView)
+		}
+	}
+}
+
+func TestModelSwitchesToRoundFeedAfterFinalHumanSubmission(t *testing.T) {
+	model := NewModel(scenario.Starter(), testStateSource{
+		snapshot: scenario.Starter().InitialState("starter-match", multiHumanAssignments()),
+	})
+
+	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
+	shell := loaded.(Model)
+	shell.drafts[domain.RoleProcurementManager] = actionDraft{
+		stage: draftStageSubmitted,
+		submission: &domain.ActionSubmission{
+			Action:     domain.RoleAction{Procurement: &domain.ProcurementAction{}},
+			Commentary: domain.CommentaryRecord{Body: "Already locked."},
+		},
+	}
+	shell.selectedRole = 2
+
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune("pump=14")},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyDown},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune("Holding price steady.")},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune{'r'}},
+		{Type: tea.KeyRunes, Runes: []rune{'s'}},
+	} {
+		next, _ := shell.Update(key)
+		shell = next.(Model)
+	}
+
+	if shell.workspace != workspaceRoundFeed {
+		t.Fatalf("workspace = %v, want %v", shell.workspace, workspaceRoundFeed)
+	}
+	view := shell.View()
+	for _, want := range []string{
+		"Mode: round feed",
+		"Submissions received: 2/4",
+		"Waiting on: Production Manager, Finance Controller",
+		"All human entries are locked; switched to the round feed.",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("final human submission view missing %q\n%s", want, view)
+		}
+	}
+}
+
+func TestRoundFeedKeepsCurrentTurnSubmissionHidden(t *testing.T) {
+	model := NewModel(scenario.Starter(), testStateSource{
+		snapshot: scenario.Starter().InitialState("starter-match", starterAssignments()),
+	})
+
+	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
+	shell := loaded.(Model)
+	shell.drafts[domain.RoleProcurementManager] = actionDraft{
+		stage: draftStageSubmitted,
+		submission: &domain.ActionSubmission{
+			Action: domain.RoleAction{
+				Procurement: &domain.ProcurementAction{
+					Orders: []domain.PurchaseOrderIntent{{PartID: "housing", SupplierID: "forgeco", Quantity: 2}},
+				},
+			},
+			Commentary: domain.CommentaryRecord{Body: "Hidden until reveal."},
+		},
+	}
+	shell.workspace = workspaceRoundFeed
+	shell.width = 120
+	shell.height = 32
+
+	view := shell.View()
+	for _, want := range []string{
+		"Mode: round feed",
+		"Navigate: 1 action | 2 report | [3 feed] | 4 archive | [/]",
+		"cycle",
+		"Submissions received: 1/4",
+		"Waiting on: Production Manager, Sales Manager, Finance",
+		"Controller",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("round feed missing %q\n%s", want, view)
+		}
+	}
+	for _, unwanted := range []string{
+		"Order 2 of housing from forgeco",
+		"Hidden until reveal.",
+	} {
+		if strings.Contains(view, unwanted) {
+			t.Fatalf("round feed leaked %q\n%s", unwanted, view)
+		}
+	}
+}
+
+func TestFinanceActionEntrySeedsCurrentTargetsAsDefaults(t *testing.T) {
+	model := NewModel(scenario.Starter(), testStateSource{
+		snapshot: scenario.Starter().InitialState("starter-match", starterAssignments()),
+	})
+
+	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
+	shell := loaded.(Model)
+	shell.selectedRole = 3
+
+	submission, err := shell.buildSubmissionDraft(actionDraft{
+		financeProcurement: "21",
+		financeProduction:  "17",
+		financeRevenue:     "33",
+		financeCashFloor:   "9",
+		financeDebtCeiling: "14",
+		commentary:         "Keeping target posture stable while we learn the plant.",
+	})
+	if err != nil {
+		t.Fatalf("buildSubmissionDraft() error = %v", err)
+	}
+
+	targets := submission.Action.Finance.NextRoundTargets
+	if targets.EffectiveRound != 2 {
+		t.Fatalf("targets.EffectiveRound = %d, want 2", targets.EffectiveRound)
+	}
+	if targets.ProcurementBudget != 21 || targets.ProductionSpendBudget != 17 || targets.RevenueTarget != 33 || targets.CashFloorTarget != 9 || targets.DebtCeilingTarget != 14 {
+		t.Fatalf("targets = %+v, want explicit values copied into next-round targets", targets)
 	}
 }
 
 func TestModelResubscribesToStateUpdates(t *testing.T) {
 	updates := make(chan domain.MatchState, 1)
-	model := NewModel("Prairie Pump Starter Plant", testStateSource{
+	model := NewModel(scenario.Starter(), testStateSource{
 		snapshot: scenario.Starter().InitialState("starter-match", starterAssignments()),
 		updates:  updates,
 	})
@@ -194,7 +439,7 @@ func TestModelResubscribesToStateUpdates(t *testing.T) {
 }
 
 func TestModelUsesCompactLayoutAndEmptyStatesOnSmallerTerminal(t *testing.T) {
-	model := NewModel("Prairie Pump Starter Plant", testStateSource{
+	model := NewModel(scenario.Starter(), testStateSource{
 		snapshot: scenario.Starter().InitialState("starter-match", starterAssignments()),
 	})
 
@@ -211,11 +456,11 @@ func TestModelUsesCompactLayoutAndEmptyStatesOnSmallerTerminal(t *testing.T) {
 		"Departments [focus]",
 		"Plant Stats",
 		"Center Workspace",
-		"Navigate: 1 report | [2 feed] | 3 archive | [/] cycle",
-		"The round is waiting for simultaneous submissions.",
-		"Waiting on: Procurement Manager, Production Manager, Sales Manager, Finance Controller",
+		"Navigate: [1 action] | 2 report | 3 feed | 4 archive | [/] cycle",
+		"Action entry for Procurement Manager",
+		"Orders: housing=2, seal_kit=1",
 		"Workstations: waiting for first telemetry",
-		"Mode: inspect | Focus: departments | Workspace: round feed | Role: Procurement Manager |",
+		"Mode: inspect | Focus: departments | Workspace: action entry | Role: Procurement Manager |",
 		"Round: 1 | Phase: collecting | Round 1 loaded for Procurement Manager",
 	} {
 		if !strings.Contains(view, want) {
@@ -225,7 +470,7 @@ func TestModelUsesCompactLayoutAndEmptyStatesOnSmallerTerminal(t *testing.T) {
 }
 
 func TestModelRoleReportShowsCompanySnapshot(t *testing.T) {
-	model := NewModel("Prairie Pump Starter Plant", testStateSource{
+	model := NewModel(scenario.Starter(), testStateSource{
 		snapshot: scenario.Starter().InitialState("starter-match", starterAssignments()),
 	})
 
@@ -238,7 +483,8 @@ func TestModelRoleReportShowsCompanySnapshot(t *testing.T) {
 	view := shell.View()
 	for _, want := range []string{
 		"Mode: role report",
-		"[1 report] | 2 feed | 3 archive | [/] cycle",
+		"1 action | [2 report] | 3 feed | 4 archive | [/]",
+		"cycle",
 		"Role report for Procurement Manager",
 		"Company snapshot",
 		"Inventory value:",
@@ -251,7 +497,7 @@ func TestModelRoleReportShowsCompanySnapshot(t *testing.T) {
 }
 
 func TestModelRoundFeedExplainsResolvingAndRevealedStates(t *testing.T) {
-	model := NewModel("Prairie Pump Starter Plant", testStateSource{
+	model := NewModel(scenario.Starter(), testStateSource{
 		snapshot: scenario.Starter().InitialState("starter-match", starterAssignments()),
 	})
 
@@ -259,6 +505,7 @@ func TestModelRoundFeedExplainsResolvingAndRevealedStates(t *testing.T) {
 	shell := loaded.(Model)
 	shell.width = 120
 	shell.height = 30
+	shell.workspace = workspaceRoundFeed
 
 	shell.state.RoundFlow.Phase = domain.RoundPhaseResolving
 	resolvingView := shell.View()
@@ -299,7 +546,7 @@ func TestModelRoundFeedExplainsResolvingAndRevealedStates(t *testing.T) {
 }
 
 func TestModelArchiveShowsRetainedHistorySummaries(t *testing.T) {
-	model := NewModel("Prairie Pump Starter Plant", testStateSource{
+	model := NewModel(scenario.Starter(), testStateSource{
 		snapshot: scenario.Starter().InitialState("starter-match", starterAssignments()),
 	})
 
@@ -325,7 +572,8 @@ func TestModelArchiveShowsRetainedHistorySummaries(t *testing.T) {
 	view := shell.View()
 	for _, want := range []string{
 		"Mode: history archive",
-		"1 report | 2 feed | [3 archive] | [/] cycle",
+		"1 action | 2 report | 3 feed | [4 archive] | [/]",
+		"cycle",
 		"Rounds retained: 1",
 		"Use this view for older rounds and per-round summaries",
 		"rather than the current feed.",
@@ -347,6 +595,15 @@ func starterAssignments() []domain.RoleAssignment {
 		{RoleID: domain.RoleProcurementManager, PlayerID: "procurement-player", IsHuman: true},
 		{RoleID: domain.RoleProductionManager, PlayerID: "production-player", IsHuman: false, Provider: "ollama"},
 		{RoleID: domain.RoleSalesManager, PlayerID: "sales-player", IsHuman: false, Provider: "openrouter"},
+		{RoleID: domain.RoleFinanceController, PlayerID: "finance-player", IsHuman: false, Provider: "openai"},
+	}
+}
+
+func multiHumanAssignments() []domain.RoleAssignment {
+	return []domain.RoleAssignment{
+		{RoleID: domain.RoleProcurementManager, PlayerID: "procurement-player", IsHuman: true},
+		{RoleID: domain.RoleProductionManager, PlayerID: "production-player", IsHuman: false, Provider: "ollama"},
+		{RoleID: domain.RoleSalesManager, PlayerID: "sales-player", IsHuman: true},
 		{RoleID: domain.RoleFinanceController, PlayerID: "finance-player", IsHuman: false, Provider: "openai"},
 	}
 }
