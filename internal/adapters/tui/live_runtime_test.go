@@ -436,68 +436,6 @@ func scriptedLivePlayers(source *liveTestSource) map[domain.RoleID]ports.Player 
 	}
 }
 
-func expectStateUpdate(t *testing.T, model Model, cmd tea.Cmd, wants ...string) (Model, tea.Cmd, string) {
-	t.Helper()
-
-	if cmd == nil {
-		t.Fatal("expected live update subscription command")
-	}
-
-	msg := cmd()
-	nextModel, nextCmd := model.Update(msg)
-	shell := nextModel.(Model)
-	shell.width = 160
-	shell.height = 80
-	view := shell.View()
-
-	for _, want := range wants {
-		if !strings.Contains(view, want) {
-			t.Fatalf("live update missing %q\n%s", want, view)
-		}
-	}
-
-	return shell, nextCmd, view
-}
-
-func expectEventuallyStateUpdate(t *testing.T, model Model, cmd tea.Cmd, wants ...string) (Model, tea.Cmd, string) {
-	t.Helper()
-
-	currentModel := model
-	currentCmd := cmd
-	var lastView string
-
-	for range 12 {
-		if currentCmd == nil {
-			t.Fatalf("expected live update subscription command while waiting for %q", wants)
-		}
-
-		msg := currentCmd()
-		nextModel, nextCmd := currentModel.Update(msg)
-		shell := nextModel.(Model)
-		shell.width = 160
-		shell.height = 80
-		view := shell.View()
-		lastView = view
-
-		matched := true
-		for _, want := range wants {
-			if !strings.Contains(view, want) {
-				matched = false
-				break
-			}
-		}
-		if matched {
-			return shell, nextCmd, view
-		}
-
-		currentModel = shell
-		currentCmd = nextCmd
-	}
-
-	t.Fatalf("live update never matched %q\n%s", wants, lastView)
-	return Model{}, nil, ""
-}
-
 func expectPublishedView(t *testing.T, source *liveTestSource, model Model, wants ...string) (Model, tea.Cmd, string) {
 	t.Helper()
 

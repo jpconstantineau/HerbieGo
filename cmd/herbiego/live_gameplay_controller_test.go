@@ -148,28 +148,6 @@ func TestLiveGameplayControllerDeliversHumanSubmissionAndStreamsRoundPhases(t *t
 	}
 }
 
-func collectStates(t *testing.T, updates <-chan domain.MatchState, want int) []domain.MatchState {
-	t.Helper()
-
-	states := make([]domain.MatchState, 0, want)
-	timeout := time.NewTimer(2 * time.Second)
-	defer timeout.Stop()
-
-	for len(states) < want {
-		select {
-		case state, ok := <-updates:
-			if !ok {
-				t.Fatalf("updates closed after %d states, want %d", len(states), want)
-			}
-			states = append(states, state.Clone())
-		case <-timeout.C:
-			t.Fatalf("timed out after collecting %d/%d states", len(states), want)
-		}
-	}
-
-	return states
-}
-
 func collectStatesUntilPhase(t *testing.T, updates <-chan domain.MatchState, target domain.RoundPhase) []domain.MatchState {
 	t.Helper()
 
