@@ -170,7 +170,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-var providerSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+var providerSpinnerFrames = []string{"⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇"}
 
 func (m Model) spinnerCmd() tea.Cmd {
 	if !m.hasProviderWaits() {
