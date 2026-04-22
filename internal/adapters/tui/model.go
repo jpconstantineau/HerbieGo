@@ -167,14 +167,18 @@ func (m Model) View() string {
 
 	width := fallbackDimension(m.width, 120)
 	height := fallbackDimension(m.height, 32)
-	commandHeight := commandBarHeight(height)
-	contentHeight := max(height-commandHeight, 6)
-	layout := chooseLayout(width, contentHeight)
+	layout := chooseLayout(width, height)
+	frame := paneStyle(false)
+	totalRows := layoutPaneRows(layout) + 1
+	availableContentHeight := max(height-(totalRows*frame.GetVerticalFrameSize()), totalRows)
+	commandHeight := commandBarHeight(availableContentHeight)
+	contentHeight := max(availableContentHeight-commandHeight, layoutPaneRows(layout))
+	commandWidth := max(width-frame.GetHorizontalFrameSize(), 1)
 
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
 		m.renderContentArea(layout, width, contentHeight),
-		m.renderCommandBar(width, commandHeight),
+		m.renderCommandBar(commandWidth, commandHeight),
 	)
 }
 
@@ -275,10 +279,10 @@ func (m Model) renderDepartmentsPane(width, height int) string {
 	}
 
 	if report.BonusReminder != "" {
-		lines = append(lines, "", wrapLine("Bonus: "+report.BonusReminder, width-4))
+		lines = append(lines, "", wrapLine("Bonus: "+report.BonusReminder, paneTextWidth(width)))
 	}
 	for _, detail := range report.Department.DetailLines {
-		lines = append(lines, wrapLine("- "+detail, width-4))
+		lines = append(lines, wrapLine("- "+detail, paneTextWidth(width)))
 	}
 
 	return renderPane("Departments", lines, width, height, m.focusedPane == paneDepartments)
@@ -323,7 +327,7 @@ func (m Model) renderRoundFeedWorkspace(width int) []string {
 		lines = append(lines, "", fmt.Sprintf("Recent resolved rounds (%d shown)", len(recentRounds)))
 	}
 	for _, entry := range historyFeedEntries(recentRounds) {
-		lines = append(lines, wrapLine(entry, width-4))
+		lines = append(lines, wrapLine(entry, paneTextWidth(width)))
 	}
 	return lines
 }
@@ -336,13 +340,13 @@ func (m Model) renderRoleReportWorkspace(width int) []string {
 		"View: current briefing, company snapshot, and department metrics",
 	}
 	if report.BonusReminder != "" {
-		lines = append(lines, wrapLine("Bonus reminder: "+report.BonusReminder, width-4))
+		lines = append(lines, wrapLine("Bonus reminder: "+report.BonusReminder, paneTextWidth(width)))
 	}
 	company := companywideReportLines(report.Companywide)
 	if len(company) > 0 {
 		lines = append(lines, "", "Company snapshot")
 		for _, line := range company {
-			lines = append(lines, wrapLine("- "+line, width-4))
+			lines = append(lines, wrapLine("- "+line, paneTextWidth(width)))
 		}
 	}
 	if len(report.Department.KeyMetrics) > 0 {
@@ -354,7 +358,7 @@ func (m Model) renderRoleReportWorkspace(width int) []string {
 	if len(report.Department.DetailLines) > 0 {
 		lines = append(lines, "", "Role notes")
 		for _, detail := range report.Department.DetailLines {
-			lines = append(lines, wrapLine("- "+detail, width-4))
+			lines = append(lines, wrapLine("- "+detail, paneTextWidth(width)))
 		}
 	}
 	if len(lines) == 2 {
@@ -378,7 +382,7 @@ func (m Model) renderHistoryArchiveWorkspace(width int) []string {
 		"",
 	)
 	for _, entry := range archiveEntries(m.state.History.RecentRounds) {
-		lines = append(lines, wrapLine(entry, width-4))
+		lines = append(lines, wrapLine(entry, paneTextWidth(width)))
 	}
 	return lines
 }
@@ -425,7 +429,7 @@ func (m Model) renderCommandBar(width, height int) string {
 
 	lines := []string{
 		workspaceCommandHints(m.workspace),
-		wrapLine(status, width-4),
+		wrapLine(status, paneTextWidth(width)),
 	}
 	return renderPane("Command Bar", lines, width, height, m.focusedPane == paneCommandBar)
 }
@@ -439,37 +443,46 @@ func (m Model) statusLine() string {
 }
 
 func renderPane(title string, lines []string, width, height int, focused bool) string {
-	border := lipgloss.RoundedBorder()
-	borderColor := lipgloss.Color("62")
 	label := title
 	if focused {
-		borderColor = lipgloss.Color("205")
 		label = title + " [focus]"
 	}
+	content := fitLines(lines, max(height-1, 0))
 
-	style := lipgloss.NewStyle().
+	return paneStyle(focused).
 		Width(width).
 		Height(height).
-		Border(border).
-		BorderForeground(borderColor).
-		Padding(0, 1)
+		Render(label + "\n" + strings.Join(content, "\n"))
+}
 
-	content := fitLines(lines, max(height-2, 1))
-	return style.Render(label + "\n" + strings.Join(content, "\n"))
+func paneStyle(focused bool) lipgloss.Style {
+	borderColor := lipgloss.Color("62")
+	if focused {
+		borderColor = lipgloss.Color("205")
+	}
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor)
 }
 
 func fitLines(lines []string, maxLines int) []string {
 	if maxLines <= 0 {
 		return nil
 	}
-	if len(lines) <= maxLines {
-		return lines
+
+	flattened := make([]string, 0, len(lines))
+	for _, line := range lines {
+		flattened = append(flattened, strings.Split(line, "\n")...)
+	}
+	if len(flattened) <= maxLines {
+		return flattened
 	}
 	if maxLines == 1 {
 		return []string{"..."}
 	}
 
-	fitted := append([]string{}, lines[:maxLines-1]...)
+	fitted := append([]string{}, flattened[:maxLines-1]...)
 	return append(fitted, "...")
 }
 
@@ -485,6 +498,17 @@ func paneWidths(totalWidth int) (int, int, int) {
 	return left, center, right
 }
 
+func layoutPaneRows(layout layoutMode) int {
+	switch layout {
+	case layoutStacked:
+		return 3
+	case layoutCompact:
+		return 2
+	default:
+		return 1
+	}
+}
+
 func chooseLayout(width, height int) layoutMode {
 	switch {
 	case width < 72 || height < 18:
@@ -497,18 +521,21 @@ func chooseLayout(width, height int) layoutMode {
 }
 
 func (m Model) renderContentArea(layout layoutMode, width, height int) string {
+	frameWidth := paneStyle(false).GetHorizontalFrameSize()
+
 	switch layout {
 	case layoutStacked:
 		departmentsHeight, historyHeight, statsHeight := stackedPaneHeights(height)
+		paneWidth := max(width-frameWidth, 1)
 		return lipgloss.JoinVertical(
 			lipgloss.Left,
-			m.renderDepartmentsPane(width, departmentsHeight),
-			m.renderHistoryPane(width, historyHeight),
-			m.renderStatsPane(width, statsHeight),
+			m.renderDepartmentsPane(paneWidth, departmentsHeight),
+			m.renderHistoryPane(paneWidth, historyHeight),
+			m.renderStatsPane(paneWidth, statsHeight),
 		)
 	case layoutCompact:
 		topHeight, historyHeight := compactPaneHeights(height)
-		leftWidth, rightWidth := splitWidth(width)
+		leftWidth, rightWidth := splitWidth(max(width-(2*frameWidth), 2))
 		top := lipgloss.JoinHorizontal(
 			lipgloss.Top,
 			m.renderDepartmentsPane(leftWidth, topHeight),
@@ -517,10 +544,10 @@ func (m Model) renderContentArea(layout layoutMode, width, height int) string {
 		return lipgloss.JoinVertical(
 			lipgloss.Left,
 			top,
-			m.renderHistoryPane(width, historyHeight),
+			m.renderHistoryPane(max(width-frameWidth, 1), historyHeight),
 		)
 	default:
-		leftWidth, centerWidth, rightWidth := paneWidths(width)
+		leftWidth, centerWidth, rightWidth := paneWidths(max(width-(3*frameWidth), 3))
 		return lipgloss.JoinHorizontal(
 			lipgloss.Top,
 			m.renderDepartmentsPane(leftWidth, height),
@@ -531,21 +558,24 @@ func (m Model) renderContentArea(layout layoutMode, width, height int) string {
 }
 
 func compactPaneHeights(totalHeight int) (int, int) {
-	top := max(totalHeight/3, 7)
-	if history := totalHeight - top; history >= 8 {
-		return top, history
+	if totalHeight <= 2 {
+		return 1, 1
 	}
-	return max(totalHeight/2, 7), max(totalHeight-totalHeight/2, 7)
+
+	top := max(totalHeight/3, 5)
+	if remaining := totalHeight - top; remaining >= 5 {
+		return top, remaining
+	}
+
+	top = max(totalHeight-5, 3)
+	return top, max(totalHeight-top, 1)
 }
 
 func stackedPaneHeights(totalHeight int) (int, int, int) {
-	base := max(totalHeight/3, 5)
-	remaining := totalHeight - base
-	history := max(remaining/2, 6)
-	stats := max(totalHeight-base-history, 5)
-	if base+history+stats > totalHeight {
-		stats = max(totalHeight-base-history, 4)
-	}
+	base := max(totalHeight/3, 1)
+	remaining := max(totalHeight-base, 1)
+	history := max(remaining/2, 1)
+	stats := max(totalHeight-base-history, 1)
 	return base, history, stats
 }
 
@@ -559,10 +589,12 @@ func splitWidth(totalWidth int) (int, int) {
 
 func commandBarHeight(totalHeight int) int {
 	switch {
+	case totalHeight < 20:
+		return 1
 	case totalHeight < 24:
-		return 4
+		return 2
 	default:
-		return 5
+		return 3
 	}
 }
 
@@ -571,6 +603,10 @@ func fallbackDimension(value, fallback int) int {
 		return value
 	}
 	return fallback
+}
+
+func paneTextWidth(width int) int {
+	return max(width-2, 1)
 }
 
 func clampRoleIndex(index, roleCount int) int {

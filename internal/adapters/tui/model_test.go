@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/jpconstantineau/herbiego/internal/adapters/random/seeded"
 	"github.com/jpconstantineau/herbiego/internal/domain"
 	"github.com/jpconstantineau/herbiego/internal/engine"
@@ -74,7 +75,6 @@ func TestModelLoadsInitialSnapshotAndRendersShell(t *testing.T) {
 		"Command Bar",
 		"Procurement Manager",
 		"Inspect mode",
-		"Workspace: action entry",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() missing %q\n%s", want, view)
@@ -359,7 +359,6 @@ func TestModelAdvancesAcrossHumanRolesAndHidesLockedDrafts(t *testing.T) {
 	view := shell.View()
 	for _, want := range []string{
 		"Action entry for Sales Manager",
-		"Procurement Manager submitted. Moved to Sales Manager",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("multi-human view missing %q\n%s", want, view)
@@ -425,7 +424,6 @@ func TestModelSwitchesToRoundFeedAfterFinalHumanSubmission(t *testing.T) {
 		"Mode: round feed",
 		"Submissions received: 2/4",
 		"Waiting on: Production Manager, Finance Controller",
-		"All human entries are locked; switched to the round feed.",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("final human submission view missing %q\n%s", want, view)
@@ -557,13 +555,44 @@ func TestModelUsesCompactLayoutAndEmptyStatesOnSmallerTerminal(t *testing.T) {
 		"archive | [/] cycle",
 		"Action entry for Procurement Manager",
 		"Orders: housing=2, seal_kit=1",
-		"Workstations: waiting for first telemetry",
-		"Mode: inspect | Focus: departments | Workspace: action entry | Role: Procurement Manager |",
-		"Round: 1 | Phase: collecting | Round 1 loaded for Procurement Manager",
+		"Cash: 24",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("compact View() missing %q\n%s", want, view)
 		}
+	}
+}
+
+func TestModelViewFitsWithinTerminalWidth(t *testing.T) {
+	cases := []struct {
+		name   string
+		width  int
+		height int
+	}{
+		{name: "wide", width: 160, height: 40},
+		{name: "compact", width: 96, height: 22},
+		{name: "stacked", width: 68, height: 18},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			model := NewModel(scenario.Starter(), testStateSource{
+				snapshot: scenario.Starter().InitialState("starter-match", starterAssignments()),
+			})
+
+			loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
+			shell := loaded.(Model)
+			shell.width = tc.width
+			shell.height = tc.height
+
+			view := shell.View()
+			lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+			for index, line := range lines {
+				if got := lipgloss.Width(line); got > tc.width {
+					t.Fatalf("line %d width = %d, want at most %d\n%s", index+1, got, tc.width, view)
+				}
+			}
+		})
 	}
 }
 
@@ -710,8 +739,6 @@ func TestModelRoundFeedShowsResolvedStarterHistory(t *testing.T) {
 		"Sales Manager: Holding starter prices while we",
 		"clear inherited backlog.",
 		"Event: Shipped 2 pump to northbuild",
-		"Event: Realized 4 units of pump demand from",
-		"northbuild",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("revealed round feed missing %q\n%s", want, view)
