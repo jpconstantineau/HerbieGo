@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -43,6 +44,8 @@ type stateLoadedMsg struct {
 
 type stateStreamClosedMsg struct{}
 
+type spinnerTickMsg struct{}
+
 // StatusMsg updates the command-bar status from outside the Bubble Tea model.
 type StatusMsg struct {
 	Text string
@@ -64,6 +67,7 @@ type Model struct {
 	height       int
 	status       string
 	streamClosed bool
+	spinnerFrame int
 	drafts       map[domain.RoleID]actionDraft
 	lookup       lookupBrowserState
 }
@@ -142,7 +146,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state = typed.state.Clone()
 		m.selectedRole = clampRoleIndex(m.selectedRole, len(m.state.Roles))
 		m.status = fmt.Sprintf("Round %d loaded for %s", m.state.CurrentRound, m.roleTitle())
-		return m, waitForUpdateCmd(m.updates)
+		return m, tea.Batch(waitForUpdateCmd(m.updates), m.spinnerCmd())
 	case StatusMsg:
 		if strings.TrimSpace(typed.Text) != "" {
 			m.status = typed.Text
@@ -154,9 +158,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "Match updates complete. Inspect results and press q to exit."
 		}
 		return m, nil
+	case spinnerTickMsg:
+		if !m.hasProviderWaits() {
+			m.spinnerFrame = 0
+			return m, nil
+		}
+		m.spinnerFrame = (m.spinnerFrame + 1) % len(providerSpinnerFrames)
+		return m, m.spinnerCmd()
 	}
 
 	return m, nil
+}
+
+var providerSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+func (m Model) spinnerCmd() tea.Cmd {
+	if !m.hasProviderWaits() {
+		return nil
+	}
+	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg {
+		return spinnerTickMsg{}
+	})
+}
+
+func (m Model) hasProviderWaits() bool {
+	return len(m.effectiveRoundFlow().ProviderWaitingRoles) > 0
 }
 
 // View renders the four-pane shell.
@@ -275,7 +301,11 @@ func (m Model) renderDepartmentsPane(width, height int) string {
 		if assignment.IsHuman {
 			controller = "Human"
 		}
-		lines = append(lines, fmt.Sprintf("%s %s [%s]", cursor, displayRoleName(assignment.RoleID), controller))
+		waiting := ""
+		if slices.Contains(m.effectiveRoundFlow().ProviderWaitingRoles, assignment.RoleID) {
+			waiting = " " + providerSpinnerFrames[m.spinnerFrame%len(providerSpinnerFrames)]
+		}
+		lines = append(lines, fmt.Sprintf("%s %s%s [%s]", cursor, displayRoleName(assignment.RoleID), waiting, controller))
 	}
 
 	if report.BonusReminder != "" {

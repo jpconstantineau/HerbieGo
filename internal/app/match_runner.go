@@ -38,7 +38,14 @@ func (r MatchRunner) Play(ctx context.Context, initial domain.MatchState, rounds
 	for range rounds {
 		r.emitState(state)
 
-		actions, err := r.Collector.Collect(ctx, state, previous)
+		collector := r.Collector
+		collector.OnRoundFlow = func(flow domain.RoundFlowState) {
+			progress := state.Clone()
+			progress.RoundFlow = flow.Clone()
+			r.emitState(progress)
+		}
+
+		actions, err := collector.Collect(ctx, state, previous)
 		if err != nil {
 			return state, results, err
 		}
@@ -87,6 +94,7 @@ func prepareCollectionState(state domain.MatchState) domain.MatchState {
 	state.RoundFlow = domain.RoundFlowState{
 		Phase:                domain.RoundPhaseCollecting,
 		WaitingOnRoles:       roleIDs(state.Roles),
+		ProviderWaitingRoles: nil,
 		AIRevealDelaySeconds: state.RoundFlow.AIRevealDelaySeconds,
 	}
 	return state
@@ -111,6 +119,7 @@ func roundFlowFor(assignments []domain.RoleAssignment, actions []domain.ActionSu
 		Phase:                phase,
 		SubmittedRoles:       submitted,
 		WaitingOnRoles:       waiting,
+		ProviderWaitingRoles: nil,
 		AIRevealDelaySeconds: revealDelaySeconds,
 	}
 }

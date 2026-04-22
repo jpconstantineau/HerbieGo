@@ -746,6 +746,26 @@ func TestModelRoundFeedShowsResolvedStarterHistory(t *testing.T) {
 	}
 }
 
+func TestModelDepartmentsPaneShowsBrailleSpinnerForProviderWaits(t *testing.T) {
+	model := NewModel(scenario.Starter(), testStateSource{
+		snapshot: scenario.Starter().InitialState("starter-match", starterAssignments()),
+	})
+
+	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
+	shell := loaded.(Model)
+	shell.width = 120
+	shell.height = 32
+	shell.state.RoundFlow.ProviderWaitingRoles = []domain.RoleID{domain.RoleProductionManager}
+
+	view := shell.View()
+	if !strings.Contains(view, "Production Manager "+providerSpinnerFrames[0]+" [AI]") {
+		t.Fatalf("departments view missing provider spinner\n%s", view)
+	}
+	if strings.Contains(view, "Procurement Manager "+providerSpinnerFrames[0]+" [Human]") {
+		t.Fatalf("departments view showed spinner for unrelated human role\n%s", view)
+	}
+}
+
 func TestModelArchiveShowsRetainedHistorySummaries(t *testing.T) {
 	model := NewModel(scenario.Starter(), testStateSource{
 		snapshot: scenario.Starter().InitialState("starter-match", starterAssignments()),

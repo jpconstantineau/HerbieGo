@@ -3,6 +3,9 @@ package app
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/jpconstantineau/herbiego/internal/domain"
@@ -14,8 +17,9 @@ import (
 // RoundCollector gathers one action submission per assigned role through the
 // shared player contract.
 type RoundCollector struct {
-	Players map[domain.RoleID]ports.Player
-	Now     func() time.Time
+	Players     map[domain.RoleID]ports.Player
+	Now         func() time.Time
+	OnRoundFlow func(domain.RoundFlowState)
 }
 
 // Collect walks the assigned roles in stable match order so mixed human and AI
@@ -31,6 +35,7 @@ func (c RoundCollector) Collect(ctx context.Context, state domain.MatchState, pr
 	now := c.now()
 	collected := make([]domain.ActionSubmission, len(state.Roles))
 	group, groupCtx := errgroup.WithContext(ctx)
+	progress := newRoundFlowProgress(state.RoundFlow, state.Roles, c.OnRoundFlow)
 
 	for i, assignment := range state.Roles {
 		i := i
@@ -48,15 +53,18 @@ func (c RoundCollector) Collect(ctx context.Context, state domain.MatchState, pr
 		}
 
 		group.Go(func() error {
+			progress.markProviderWaiting(assignment, true)
 			submission, err := player.SubmitRound(groupCtx, request)
 			if err != nil {
 				submission, err = player.RecoverFromNonResponse(groupCtx, request, err)
 				if err != nil {
+					progress.markProviderWaiting(assignment, false)
 					return fmt.Errorf("app: collect round %d for %q: %w", state.CurrentRound, assignment.RoleID, err)
 				}
 			}
 
 			collected[i] = normalizeSubmission(submission, request, now)
+			progress.markSubmitted(assignment.RoleID)
 			return nil
 		})
 	}
@@ -139,4 +147,68 @@ func commentaryVisibility(existing domain.CommentaryVisibility) domain.Commentar
 		return existing
 	}
 	return domain.CommentaryPublic
+}
+
+type roundFlowProgress struct {
+	mu     sync.Mutex
+	flow   domain.RoundFlowState
+	notify func(domain.RoundFlowState)
+}
+
+func newRoundFlowProgress(flow domain.RoundFlowState, assignments []domain.RoleAssignment, notify func(domain.RoundFlowState)) *roundFlowProgress {
+	progress := &roundFlowProgress{
+		flow:   flow.Clone(),
+		notify: notify,
+	}
+	if progress.flow.Phase == "" {
+		progress.flow.Phase = domain.RoundPhaseCollecting
+	}
+	if len(progress.flow.WaitingOnRoles) == 0 && len(assignments) > 0 {
+		progress.flow.WaitingOnRoles = roleIDs(assignments)
+	}
+	return progress
+}
+
+func (p *roundFlowProgress) markProviderWaiting(assignment domain.RoleAssignment, active bool) {
+	if strings.TrimSpace(assignment.Provider) == "" {
+		return
+	}
+
+	p.mu.Lock()
+	if active {
+		if !slices.Contains(p.flow.ProviderWaitingRoles, assignment.RoleID) {
+			p.flow.ProviderWaitingRoles = append(p.flow.ProviderWaitingRoles, assignment.RoleID)
+		}
+	} else {
+		p.flow.ProviderWaitingRoles = removeRoleID(p.flow.ProviderWaitingRoles, assignment.RoleID)
+	}
+	flow := p.flow.Clone()
+	p.mu.Unlock()
+
+	p.emit(flow)
+}
+
+func (p *roundFlowProgress) markSubmitted(roleID domain.RoleID) {
+	p.mu.Lock()
+	if !slices.Contains(p.flow.SubmittedRoles, roleID) {
+		p.flow.SubmittedRoles = append(p.flow.SubmittedRoles, roleID)
+	}
+	p.flow.WaitingOnRoles = removeRoleID(p.flow.WaitingOnRoles, roleID)
+	p.flow.ProviderWaitingRoles = removeRoleID(p.flow.ProviderWaitingRoles, roleID)
+	flow := p.flow.Clone()
+	p.mu.Unlock()
+
+	p.emit(flow)
+}
+
+func (p *roundFlowProgress) emit(flow domain.RoundFlowState) {
+	if p.notify != nil {
+		p.notify(flow)
+	}
+}
+
+func removeRoleID(items []domain.RoleID, target domain.RoleID) []domain.RoleID {
+	return slices.DeleteFunc(items, func(roleID domain.RoleID) bool {
+		return roleID == target
+	})
 }
