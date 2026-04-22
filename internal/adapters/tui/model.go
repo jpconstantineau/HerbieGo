@@ -753,17 +753,12 @@ func historyFeedEntries(rounds []domain.RoundHistoryEntry) []string {
 	lines := make([]string, 0, len(rounds)*2)
 	for _, round := range rounds {
 		lines = append(lines, fmt.Sprintf("[R%d] %d events | %d commentary", round.Round, len(round.Events), len(round.Commentary)))
-		if len(round.Events) == 0 && len(round.Commentary) == 0 {
+		timeline := historyEntryTimeline(round)
+		if len(timeline) == 0 {
 			lines = append(lines, "  No visible history.")
 			continue
 		}
-
-		for _, event := range round.Events {
-			lines = append(lines, fmt.Sprintf("  Event: %s", event.Summary))
-		}
-		for _, commentary := range round.Commentary {
-			lines = append(lines, fmt.Sprintf("  %s: %s", displayRoleName(commentary.RoleID), commentary.Body))
-		}
+		lines = append(lines, roundTimelineLines(timeline)...)
 	}
 
 	return lines
@@ -786,18 +781,77 @@ func archiveEntries(rounds []domain.RoundRecord) []string {
 				round.Metrics.NetCashChange,
 			),
 		)
-		for _, event := range round.Events {
-			lines = append(lines, fmt.Sprintf("  Event: %s", event.Summary))
-		}
-		for _, commentary := range round.Commentary {
-			lines = append(lines, fmt.Sprintf("  %s: %s", displayRoleName(commentary.RoleID), commentary.Body))
-		}
-		if len(round.Events) == 0 && len(round.Commentary) == 0 {
+		timeline := round.CanonicalTimeline()
+		if len(timeline) == 0 {
 			lines = append(lines, "  No visible history.")
+			continue
+		}
+		lines = append(lines, roundTimelineLines(timeline)...)
+	}
+
+	return lines
+}
+
+func roundTimelineLines(entries []domain.RoundTimelineEntry) []string {
+	if len(entries) == 0 {
+		return nil
+	}
+
+	lines := make([]string, 0, len(entries))
+	var phase domain.RoundTimelinePhase
+	for _, entry := range entries {
+		if entry.Phase != phase {
+			phase = entry.Phase
+			lines = append(lines, fmt.Sprintf("  %s", timelinePhaseLabel(entry.Phase)))
+		}
+
+		switch entry.Kind {
+		case domain.RoundTimelineKindCommentary:
+			if entry.Commentary == nil {
+				continue
+			}
+			lines = append(lines, fmt.Sprintf("    %d. %s: %s", entry.Sequence, displayRoleName(entry.Commentary.RoleID), entry.Commentary.Body))
+		case domain.RoundTimelineKindEvent:
+			if entry.Event == nil {
+				continue
+			}
+			lines = append(lines, fmt.Sprintf("    %d. Event: %s", entry.Sequence, entry.Event.Summary))
 		}
 	}
 
 	return lines
+}
+
+func historyEntryTimeline(entry domain.RoundHistoryEntry) []domain.RoundTimelineEntry {
+	if len(entry.Timeline) > 0 {
+		return cloneTimelineEntries(entry.Timeline)
+	}
+
+	round := domain.RoundRecord{
+		Round:      entry.Round,
+		Events:     entry.Events,
+		Commentary: entry.Commentary,
+	}
+	return round.CanonicalTimeline()
+}
+
+func cloneTimelineEntries(entries []domain.RoundTimelineEntry) []domain.RoundTimelineEntry {
+	cloned := make([]domain.RoundTimelineEntry, len(entries))
+	for i := range entries {
+		cloned[i] = entries[i].Clone()
+	}
+	return cloned
+}
+
+func timelinePhaseLabel(phase domain.RoundTimelinePhase) string {
+	switch phase {
+	case domain.RoundTimelinePhaseIntake:
+		return "Player action intake"
+	case domain.RoundTimelinePhaseSummary:
+		return "Round summary"
+	default:
+		return "Round simulation"
+	}
 }
 
 func companywideReportLines(report domain.CompanywidePerformanceReport) []string {

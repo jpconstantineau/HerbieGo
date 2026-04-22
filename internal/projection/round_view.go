@@ -7,9 +7,11 @@ import (
 // BuildRoundView projects the canonical state and recent append-only history into a player-facing view.
 func BuildRoundView(state domain.MatchState, viewerRoleID domain.RoleID) domain.RoundView {
 	recentRounds := buildRecentRounds(state.History.Recent(10))
+	recentTimeline := make([]domain.RoundTimelineEntry, 0)
 	recentEvents := make([]domain.RoundEvent, 0)
 	recentCommentary := make([]domain.CommentaryRecord, 0)
 	for _, round := range recentRounds {
+		recentTimeline = append(recentTimeline, cloneTimeline(round.Timeline)...)
 		recentEvents = append(recentEvents, cloneEvents(round.Events)...)
 		recentCommentary = append(recentCommentary, cloneCommentary(round.Commentary)...)
 	}
@@ -24,6 +26,7 @@ func BuildRoundView(state domain.MatchState, viewerRoleID domain.RoleID) domain.
 		ActiveTargets:    state.ActiveTargets,
 		Metrics:          state.Metrics,
 		RecentRounds:     recentRounds,
+		RecentTimeline:   recentTimeline,
 		RecentEvents:     recentEvents,
 		RecentCommentary: recentCommentary,
 	}
@@ -40,6 +43,7 @@ func buildRecentRounds(history domain.RoundHistory) []domain.RoundHistoryEntry {
 			Round:      round.Round,
 			Events:     cloneEvents(round.Events),
 			Commentary: cloneCommentary(round.Commentary),
+			Timeline:   cloneTimeline(round.CanonicalTimeline()),
 			Summary: domain.RoundSummary{
 				Metrics:         round.Metrics,
 				EventCount:      len(round.Events),
@@ -60,6 +64,19 @@ func cloneEvents(events []domain.RoundEvent) []domain.RoundEvent {
 	cloned := make([]domain.RoundEvent, len(events))
 	for i := range events {
 		cloned[i] = events[i].Clone()
+	}
+
+	return cloned
+}
+
+func cloneTimeline(entries []domain.RoundTimelineEntry) []domain.RoundTimelineEntry {
+	if entries == nil {
+		return nil
+	}
+
+	cloned := make([]domain.RoundTimelineEntry, len(entries))
+	for i := range entries {
+		cloned[i] = entries[i].Clone()
 	}
 
 	return cloned

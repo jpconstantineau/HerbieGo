@@ -87,6 +87,9 @@ func TestBuildRoundViewIncludesRecentHistoryWindow(t *testing.T) {
 	if len(view.RecentCommentary) != 1 {
 		t.Fatalf("RecentCommentary len = %d, want 1", len(view.RecentCommentary))
 	}
+	if len(view.RecentTimeline) != 3 {
+		t.Fatalf("RecentTimeline len = %d, want 3", len(view.RecentTimeline))
+	}
 	if got := view.RecentRounds[1].Round; got != 3 {
 		t.Fatalf("RecentRounds[1].Round = %d, want 3", got)
 	}
@@ -98,6 +101,15 @@ func TestBuildRoundViewIncludesRecentHistoryWindow(t *testing.T) {
 	}
 	if got := view.RecentRounds[1].Summary.ActionCount; got != 1 {
 		t.Fatalf("RecentRounds[1].Summary.ActionCount = %d, want 1", got)
+	}
+	if got := view.RecentRounds[1].Timeline[0].Phase; got != domain.RoundTimelinePhaseIntake {
+		t.Fatalf("RecentRounds[1].Timeline[0].Phase = %q, want %q", got, domain.RoundTimelinePhaseIntake)
+	}
+	if got := view.RecentRounds[1].Timeline[0].Commentary.Body; got != "Demand stayed strong." {
+		t.Fatalf("RecentRounds[1].Timeline[0].Commentary.Body = %q, want %q", got, "Demand stayed strong.")
+	}
+	if got := view.RecentRounds[1].Timeline[1].Phase; got != domain.RoundTimelinePhaseSimulation {
+		t.Fatalf("RecentRounds[1].Timeline[1].Phase = %q, want %q", got, domain.RoundTimelinePhaseSimulation)
 	}
 	if got := view.RecentRounds[1].Summary.Metrics.RoundProfit; got != 12 {
 		t.Fatalf("RecentRounds[1].Summary.Metrics.RoundProfit = %d, want 12", got)
@@ -173,11 +185,15 @@ func TestBuildRoundViewClonesStructuredHistory(t *testing.T) {
 	view := projection.BuildRoundView(state, domain.RoleProcurementManager)
 	view.RecentRounds[0].Events[0].Payload["quantity"] = 99
 	view.RecentRounds[0].Commentary[0].Body = "Changed"
+	view.RecentRounds[0].Timeline[0].Commentary.Body = "Timeline Changed"
 
 	if got := state.History.RecentRounds[0].Events[0].Payload["quantity"]; got != 2 {
 		t.Fatalf("state payload quantity = %#v, want 2", got)
 	}
 	if got := state.History.RecentRounds[0].Commentary[0].Body; got != "Original" {
 		t.Fatalf("state commentary body = %q, want %q", got, "Original")
+	}
+	if len(state.History.RecentRounds[0].Timeline) != 0 {
+		t.Fatalf("state timeline len = %d, want 0", len(state.History.RecentRounds[0].Timeline))
 	}
 }

@@ -205,6 +205,7 @@ func (r *Resolver) ResolveRound(state domain.MatchState, actions []domain.Action
 	}
 
 	phase.finalizeRound(actionForRole(orderedActions, domain.RoleFinanceController))
+	round.Timeline = round.CanonicalTimeline()
 
 	nextState.Metrics = round.Metrics
 	nextState.CurrentRound++
@@ -983,8 +984,19 @@ func validateFinanceAction(action domain.ActionSubmission) error {
 }
 
 func collectCommentary(state domain.MatchState, actions []domain.ActionSubmission) []domain.CommentaryRecord {
-	commentary := make([]domain.CommentaryRecord, 0, len(actions))
-	for _, action := range actions {
+	ordered := cloneActions(actions)
+	slices.SortFunc(ordered, func(left, right domain.ActionSubmission) int {
+		if compare := left.SubmittedAt.Compare(right.SubmittedAt); compare != 0 {
+			return compare
+		}
+		if compare := cmp.Compare(actionTimelineRoleRank(left.RoleID), actionTimelineRoleRank(right.RoleID)); compare != 0 {
+			return compare
+		}
+		return cmp.Compare(string(left.ActionID), string(right.ActionID))
+	})
+
+	commentary := make([]domain.CommentaryRecord, 0, len(ordered))
+	for _, action := range ordered {
 		if strings.TrimSpace(action.Commentary.Body) == "" {
 			continue
 		}
@@ -1018,6 +1030,15 @@ func cloneActions(actions []domain.ActionSubmission) []domain.ActionSubmission {
 		cloned[i] = actions[i].Clone()
 	}
 	return cloned
+}
+
+func actionTimelineRoleRank(roleID domain.RoleID) int {
+	for index, canonical := range domain.CanonicalRoles() {
+		if canonical == roleID {
+			return index
+		}
+	}
+	return len(domain.CanonicalRoles())
 }
 
 func actionForRole(actions []domain.ActionSubmission, roleID domain.RoleID) *domain.ActionSubmission {
