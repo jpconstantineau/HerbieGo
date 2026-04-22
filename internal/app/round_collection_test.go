@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,14 +19,17 @@ func TestRoundCollectorCollectsMixedPlayersWithoutBranching(t *testing.T) {
 	state := fixtureMatchState()
 	now := time.Date(2026, time.April, 19, 16, 0, 0, 0, time.UTC)
 
+	var collectedMu sync.Mutex
 	collectedViews := map[domain.RoleID]domain.RoundView{}
 	collectedReports := map[domain.RoleID]domain.RoleRoundReport{}
 	collector := app.RoundCollector{
 		Now: func() time.Time { return now },
 		Players: map[domain.RoleID]ports.Player{
 			domain.RoleProcurementManager: human.New(func(_ context.Context, request ports.RoundRequest) (domain.ActionSubmission, error) {
+				collectedMu.Lock()
 				collectedViews[request.Assignment.RoleID] = request.RoleView.Clone()
 				collectedReports[request.Assignment.RoleID] = request.RoleReport.Clone()
+				collectedMu.Unlock()
 				return domain.ActionSubmission{
 					Action: domain.RoleAction{
 						Procurement: &domain.ProcurementAction{
@@ -38,8 +42,10 @@ func TestRoundCollectorCollectsMixedPlayersWithoutBranching(t *testing.T) {
 				}, nil
 			}),
 			domain.RoleProductionManager: llm.New(func(_ context.Context, request ports.RoundRequest) (domain.ActionSubmission, error) {
+				collectedMu.Lock()
 				collectedViews[request.Assignment.RoleID] = request.RoleView.Clone()
 				collectedReports[request.Assignment.RoleID] = request.RoleReport.Clone()
+				collectedMu.Unlock()
 				return domain.ActionSubmission{
 					Action: domain.RoleAction{
 						Production: &domain.ProductionAction{
@@ -55,8 +61,10 @@ func TestRoundCollectorCollectsMixedPlayersWithoutBranching(t *testing.T) {
 				}, nil
 			}),
 			domain.RoleSalesManager: human.New(func(_ context.Context, request ports.RoundRequest) (domain.ActionSubmission, error) {
+				collectedMu.Lock()
 				collectedViews[request.Assignment.RoleID] = request.RoleView.Clone()
 				collectedReports[request.Assignment.RoleID] = request.RoleReport.Clone()
+				collectedMu.Unlock()
 				return domain.ActionSubmission{
 					Action: domain.RoleAction{
 						Sales: &domain.SalesAction{
@@ -69,8 +77,10 @@ func TestRoundCollectorCollectsMixedPlayersWithoutBranching(t *testing.T) {
 				}, nil
 			}),
 			domain.RoleFinanceController: llm.New(func(_ context.Context, request ports.RoundRequest) (domain.ActionSubmission, error) {
+				collectedMu.Lock()
 				collectedViews[request.Assignment.RoleID] = request.RoleView.Clone()
 				collectedReports[request.Assignment.RoleID] = request.RoleReport.Clone()
+				collectedMu.Unlock()
 				return domain.ActionSubmission{
 					Action: domain.RoleAction{
 						Finance: &domain.FinanceAction{
@@ -97,6 +107,7 @@ func TestRoundCollectorCollectsMixedPlayersWithoutBranching(t *testing.T) {
 	if got := len(actions); got != len(state.Roles) {
 		t.Fatalf("len(actions) = %d, want %d", got, len(state.Roles))
 	}
+	collectedMu.Lock()
 	for _, assignment := range state.Roles {
 		view, ok := collectedViews[assignment.RoleID]
 		if !ok {
@@ -130,6 +141,7 @@ func TestRoundCollectorCollectsMixedPlayersWithoutBranching(t *testing.T) {
 			t.Fatalf("action.Commentary.Visibility = %q, want %q", action.Commentary.Visibility, domain.CommentaryPublic)
 		}
 	}
+	collectedMu.Unlock()
 }
 
 func TestRoundCollectorReusesPreviousActionWhenAIPlayerTimesOut(t *testing.T) {
@@ -379,6 +391,104 @@ func TestRoundCollectorPreservesCanonicalRoleOrder(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("collected role order = %v, want %v", got, want)
 	}
+}
+
+func TestRoundCollectorReportsProviderWaitingProgress(t *testing.T) {
+	state := fixtureMatchState()
+	productionRelease := make(chan struct{})
+	financeRelease := make(chan struct{})
+
+	var (
+		mu       sync.Mutex
+		progress []domain.RoundFlowState
+	)
+
+	collector := app.RoundCollector{
+		OnRoundFlow: func(flow domain.RoundFlowState) {
+			mu.Lock()
+			progress = append(progress, flow.Clone())
+			mu.Unlock()
+		},
+		Players: map[domain.RoleID]ports.Player{
+			domain.RoleProcurementManager: human.New(func(_ context.Context, _ ports.RoundRequest) (domain.ActionSubmission, error) {
+				return procurementSubmission(), nil
+			}),
+			domain.RoleProductionManager: llm.New(func(ctx context.Context, _ ports.RoundRequest) (domain.ActionSubmission, error) {
+				select {
+				case <-productionRelease:
+					return productionSubmission(), nil
+				case <-ctx.Done():
+					return domain.ActionSubmission{}, ctx.Err()
+				}
+			}),
+			domain.RoleSalesManager: human.New(func(_ context.Context, _ ports.RoundRequest) (domain.ActionSubmission, error) {
+				return domain.ActionSubmission{
+					Action: domain.RoleAction{
+						Sales: &domain.SalesAction{
+							ProductOffers: []domain.ProductOffer{{ProductID: "pump", UnitPrice: 14}},
+						},
+					},
+					Commentary: domain.CommentaryRecord{Body: "Sales ready."},
+				}, nil
+			}),
+			domain.RoleFinanceController: llm.New(func(ctx context.Context, _ ports.RoundRequest) (domain.ActionSubmission, error) {
+				select {
+				case <-financeRelease:
+					return financeSubmission(), nil
+				case <-ctx.Done():
+					return domain.ActionSubmission{}, ctx.Err()
+				}
+			}),
+		},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := collector.Collect(context.Background(), state, nil)
+		done <- err
+	}()
+
+	requireProgressState := func(t *testing.T, predicate func(domain.RoundFlowState) bool, description string) {
+		t.Helper()
+
+		deadline := time.Now().Add(time.Second)
+		for time.Now().Before(deadline) {
+			mu.Lock()
+			snapshots := slices.Clone(progress)
+			mu.Unlock()
+
+			for _, snapshot := range snapshots {
+				if predicate(snapshot) {
+					return
+				}
+			}
+
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("did not observe progress state %s; saw %+v", description, progress)
+	}
+
+	requireProgressState(t, func(flow domain.RoundFlowState) bool {
+		return slices.Contains(flow.ProviderWaitingRoles, domain.RoleProductionManager)
+	}, "containing production_manager")
+	requireProgressState(t, func(flow domain.RoundFlowState) bool {
+		return slices.Contains(flow.ProviderWaitingRoles, domain.RoleProductionManager) &&
+			slices.Contains(flow.ProviderWaitingRoles, domain.RoleFinanceController)
+	}, "containing both production_manager and finance_controller")
+
+	close(productionRelease)
+	requireProgressState(t, func(flow domain.RoundFlowState) bool {
+		return slices.Equal(flow.ProviderWaitingRoles, []domain.RoleID{domain.RoleFinanceController})
+	}, "equal to [finance_controller]")
+
+	close(financeRelease)
+	if err := <-done; err != nil {
+		t.Fatalf("Collect() error = %v, want nil", err)
+	}
+
+	requireProgressState(t, func(flow domain.RoundFlowState) bool {
+		return len(flow.ProviderWaitingRoles) == 0
+	}, "with no provider waits")
 }
 
 func fixtureMatchState() domain.MatchState {

@@ -64,6 +64,7 @@ type RoundFlowState struct {
 	Phase                RoundPhase
 	SubmittedRoles       []RoleID
 	WaitingOnRoles       []RoleID
+	ProviderWaitingRoles []RoleID
 	AIRevealDelaySeconds int
 }
 
@@ -551,6 +552,7 @@ func (f RoundFlowState) Clone() RoundFlowState {
 		Phase:                f.Phase,
 		SubmittedRoles:       slices.Clone(f.SubmittedRoles),
 		WaitingOnRoles:       slices.Clone(f.WaitingOnRoles),
+		ProviderWaitingRoles: slices.Clone(f.ProviderWaitingRoles),
 		AIRevealDelaySeconds: f.AIRevealDelaySeconds,
 	}
 }

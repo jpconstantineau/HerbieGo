@@ -103,7 +103,7 @@ func TestLiveGameplayControllerDeliversHumanSubmissionAndStreamsRoundPhases(t *t
 		Commentary: domain.CommentaryRecord{Body: "Buying only what the bottleneck can absorb."},
 	})
 
-	states := collectStates(t, controller.Updates(), 3)
+	states := collectStatesUntilPhase(t, controller.Updates(), domain.RoundPhaseRevealed)
 	if err := <-result; err != nil {
 		t.Fatalf("runner.Play() error = %v", err)
 	}
@@ -111,17 +111,35 @@ func TestLiveGameplayControllerDeliversHumanSubmissionAndStreamsRoundPhases(t *t
 	if got := states[0].RoundFlow.Phase; got != domain.RoundPhaseCollecting {
 		t.Fatalf("first phase = %q, want collecting", got)
 	}
-	if got := states[1].RoundFlow.Phase; got != domain.RoundPhaseResolving {
-		t.Fatalf("second phase = %q, want resolving", got)
+
+	resolvingIndex := -1
+	revealedIndex := -1
+	for index, state := range states {
+		switch state.RoundFlow.Phase {
+		case domain.RoundPhaseResolving:
+			if resolvingIndex < 0 {
+				resolvingIndex = index
+			}
+		case domain.RoundPhaseRevealed:
+			if revealedIndex < 0 {
+				revealedIndex = index
+			}
+		}
 	}
-	if got := states[2].RoundFlow.Phase; got != domain.RoundPhaseRevealed {
-		t.Fatalf("third phase = %q, want revealed", got)
+	if resolvingIndex < 0 {
+		t.Fatalf("states never reached resolving: %+v", states)
 	}
-	if got := states[2].History.RecentRounds; len(got) != 1 {
+	if revealedIndex < 0 {
+		t.Fatalf("states never reached revealed: %+v", states)
+	}
+	if resolvingIndex > revealedIndex {
+		t.Fatalf("resolving phase arrived after revealed phase: %+v", states)
+	}
+	if got := states[revealedIndex].History.RecentRounds; len(got) != 1 {
 		t.Fatalf("revealed history len = %d, want 1", len(got))
 	}
 
-	commentary := states[2].History.RecentRounds[0].Commentary
+	commentary := states[revealedIndex].History.RecentRounds[0].Commentary
 	if len(commentary) == 0 || commentary[0].RoleID != domain.RoleProcurementManager {
 		t.Fatalf("revealed commentary = %#v, want procurement commentary first", commentary)
 	}
@@ -130,24 +148,25 @@ func TestLiveGameplayControllerDeliversHumanSubmissionAndStreamsRoundPhases(t *t
 	}
 }
 
-func collectStates(t *testing.T, updates <-chan domain.MatchState, want int) []domain.MatchState {
+func collectStatesUntilPhase(t *testing.T, updates <-chan domain.MatchState, target domain.RoundPhase) []domain.MatchState {
 	t.Helper()
 
-	states := make([]domain.MatchState, 0, want)
+	states := make([]domain.MatchState, 0, 6)
 	timeout := time.NewTimer(2 * time.Second)
 	defer timeout.Stop()
 
-	for len(states) < want {
+	for {
 		select {
 		case state, ok := <-updates:
 			if !ok {
-				t.Fatalf("updates closed after %d states, want %d", len(states), want)
+				t.Fatalf("updates closed before phase %q; saw %d states", target, len(states))
 			}
 			states = append(states, state.Clone())
+			if state.RoundFlow.Phase == target {
+				return states
+			}
 		case <-timeout.C:
-			t.Fatalf("timed out after collecting %d/%d states", len(states), want)
+			t.Fatalf("timed out waiting for phase %q after collecting %d states", target, len(states))
 		}
 	}
-
-	return states
 }
