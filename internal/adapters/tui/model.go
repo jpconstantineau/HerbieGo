@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jpconstantineau/herbiego/internal/domain"
 	"github.com/jpconstantineau/herbiego/internal/projection"
+	"github.com/jpconstantineau/herbiego/internal/scenario"
 )
 
 const (
@@ -27,7 +28,8 @@ const (
 type layoutMode int
 
 const (
-	workspaceRoleReport workspaceMode = iota
+	workspaceActionEntry workspaceMode = iota
+	workspaceRoleReport
 	workspaceRoundFeed
 	workspaceHistoryArchive
 )
@@ -42,7 +44,7 @@ type stateStreamClosedMsg struct{}
 
 // Model is the Bubble Tea shell for the round-based gameplay UI.
 type Model struct {
-	scenarioName string
+	scenario     scenario.Definition
 	source       StateSource
 	updates      <-chan domain.MatchState
 	state        domain.MatchState
@@ -53,16 +55,18 @@ type Model struct {
 	height       int
 	status       string
 	streamClosed bool
+	drafts       map[domain.RoleID]actionDraft
 }
 
 // NewModel constructs the main gameplay shell model.
-func NewModel(scenarioName string, source StateSource) Model {
+func NewModel(definition scenario.Definition, source StateSource) Model {
 	return Model{
-		scenarioName: scenarioName,
-		source:       source,
-		updates:      source.Updates(),
-		workspace:    workspaceRoundFeed,
-		status:       "Loading round state...",
+		scenario:  definition,
+		source:    source,
+		updates:   source.Updates(),
+		workspace: workspaceActionEntry,
+		status:    "Loading round state...",
+		drafts:    make(map[domain.RoleID]actionDraft),
 	}
 }
 
@@ -79,6 +83,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = typed.Height
 		return m, nil
 	case tea.KeyMsg:
+		if m.handleActionEntryKey(typed) {
+			return m, nil
+		}
 		switch typed.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
@@ -93,10 +100,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "[":
 			m.moveWorkspace(-1)
 		case "1":
-			m.setWorkspace(workspaceRoleReport)
+			m.setWorkspace(workspaceActionEntry)
 		case "2":
-			m.setWorkspace(workspaceRoundFeed)
+			m.setWorkspace(workspaceRoleReport)
 		case "3":
+			m.setWorkspace(workspaceRoundFeed)
+		case "4":
 			m.setWorkspace(workspaceHistoryArchive)
 		case "left", "h", "p":
 			m.moveRole(-1)
@@ -105,6 +114,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case stateLoadedMsg:
+		if typed.state.CurrentRound != m.state.CurrentRound {
+			clear(m.drafts)
+		}
 		m.state = typed.state.Clone()
 		m.selectedRole = clampRoleIndex(m.selectedRole, len(m.state.Roles))
 		m.status = fmt.Sprintf("Round %d loaded for %s", m.state.CurrentRound, m.roleTitle())
@@ -201,7 +213,9 @@ func (m Model) selectedAssignment() domain.RoleAssignment {
 
 func (m Model) selectedRoleView() domain.RoundView {
 	assignment := m.selectedAssignment()
-	return projection.BuildRoundView(m.state, assignment.RoleID)
+	view := projection.BuildRoundView(m.state, assignment.RoleID)
+	view.RoundFlow = m.effectiveRoundFlow()
+	return view
 }
 
 func (m Model) selectedRoleReport() domain.RoleRoundReport {
@@ -213,7 +227,7 @@ func (m Model) renderDepartmentsPane(width, height int) string {
 	report := m.selectedRoleReport()
 
 	lines := []string{
-		fmt.Sprintf("Scenario: %s", m.scenarioName),
+		fmt.Sprintf("Scenario: %s", m.scenario.DisplayName),
 		fmt.Sprintf("Match: %s", m.state.MatchID),
 		fmt.Sprintf("Mode: %s", modeLabel(m.focusedPane)),
 		"",
@@ -252,6 +266,8 @@ func (m Model) renderHistoryPane(width, height int) string {
 	switch m.workspace {
 	case workspaceRoleReport:
 		lines = append(lines, m.renderRoleReportWorkspace(width)...)
+	case workspaceActionEntry:
+		lines = append(lines, m.renderActionEntryWorkspace(width)...)
 	case workspaceHistoryArchive:
 		lines = append(lines, m.renderHistoryArchiveWorkspace(width)...)
 	default:
@@ -371,8 +387,9 @@ func (m Model) renderStatsPane(width, height int) string {
 }
 
 func (m Model) renderCommandBar(width, height int) string {
+	flow := m.effectiveRoundFlow()
 	status := fmt.Sprintf("Mode: inspect | Focus: %s | Workspace: %s | Role: %s | Round: %d", paneName(m.focusedPane), m.workspace.label(), m.roleTitle(), m.state.CurrentRound)
-	status += " | Phase: " + roundPhaseShortLabel(m.state.RoundFlow.Phase)
+	status += " | Phase: " + roundPhaseShortLabel(flow.Phase)
 	if detail := strings.TrimSpace(m.statusLine()); detail != "" {
 		status += " | " + detail
 	}
@@ -684,6 +701,8 @@ func workspacePaneTitle() string {
 
 func (mode workspaceMode) label() string {
 	switch mode {
+	case workspaceActionEntry:
+		return "action entry"
 	case workspaceRoleReport:
 		return "role report"
 	case workspaceHistoryArchive:
@@ -694,7 +713,7 @@ func (mode workspaceMode) label() string {
 }
 
 func workspaceNavigationLine(active workspaceMode) string {
-	items := []workspaceMode{workspaceRoleReport, workspaceRoundFeed, workspaceHistoryArchive}
+	items := []workspaceMode{workspaceActionEntry, workspaceRoleReport, workspaceRoundFeed, workspaceHistoryArchive}
 	labels := make([]string, 0, len(items))
 	for index, mode := range items {
 		label := fmt.Sprintf("%d %s", index+1, mode.shortLabel())
@@ -707,9 +726,11 @@ func workspaceNavigationLine(active workspaceMode) string {
 }
 
 func workspaceCommandHints(active workspaceMode) string {
-	base := "Inspect mode | tab/shift+tab focus panes | left/right cycle roles | 1/2/3 switch workspace | [/] cycle | q quit"
+	base := "Inspect mode | tab/shift+tab focus panes | left/right cycle roles | 1/2/3/4 switch workspace | [/] cycle | q quit"
 
 	switch active {
+	case workspaceActionEntry:
+		return base + " | action entry uses up/down to move fields, enter to edit, r review, s submit"
 	case workspaceRoleReport:
 		return base + " | report shows briefing, company snapshot, and role metrics"
 	case workspaceHistoryArchive:
@@ -721,6 +742,8 @@ func workspaceCommandHints(active workspaceMode) string {
 
 func (mode workspaceMode) shortLabel() string {
 	switch mode {
+	case workspaceActionEntry:
+		return "action"
 	case workspaceRoleReport:
 		return "report"
 	case workspaceHistoryArchive:
