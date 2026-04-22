@@ -60,7 +60,8 @@ func TestModelLoadsInitialSnapshotAndRendersShell(t *testing.T) {
 		"Departments [focus]",
 		"Center Workspace",
 		"Mode: action entry",
-		"Navigate: [1 action] | 2 report | 3 feed | 4 archive | [/]",
+		"Navigate: [1 action] | 2 lookup | 3 report | 4 feed | 5",
+		"archive | [/] cycle",
 		"cycle",
 		"Action entry for Procurement Manager",
 		"View: draft, review, and submit a private turn without",
@@ -140,8 +141,8 @@ func TestModelCyclesRoleSelectionAndPaneFocus(t *testing.T) {
 
 	switched, _ := focusedShell.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
 	switchedShell := switched.(Model)
-	if switchedShell.workspace != workspaceRoleReport {
-		t.Fatalf("workspace = %v, want %v", switchedShell.workspace, workspaceRoleReport)
+	if switchedShell.workspace != workspaceScenarioLookup {
+		t.Fatalf("workspace = %v, want %v", switchedShell.workspace, workspaceScenarioLookup)
 	}
 
 	reset, _ := switchedShell.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
@@ -152,20 +153,67 @@ func TestModelCyclesRoleSelectionAndPaneFocus(t *testing.T) {
 
 	feed, _ := resetShell.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
 	feedShell := feed.(Model)
-	if feedShell.workspace != workspaceRoleReport {
-		t.Fatalf("workspace = %v, want %v", feedShell.workspace, workspaceRoleReport)
+	if feedShell.workspace != workspaceScenarioLookup {
+		t.Fatalf("workspace = %v, want %v", feedShell.workspace, workspaceScenarioLookup)
 	}
 
 	archive, _ := feedShell.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'3'}})
 	archiveShell := archive.(Model)
-	if archiveShell.workspace != workspaceRoundFeed {
-		t.Fatalf("workspace = %v, want %v", archiveShell.workspace, workspaceRoundFeed)
+	if archiveShell.workspace != workspaceRoleReport {
+		t.Fatalf("workspace = %v, want %v", archiveShell.workspace, workspaceRoleReport)
 	}
 
 	history, _ := archiveShell.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'4'}})
 	historyShell := history.(Model)
-	if historyShell.workspace != workspaceHistoryArchive {
-		t.Fatalf("workspace = %v, want %v", historyShell.workspace, workspaceHistoryArchive)
+	if historyShell.workspace != workspaceRoundFeed {
+		t.Fatalf("workspace = %v, want %v", historyShell.workspace, workspaceRoundFeed)
+	}
+
+	archiveView, _ := historyShell.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'5'}})
+	archiveViewShell := archiveView.(Model)
+	if archiveViewShell.workspace != workspaceHistoryArchive {
+		t.Fatalf("workspace = %v, want %v", archiveViewShell.workspace, workspaceHistoryArchive)
+	}
+}
+
+func TestModelRendersScenarioLookupWorkspaceAndSupportsBrowsing(t *testing.T) {
+	model := NewModel(scenario.Starter(), testStateSource{
+		snapshot: scenario.Starter().InitialState("starter-match", starterAssignments()),
+	})
+
+	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
+	shell := loaded.(Model)
+	shell.width = 120
+	shell.height = 32
+
+	lookup, _ := shell.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	shell = lookup.(Model)
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune{'d'}},
+		{Type: tea.KeyDown},
+	} {
+		next, _ := shell.Update(key)
+		shell = next.(Model)
+	}
+
+	view := shell.View()
+	for _, want := range []string{
+		"Mode: scenario lookup",
+		"Navigate: 1 action | [2 lookup] | 3 report | 4 feed | 5",
+		"archive | [/] cycle",
+		"Scenario lookups for Prairie Pump Starter Plant",
+		"same canonical scenario lookup surface",
+		"used by AI tool calls",
+		"Lookup tabs: v suppliers | r routes | b bom | [d demand]",
+		"Customer demand (2/6)",
+		"Customer: AgriWorks (agriworks)",
+		"Product: Valve (valve)",
+		"Tool parity: show_customer_demand_profile(customer_id,",
+		"product_id)",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("scenario lookup view missing %q\n%s", want, view)
+		}
 	}
 }
 
@@ -362,7 +410,8 @@ func TestRoundFeedKeepsCurrentTurnSubmissionHidden(t *testing.T) {
 	view := shell.View()
 	for _, want := range []string{
 		"Mode: round feed",
-		"Navigate: 1 action | 2 report | [3 feed] | 4 archive | [/]",
+		"Navigate: 1 action | 2 lookup | 3 report | [4 feed] | 5",
+		"archive | [/] cycle",
 		"cycle",
 		"Submissions received: 1/4",
 		"Waiting on: Production Manager, Sales Manager, Finance",
@@ -456,7 +505,8 @@ func TestModelUsesCompactLayoutAndEmptyStatesOnSmallerTerminal(t *testing.T) {
 		"Departments [focus]",
 		"Plant Stats",
 		"Center Workspace",
-		"Navigate: [1 action] | 2 report | 3 feed | 4 archive | [/] cycle",
+		"Navigate: [1 action] | 2 lookup | 3 report | 4 feed | 5",
+		"archive | [/] cycle",
 		"Action entry for Procurement Manager",
 		"Orders: housing=2, seal_kit=1",
 		"Workstations: waiting for first telemetry",
@@ -483,7 +533,8 @@ func TestModelRoleReportShowsCompanySnapshot(t *testing.T) {
 	view := shell.View()
 	for _, want := range []string{
 		"Mode: role report",
-		"1 action | [2 report] | 3 feed | 4 archive | [/]",
+		"1 action | 2 lookup | [3 report] | 4 feed | 5",
+		"archive | [/] cycle",
 		"cycle",
 		"Role report for Procurement Manager",
 		"Company snapshot",
@@ -572,7 +623,8 @@ func TestModelArchiveShowsRetainedHistorySummaries(t *testing.T) {
 	view := shell.View()
 	for _, want := range []string{
 		"Mode: history archive",
-		"1 action | 2 report | 3 feed | [4 archive] | [/]",
+		"1 action | 2 lookup | 3 report | 4 feed | [5",
+		"archive] | [/] cycle",
 		"cycle",
 		"Rounds retained: 1",
 		"Use this view for older rounds and per-round summaries",
