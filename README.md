@@ -393,3 +393,21 @@ For CI or other automation, use the non-mutating verification command:
 ```bash
 go run ./cmd/quality verify
 ```
+
+## Manual Smoke Test
+
+The supported local playtesting path is the default Bubble Tea runtime in `cmd/herbiego`.
+
+Run a short mixed match with:
+
+```bash
+go run ./cmd/herbiego -rounds 2 -human-players 1
+```
+
+Quick checks for the current MVP path:
+
+- Confirm the Bubble Tea shell opens immediately without a separate inspect or terminal-prompt mode.
+- Enter a Procurement turn in the action-entry workspace and submit it.
+- Verify the round feed shows submission progress without exposing the current-turn action or commentary before reveal.
+- Wait for the AI-controlled roles to finish and confirm the shell advances through collecting, resolving, and revealed phases.
+- Confirm the revealed feed shows the resolved round commentary and that round two becomes playable without restarting the program.
