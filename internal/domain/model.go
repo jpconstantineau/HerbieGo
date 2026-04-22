@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"cmp"
 	"maps"
 	"slices"
 	"time"
@@ -259,11 +260,35 @@ type RoundRecord struct {
 	Actions    []ActionSubmission
 	Events     []RoundEvent
 	Commentary []CommentaryRecord
+	Timeline   []RoundTimelineEntry
 	Metrics    PlantMetrics
 }
 
 type RoundHistory struct {
 	RecentRounds []RoundRecord
+}
+
+type RoundTimelinePhase string
+
+const (
+	RoundTimelinePhaseIntake     RoundTimelinePhase = "player_action_intake"
+	RoundTimelinePhaseSimulation RoundTimelinePhase = "round_simulation"
+	RoundTimelinePhaseSummary    RoundTimelinePhase = "round_summary"
+)
+
+type RoundTimelineKind string
+
+const (
+	RoundTimelineKindCommentary RoundTimelineKind = "commentary"
+	RoundTimelineKindEvent      RoundTimelineKind = "event"
+)
+
+type RoundTimelineEntry struct {
+	Phase      RoundTimelinePhase
+	Sequence   int
+	Kind       RoundTimelineKind
+	Event      *RoundEvent
+	Commentary *CommentaryRecord
 }
 
 type CommentaryRecord struct {
@@ -320,6 +345,7 @@ type RoundView struct {
 	ActiveTargets    BudgetTargets
 	Metrics          PlantMetrics
 	RecentRounds     []RoundHistoryEntry
+	RecentTimeline   []RoundTimelineEntry
 	RecentEvents     []RoundEvent
 	RecentCommentary []CommentaryRecord
 }
@@ -328,6 +354,7 @@ type RoundHistoryEntry struct {
 	Round      RoundNumber
 	Events     []RoundEvent
 	Commentary []CommentaryRecord
+	Timeline   []RoundTimelineEntry
 	Summary    RoundSummary
 }
 
@@ -399,8 +426,70 @@ func (r RoundRecord) Clone() RoundRecord {
 		Actions:    cloneSlice(r.Actions, ActionSubmission.Clone),
 		Events:     cloneSlice(r.Events, RoundEvent.Clone),
 		Commentary: cloneSlice(r.Commentary, CommentaryRecord.Clone),
+		Timeline:   cloneSlice(r.CanonicalTimeline(), RoundTimelineEntry.Clone),
 		Metrics:    r.Metrics,
 	}
+}
+
+func (r RoundRecord) CanonicalTimeline() []RoundTimelineEntry {
+	if len(r.Timeline) > 0 {
+		return cloneSlice(r.Timeline, RoundTimelineEntry.Clone)
+	}
+
+	var timeline []RoundTimelineEntry
+
+	commentaryByID := make(map[CommentaryID]CommentaryRecord, len(r.Commentary))
+	for _, commentary := range r.Commentary {
+		commentaryByID[commentary.CommentaryID] = commentary
+	}
+
+	type orderedCommentary struct {
+		record CommentaryRecord
+		action ActionSubmission
+	}
+
+	ordered := make([]orderedCommentary, 0, len(r.Commentary))
+	used := make(map[CommentaryID]bool, len(r.Commentary))
+	for _, action := range r.orderedActionsForTimeline() {
+		record, ok := commentaryByID[action.Commentary.CommentaryID]
+		if !ok {
+			continue
+		}
+		ordered = append(ordered, orderedCommentary{record: record, action: action})
+		used[record.CommentaryID] = true
+	}
+
+	for _, commentary := range r.Commentary {
+		if used[commentary.CommentaryID] {
+			continue
+		}
+		ordered = append(ordered, orderedCommentary{record: commentary})
+	}
+
+	for index, item := range ordered {
+		commentary := item.record.Clone()
+		timeline = append(timeline, RoundTimelineEntry{
+			Phase:      RoundTimelinePhaseIntake,
+			Sequence:   index + 1,
+			Kind:       RoundTimelineKindCommentary,
+			Commentary: &commentary,
+		})
+	}
+
+	phaseSequence := map[RoundTimelinePhase]int{}
+	for _, event := range r.Events {
+		phase := phaseForRoundEvent(event)
+		phaseSequence[phase]++
+		eventClone := event.Clone()
+		timeline = append(timeline, RoundTimelineEntry{
+			Phase:    phase,
+			Sequence: phaseSequence[phase],
+			Kind:     RoundTimelineKindEvent,
+			Event:    &eventClone,
+		})
+	}
+
+	return timeline
 }
 
 func (s ActionSubmission) Clone() ActionSubmission {
@@ -447,6 +536,16 @@ func (r CommentaryRecord) Clone() CommentaryRecord {
 	return r
 }
 
+func (e RoundTimelineEntry) Clone() RoundTimelineEntry {
+	return RoundTimelineEntry{
+		Phase:      e.Phase,
+		Sequence:   e.Sequence,
+		Kind:       e.Kind,
+		Event:      clonePtr(e.Event, RoundEvent.Clone),
+		Commentary: clonePtr(e.Commentary, CommentaryRecord.Clone),
+	}
+}
+
 func (f RoundFlowState) Clone() RoundFlowState {
 	return RoundFlowState{
 		Phase:                f.Phase,
@@ -479,6 +578,7 @@ func (v RoundView) Clone() RoundView {
 		ActiveTargets:    v.ActiveTargets,
 		Metrics:          v.Metrics,
 		RecentRounds:     cloneSlice(v.RecentRounds, RoundHistoryEntry.Clone),
+		RecentTimeline:   cloneSlice(v.RecentTimeline, RoundTimelineEntry.Clone),
 		RecentEvents:     cloneSlice(v.RecentEvents, RoundEvent.Clone),
 		RecentCommentary: cloneSlice(v.RecentCommentary, CommentaryRecord.Clone),
 	}
@@ -489,6 +589,7 @@ func (e RoundHistoryEntry) Clone() RoundHistoryEntry {
 		Round:      e.Round,
 		Events:     cloneSlice(e.Events, RoundEvent.Clone),
 		Commentary: cloneSlice(e.Commentary, CommentaryRecord.Clone),
+		Timeline:   cloneSlice(e.Timeline, RoundTimelineEntry.Clone),
 		Summary:    e.Summary.Clone(),
 	}
 }
@@ -550,4 +651,40 @@ func clonePtr[T any](item *T, clone func(T) T) *T {
 
 	cloned := clone(*item)
 	return &cloned
+}
+
+func (r RoundRecord) orderedActionsForTimeline() []ActionSubmission {
+	if len(r.Actions) == 0 {
+		return nil
+	}
+
+	ordered := cloneSlice(r.Actions, ActionSubmission.Clone)
+	slices.SortFunc(ordered, func(left, right ActionSubmission) int {
+		if compare := left.SubmittedAt.Compare(right.SubmittedAt); compare != 0 {
+			return compare
+		}
+		if compare := cmp.Compare(roleTimelineRank(left.RoleID), roleTimelineRank(right.RoleID)); compare != 0 {
+			return compare
+		}
+		return cmp.Compare(string(left.ActionID), string(right.ActionID))
+	})
+	return ordered
+}
+
+func roleTimelineRank(roleID RoleID) int {
+	for index, canonical := range CanonicalRoles() {
+		if canonical == roleID {
+			return index
+		}
+	}
+	return len(CanonicalRoles())
+}
+
+func phaseForRoundEvent(event RoundEvent) RoundTimelinePhase {
+	switch event.Type {
+	case EventMetricSnapshot:
+		return RoundTimelinePhaseSummary
+	default:
+		return RoundTimelinePhaseSimulation
+	}
 }

@@ -70,8 +70,10 @@ func TestModelLoadsInitialSnapshotAndRendersShell(t *testing.T) {
 		"Command Bar",
 		"Procurement Manager",
 		"[R1] 1 events | 1 commentary",
-		"Event: Assembly shipped one pump.",
-		"Sales Manager: Demand stayed healthy.",
+		"Player action intake",
+		"1. Sales Manager: Demand stayed healthy.",
+		"Round simulation",
+		"1. Event: Assembly shipped one pump.",
 		"Inspect mode",
 		"Workspace: round feed",
 	} {
@@ -102,10 +104,13 @@ func TestHistoryFeedEntriesMergesRoundsIntoSingleChronologicalFeed(t *testing.T)
 
 	want := []string{
 		"[R2] 1 events | 1 commentary",
-		"  Event: Shipped two valves.",
-		"  Finance Controller: Margins improved.",
+		"  Player action intake",
+		"    1. Finance Controller: Margins improved.",
+		"  Round simulation",
+		"    1. Event: Shipped two valves.",
 		"[R3] 0 events | 1 commentary",
-		"  Production Manager: Assembly stayed constrained.",
+		"  Player action intake",
+		"    1. Production Manager: Assembly stayed constrained.",
 	}
 	if len(entries) != len(want) {
 		t.Fatalf("len(entries) = %d, want %d (%v)", len(entries), len(want), entries)
@@ -326,8 +331,10 @@ func TestModelArchiveShowsRetainedHistorySummaries(t *testing.T) {
 		"rather than the current feed.",
 		"[R1] 1 actions | 1 events | 1 commentary | profit 18 |",
 		"net cash 7",
-		"Event: Assembly shipped one pump.",
-		"Sales Manager: Demand stayed healthy.",
+		"Player action intake",
+		"1. Sales Manager: Demand stayed healthy.",
+		"Round simulation",
+		"1. Event: Assembly shipped one pump.",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("archive view missing %q\n%s", want, view)

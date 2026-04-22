@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/jpconstantineau/herbiego/internal/adapters/random/seeded"
 	"github.com/jpconstantineau/herbiego/internal/domain"
@@ -131,6 +132,52 @@ func TestResolverExecutesRoundPhasesAndSchedulesNextTargets(t *testing.T) {
 	} {
 		if !slices.Contains(eventTypes, want) {
 			t.Fatalf("Round.Events missing %q in %#v", want, eventTypes)
+		}
+	}
+
+	if len(result.Round.Timeline) == 0 {
+		t.Fatal("Round.Timeline is empty, want canonical round chronology")
+	}
+	if got := result.Round.Timeline[0].Phase; got != domain.RoundTimelinePhaseIntake {
+		t.Fatalf("Round.Timeline[0].Phase = %q, want %q", got, domain.RoundTimelinePhaseIntake)
+	}
+	if got := result.Round.Timeline[len(result.Round.Timeline)-1].Phase; got != domain.RoundTimelinePhaseSummary {
+		t.Fatalf("Round.Timeline[last].Phase = %q, want %q", got, domain.RoundTimelinePhaseSummary)
+	}
+}
+
+func TestResolverOrdersCommentaryBySubmissionTimeWithinIntakePhase(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{})
+	actions := fixtureActions()
+	actions[0].SubmittedAt = time.Date(2026, time.April, 21, 12, 0, 3, 0, time.UTC)
+	actions[1].Commentary = domain.CommentaryRecord{Body: "Assembly is the bottleneck."}
+	actions[1].SubmittedAt = time.Date(2026, time.April, 21, 12, 0, 1, 0, time.UTC)
+	actions[2].Commentary = domain.CommentaryRecord{Body: "Demand is steady."}
+	actions[2].SubmittedAt = time.Date(2026, time.April, 21, 12, 0, 2, 0, time.UTC)
+	actions[3].SubmittedAt = time.Date(2026, time.April, 21, 12, 0, 4, 0, time.UTC)
+
+	result, err := resolver.ResolveRound(fixtureState(), actions, seeded.New(7))
+	if err != nil {
+		t.Fatalf("ResolveRound() error = %v", err)
+	}
+
+	want := []domain.RoleID{
+		domain.RoleProductionManager,
+		domain.RoleSalesManager,
+		domain.RoleProcurementManager,
+	}
+	if len(result.Round.Commentary) != len(want) {
+		t.Fatalf("len(Round.Commentary) = %d, want %d", len(result.Round.Commentary), len(want))
+	}
+	for index, roleID := range want {
+		if got := result.Round.Commentary[index].RoleID; got != roleID {
+			t.Fatalf("Round.Commentary[%d].RoleID = %q, want %q", index, got, roleID)
+		}
+		if got := result.Round.Timeline[index].Commentary.RoleID; got != roleID {
+			t.Fatalf("Round.Timeline[%d].Commentary.RoleID = %q, want %q", index, got, roleID)
+		}
+		if got := result.Round.Timeline[index].Sequence; got != index+1 {
+			t.Fatalf("Round.Timeline[%d].Sequence = %d, want %d", index, got, index+1)
 		}
 	}
 }
