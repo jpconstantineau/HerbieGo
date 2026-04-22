@@ -60,10 +60,12 @@ func TestModelLoadsInitialSnapshotAndRendersShell(t *testing.T) {
 		"Departments [focus]",
 		"Center Workspace",
 		"Mode: round feed",
+		"Navigate: 1 report | [2 feed] | 3 archive | [/] cycle",
 		"The round is waiting for simultaneous submissions.",
 		"Submissions received: 1/4",
 		"Current-turn actions remain hidden until every role is",
 		"collected and the round resolves.",
+		"Recent resolved rounds (1 shown)",
 		"Plant Stats",
 		"Command Bar",
 		"Procurement Manager",
@@ -71,7 +73,7 @@ func TestModelLoadsInitialSnapshotAndRendersShell(t *testing.T) {
 		"Event: Assembly shipped one pump.",
 		"Sales Manager: Demand stayed healthy.",
 		"Inspect mode",
-		"Phase: collecting",
+		"Workspace: round feed",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() missing %q\n%s", want, view)
@@ -140,6 +142,24 @@ func TestModelCyclesRoleSelectionAndPaneFocus(t *testing.T) {
 	if switchedShell.workspace != workspaceHistoryArchive {
 		t.Fatalf("workspace = %v, want %v", switchedShell.workspace, workspaceHistoryArchive)
 	}
+
+	reset, _ := switchedShell.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
+	resetShell := reset.(Model)
+	if resetShell.workspace != workspaceRoleReport {
+		t.Fatalf("workspace = %v, want %v", resetShell.workspace, workspaceRoleReport)
+	}
+
+	feed, _ := resetShell.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	feedShell := feed.(Model)
+	if feedShell.workspace != workspaceRoundFeed {
+		t.Fatalf("workspace = %v, want %v", feedShell.workspace, workspaceRoundFeed)
+	}
+
+	archive, _ := feedShell.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'3'}})
+	archiveShell := archive.(Model)
+	if archiveShell.workspace != workspaceHistoryArchive {
+		t.Fatalf("workspace = %v, want %v", archiveShell.workspace, workspaceHistoryArchive)
+	}
 }
 
 func TestModelResubscribesToStateUpdates(t *testing.T) {
@@ -186,11 +206,12 @@ func TestModelUsesCompactLayoutAndEmptyStatesOnSmallerTerminal(t *testing.T) {
 		"Departments [focus]",
 		"Plant Stats",
 		"Center Workspace",
+		"Navigate: 1 report | [2 feed] | 3 archive | [/] cycle",
 		"The round is waiting for simultaneous submissions.",
-		"Current-turn actions remain hidden until every role is",
+		"Waiting on: Procurement Manager, Production Manager, Sales Manager, Finance Controller",
 		"Workstations: waiting for first telemetry",
-		"Mode: inspect | Focus: departments | Role: Procurement Manager | Round: 1 | Phase:",
-		"collecting | Round 1 loaded for Procurement Manager",
+		"Mode: inspect | Focus: departments | Workspace: round feed | Role: Procurement Manager |",
+		"Round: 1 | Phase: collecting | Round 1 loaded for Procurement Manager",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("compact View() missing %q\n%s", want, view)
@@ -198,28 +219,28 @@ func TestModelUsesCompactLayoutAndEmptyStatesOnSmallerTerminal(t *testing.T) {
 	}
 }
 
-func TestModelActionWorkspaceExplainsDeferredEntrySurface(t *testing.T) {
+func TestModelRoleReportShowsCompanySnapshot(t *testing.T) {
 	model := NewModel("Prairie Pump Starter Plant", testStateSource{
 		snapshot: scenario.Starter().InitialState("starter-match", starterAssignments()),
 	})
 
 	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
 	shell := loaded.(Model)
-	shell.workspace = workspaceActionEntry
+	shell.workspace = workspaceRoleReport
 	shell.width = 120
 	shell.height = 30
 
 	view := shell.View()
 	for _, want := range []string{
-		"Mode: action entry",
-		"Decision workspace for Procurement Manager",
-		"Current-turn decisions stay hidden from the shared round",
-		"feed until the round resolves.",
-		"Action entry is still deferred while the shell",
-		"stabilizes, so this workspace currently serves as the",
+		"Mode: role report",
+		"[1 report] | 2 feed | 3 archive | [/] cycle",
+		"Role report for Procurement Manager",
+		"Company snapshot",
+		"Inventory value:",
+		"Tracked product financial summaries:",
 	} {
 		if !strings.Contains(view, want) {
-			t.Fatalf("action workspace missing %q\n%s", want, view)
+			t.Fatalf("role report missing %q\n%s", want, view)
 		}
 	}
 }
@@ -237,7 +258,8 @@ func TestModelRoundFeedExplainsResolvingAndRevealedStates(t *testing.T) {
 	shell.state.RoundFlow.Phase = domain.RoundPhaseResolving
 	resolvingView := shell.View()
 	for _, want := range []string{
-		"View: resolving simultaneous turn",
+		"View: active round context and recent resolved feed",
+		"Current phase: resolving simultaneous turn",
 		"The round is resolving.",
 		"All current-turn actions are locked in.",
 		"The plant is resolving simultaneous decisions before",
@@ -258,7 +280,7 @@ func TestModelRoundFeedExplainsResolvingAndRevealedStates(t *testing.T) {
 	}
 	revealedView := shell.View()
 	for _, want := range []string{
-		"View: revealed round results",
+		"Current phase: revealed round results",
 		"The round has been revealed.",
 		"Round results are now visible in the resolved history",
 		"below.",
@@ -267,6 +289,48 @@ func TestModelRoundFeedExplainsResolvingAndRevealedStates(t *testing.T) {
 	} {
 		if !strings.Contains(revealedView, want) {
 			t.Fatalf("revealed view missing %q\n%s", want, revealedView)
+		}
+	}
+}
+
+func TestModelArchiveShowsRetainedHistorySummaries(t *testing.T) {
+	model := NewModel("Prairie Pump Starter Plant", testStateSource{
+		snapshot: scenario.Starter().InitialState("starter-match", starterAssignments()),
+	})
+
+	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
+	shell := loaded.(Model)
+	shell.workspace = workspaceHistoryArchive
+	shell.width = 120
+	shell.height = 30
+	shell.state.History.RecentRounds = []domain.RoundRecord{
+		{
+			Round:   1,
+			Actions: []domain.ActionSubmission{{ActionID: "a-1"}},
+			Events: []domain.RoundEvent{
+				{Summary: "Assembly shipped one pump."},
+			},
+			Commentary: []domain.CommentaryRecord{
+				{RoleID: domain.RoleSalesManager, Body: "Demand stayed healthy."},
+			},
+			Metrics: domain.PlantMetrics{RoundProfit: 18, NetCashChange: 7},
+		},
+	}
+
+	view := shell.View()
+	for _, want := range []string{
+		"Mode: history archive",
+		"1 report | 2 feed | [3 archive] | [/] cycle",
+		"Rounds retained: 1",
+		"Use this view for older rounds and per-round summaries",
+		"rather than the current feed.",
+		"[R1] 1 actions | 1 events | 1 commentary | profit 18 |",
+		"net cash 7",
+		"Event: Assembly shipped one pump.",
+		"Sales Manager: Demand stayed healthy.",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("archive view missing %q\n%s", want, view)
 		}
 	}
 }

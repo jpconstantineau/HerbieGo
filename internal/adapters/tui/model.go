@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -29,7 +30,6 @@ const (
 	workspaceRoleReport workspaceMode = iota
 	workspaceRoundFeed
 	workspaceHistoryArchive
-	workspaceActionEntry
 )
 
 type workspaceMode int
@@ -92,6 +92,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.moveWorkspace(1)
 		case "[":
 			m.moveWorkspace(-1)
+		case "1":
+			m.setWorkspace(workspaceRoleReport)
+		case "2":
+			m.setWorkspace(workspaceRoundFeed)
+		case "3":
+			m.setWorkspace(workspaceHistoryArchive)
 		case "left", "h", "p":
 			m.moveRole(-1)
 		case "right", "l", "n":
@@ -164,8 +170,18 @@ func (m *Model) moveRole(delta int) {
 }
 
 func (m *Model) moveWorkspace(delta int) {
-	modeCount := int(workspaceActionEntry) + 1
+	modeCount := int(workspaceHistoryArchive) + 1
 	m.workspace = workspaceMode((int(m.workspace) + delta + modeCount) % modeCount)
+	m.status = fmt.Sprintf("Workspace switched to %s", m.workspace.label())
+}
+
+func (m *Model) setWorkspace(mode workspaceMode) {
+	if m.workspace == mode {
+		m.status = fmt.Sprintf("Workspace remains on %s", m.workspace.label())
+		return
+	}
+
+	m.workspace = mode
 	m.status = fmt.Sprintf("Workspace switched to %s", m.workspace.label())
 }
 
@@ -230,6 +246,7 @@ func (m Model) renderDepartmentsPane(width, height int) string {
 func (m Model) renderHistoryPane(width, height int) string {
 	lines := []string{
 		fmt.Sprintf("Mode: %s", m.workspace.label()),
+		workspaceNavigationLine(m.workspace),
 	}
 
 	switch m.workspace {
@@ -237,8 +254,6 @@ func (m Model) renderHistoryPane(width, height int) string {
 		lines = append(lines, m.renderRoleReportWorkspace(width)...)
 	case workspaceHistoryArchive:
 		lines = append(lines, m.renderHistoryArchiveWorkspace(width)...)
-	case workspaceActionEntry:
-		lines = append(lines, m.renderActionEntryWorkspace(width)...)
 	default:
 		lines = append(lines, m.renderRoundFeedWorkspace(width)...)
 	}
@@ -248,19 +263,21 @@ func (m Model) renderHistoryPane(width, height int) string {
 
 func (m Model) renderRoundFeedWorkspace(width int) []string {
 	view := m.selectedRoleView()
+	recentRounds := lastRoundEntries(view.RecentRounds, 3)
 
 	lines := []string{
 		fmt.Sprintf("Round %d for %s", view.Round, m.roleTitle()),
-		fmt.Sprintf("View: %s", roundPhaseLabel(view.RoundFlow.Phase)),
+		"View: active round context and recent resolved feed",
+		fmt.Sprintf("Current phase: %s", roundPhaseLabel(view.RoundFlow.Phase)),
 	}
 	lines = append(lines, roundFlowSummary(view.RoundFlow, m.state.Roles)...)
 
-	if len(view.RecentRounds) == 0 {
-		lines = append(lines, "", "No prior rounds recorded yet.", "Resolved events and role commentary will appear here after round one.")
+	if len(recentRounds) == 0 {
+		lines = append(lines, "", "No resolved rounds recorded yet.", "Recent events and role commentary will appear here after round one.")
 	} else {
-		lines = append(lines, "")
+		lines = append(lines, "", fmt.Sprintf("Recent resolved rounds (%d shown)", len(recentRounds)))
 	}
-	for _, entry := range historyFeedEntries(view.RecentRounds) {
+	for _, entry := range historyFeedEntries(recentRounds) {
 		lines = append(lines, wrapLine(entry, width-4))
 	}
 	return lines
@@ -271,10 +288,17 @@ func (m Model) renderRoleReportWorkspace(width int) []string {
 
 	lines := []string{
 		fmt.Sprintf("Role report for %s", m.roleTitle()),
-		"View: briefing and department metrics",
+		"View: current briefing, company snapshot, and department metrics",
 	}
 	if report.BonusReminder != "" {
 		lines = append(lines, wrapLine("Bonus reminder: "+report.BonusReminder, width-4))
+	}
+	company := companywideReportLines(report.Companywide)
+	if len(company) > 0 {
+		lines = append(lines, "", "Company snapshot")
+		for _, line := range company {
+			lines = append(lines, wrapLine("- "+line, width-4))
+		}
 	}
 	if len(report.Department.KeyMetrics) > 0 {
 		lines = append(lines, "", "Key metrics")
@@ -297,36 +321,20 @@ func (m Model) renderRoleReportWorkspace(width int) []string {
 func (m Model) renderHistoryArchiveWorkspace(width int) []string {
 	lines := []string{
 		fmt.Sprintf("Archive for %s", m.roleTitle()),
-		"View: full history retained by the current state source",
+		"View: retained round-by-round history and trend summaries",
 	}
 	if len(m.state.History.RecentRounds) == 0 {
 		lines = append(lines, "No historical rounds are retained yet.")
 		return lines
 	}
-	lines = append(lines, "")
-	for _, entry := range historyFeedEntries(historyEntriesFromRecords(m.state.History.RecentRounds)) {
+	lines = append(lines,
+		fmt.Sprintf("Rounds retained: %d", len(m.state.History.RecentRounds)),
+		"Use this view for older rounds and per-round summaries rather than the current feed.",
+		"",
+	)
+	for _, entry := range archiveEntries(m.state.History.RecentRounds) {
 		lines = append(lines, wrapLine(entry, width-4))
 	}
-	return lines
-}
-
-func (m Model) renderActionEntryWorkspace(width int) []string {
-	assignment := m.selectedAssignment()
-	lines := []string{
-		fmt.Sprintf("Decision workspace for %s", m.roleTitle()),
-		fmt.Sprintf("View: %s", roundPhaseLabel(m.state.RoundFlow.Phase)),
-	}
-	if assignment.IsHuman {
-		lines = append(lines, "This role is human-controlled, so simultaneous turn entry will land in this workspace.")
-	} else {
-		lines = append(lines, "This role is AI-controlled right now. Human decision entry will appear here when a human role is selected.")
-	}
-	lines = append(lines,
-		"",
-		wrapLine("Current-turn decisions stay hidden from the shared round feed until the round resolves.", width-4),
-		wrapLine("Action entry is still deferred while the shell stabilizes, so this workspace currently serves as the dedicated collection surface placeholder.", width-4),
-		wrapLine("Use the workspace navigation keys to switch back to reports or the round feed.", width-4),
-	)
 	return lines
 }
 
@@ -363,14 +371,14 @@ func (m Model) renderStatsPane(width, height int) string {
 }
 
 func (m Model) renderCommandBar(width, height int) string {
-	status := fmt.Sprintf("Mode: inspect | Focus: %s | Role: %s | Round: %d", paneName(m.focusedPane), m.roleTitle(), m.state.CurrentRound)
+	status := fmt.Sprintf("Mode: inspect | Focus: %s | Workspace: %s | Role: %s | Round: %d", paneName(m.focusedPane), m.workspace.label(), m.roleTitle(), m.state.CurrentRound)
 	status += " | Phase: " + roundPhaseShortLabel(m.state.RoundFlow.Phase)
 	if detail := strings.TrimSpace(m.statusLine()); detail != "" {
 		status += " | " + detail
 	}
 
 	lines := []string{
-		"Inspect mode | tab/shift+tab focus panes | left/right cycle roles | [/] workspace | q quit",
+		workspaceCommandHints(m.workspace),
 		wrapLine(status, width-4),
 	}
 	return renderPane("Command Bar", lines, width, height, m.focusedPane == paneCommandBar)
@@ -680,10 +688,45 @@ func (mode workspaceMode) label() string {
 		return "role report"
 	case workspaceHistoryArchive:
 		return "history archive"
-	case workspaceActionEntry:
-		return "action entry"
 	default:
 		return "round feed"
+	}
+}
+
+func workspaceNavigationLine(active workspaceMode) string {
+	items := []workspaceMode{workspaceRoleReport, workspaceRoundFeed, workspaceHistoryArchive}
+	labels := make([]string, 0, len(items))
+	for index, mode := range items {
+		label := fmt.Sprintf("%d %s", index+1, mode.shortLabel())
+		if mode == active {
+			label = "[" + label + "]"
+		}
+		labels = append(labels, label)
+	}
+	return "Navigate: " + strings.Join(labels, " | ") + " | [/] cycle"
+}
+
+func workspaceCommandHints(active workspaceMode) string {
+	base := "Inspect mode | tab/shift+tab focus panes | left/right cycle roles | 1/2/3 switch workspace | [/] cycle | q quit"
+
+	switch active {
+	case workspaceRoleReport:
+		return base + " | report shows briefing, company snapshot, and role metrics"
+	case workspaceHistoryArchive:
+		return base + " | archive shows retained round summaries and older history"
+	default:
+		return base + " | round feed shows current phase plus the most recent resolved rounds"
+	}
+}
+
+func (mode workspaceMode) shortLabel() string {
+	switch mode {
+	case workspaceRoleReport:
+		return "report"
+	case workspaceHistoryArchive:
+		return "archive"
+	default:
+		return "feed"
 	}
 }
 
@@ -724,6 +767,82 @@ func historyFeedEntries(rounds []domain.RoundHistoryEntry) []string {
 	}
 
 	return lines
+}
+
+func archiveEntries(rounds []domain.RoundRecord) []string {
+	if len(rounds) == 0 {
+		return nil
+	}
+
+	lines := make([]string, 0, len(rounds)*2)
+	for _, round := range slices.Backward(rounds) {
+		lines = append(lines,
+			fmt.Sprintf("[R%d] %d actions | %d events | %d commentary | profit %d | net cash %d",
+				round.Round,
+				len(round.Actions),
+				len(round.Events),
+				len(round.Commentary),
+				round.Metrics.RoundProfit,
+				round.Metrics.NetCashChange,
+			),
+		)
+		for _, event := range round.Events {
+			lines = append(lines, fmt.Sprintf("  Event: %s", event.Summary))
+		}
+		for _, commentary := range round.Commentary {
+			lines = append(lines, fmt.Sprintf("  %s: %s", displayRoleName(commentary.RoleID), commentary.Body))
+		}
+		if len(round.Events) == 0 && len(round.Commentary) == 0 {
+			lines = append(lines, "  No visible history.")
+		}
+	}
+
+	return lines
+}
+
+func companywideReportLines(report domain.CompanywidePerformanceReport) []string {
+	lines := []string{
+		fmt.Sprintf("Inventory value: %d", report.CurrentInventoryLevels.TotalValue),
+	}
+
+	lines = append(lines, companyMetricLine("New sales", report.NewSales))
+	lines = append(lines, companyMetricLine("Unshipped sales", report.UnshippedSales))
+	lines = append(lines, companyMetricLine("Sales at risk", report.SalesAtRisk))
+	lines = append(lines, companyUnitMetricLine("Products produced last week", report.ProductsProducedLastWeek))
+	lines = append(lines, fmt.Sprintf("Tracked product financial summaries: %d", len(report.Financials)))
+
+	return lines
+}
+
+func companyMetricLine(label string, items []domain.ProductValueSummary) string {
+	var units domain.Units
+	var totalValue domain.Money
+	for _, item := range items {
+		units += item.Count
+		totalValue += item.TotalValue
+	}
+	if len(items) == 0 {
+		return label + ": none recorded"
+	}
+	return fmt.Sprintf("%s: %d units across %d products worth %d", label, units, len(items), totalValue)
+}
+
+func companyUnitMetricLine(label string, items []domain.ProductUnitSummary) string {
+	var units domain.Units
+	for _, item := range items {
+		units += item.Count
+	}
+	if len(items) == 0 {
+		return label + ": none recorded"
+	}
+	return fmt.Sprintf("%s: %d units across %d products", label, units, len(items))
+}
+
+func lastRoundEntries(rounds []domain.RoundHistoryEntry, limit int) []domain.RoundHistoryEntry {
+	if len(rounds) <= limit {
+		return rounds
+	}
+	return rounds[len(rounds)-limit:]
 }
 
 func historyEntriesFromRecords(rounds []domain.RoundRecord) []domain.RoundHistoryEntry {
