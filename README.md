@@ -4,6 +4,24 @@ HerbieGo is a multiplayer computer board game inspired by the manufacturing plan
 
 The project is designed as both a strategy game and a simulation. Over many in-game years, the plant, the market, the available management ideas, and the viable strategies all evolve. New methods can emerge as the simulation progresses, allowing the game to reflect changing thinking in operations and management over time.
 
+## Quick Start
+
+The current supported playtesting path is the Bubble Tea runtime in `cmd/herbiego`.
+
+Install dependencies and verify the repo:
+
+```bash
+go run ./cmd/quality verify
+```
+
+Run the default local mixed match:
+
+```bash
+go run ./cmd/herbiego -rounds 2 -human-players 1
+```
+
+For setup details, config options, launch examples, and a short play guide, see [Configure, Launch, and Play](docs/configure-launch-play.md).
+
 ## Game Overview
 
 ### Premise
@@ -357,6 +375,7 @@ HerbieGo aims to be both a game and a systems-thinking simulation: a place where
 
 - [MVP Game Design](docs/mvp-game-design.md)
 - [Canonical Domain Model](docs/domain-model.md)
+- [Configure, Launch, and Play](docs/configure-launch-play.md)
 - [Architecture Decision Records](docs/adr/README.md)
 - [Contributor Guide](CONTRIBUTING.md)
 
