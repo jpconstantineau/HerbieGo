@@ -209,6 +209,94 @@ func TestScenarioComponentsCanBeSelectedIndependently(t *testing.T) {
 	}
 }
 
+func TestStarterDemandFallsWhenPumpPriceRises(t *testing.T) {
+	starter := scenario.Starter()
+	state := starter.InitialState("match-17", []domain.RoleAssignment{
+		{RoleID: domain.RoleProcurementManager, PlayerID: "proc"},
+		{RoleID: domain.RoleProductionManager, PlayerID: "prod"},
+		{RoleID: domain.RoleSalesManager, PlayerID: "sales"},
+		{RoleID: domain.RoleFinanceController, PlayerID: "fin"},
+	})
+	state.Plant.Backlog = nil
+	for index := range state.Customers {
+		state.Customers[index].Backlog = nil
+	}
+
+	resolver := engine.NewResolver(starter.ResolverOptions())
+
+	lowPriceResult, err := resolver.ResolveRound(state, []domain.ActionSubmission{
+		starterSalesAction(state, 12, 9),
+	}, seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() low price error = %v", err)
+	}
+
+	highPriceResult, err := resolver.ResolveRound(state, []domain.ActionSubmission{
+		starterSalesAction(state, 18, 9),
+	}, seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() high price error = %v", err)
+	}
+
+	lowDemand := demandQuantityForProduct(lowPriceResult.Round.Events, "pump")
+	highDemand := demandQuantityForProduct(highPriceResult.Round.Events, "pump")
+	if lowDemand <= highDemand {
+		t.Fatalf("pump demand at low price = %d, want > high price demand %d", lowDemand, highDemand)
+	}
+
+	if got := backlogQuantityForProduct(lowPriceResult.NextState.Plant.Backlog, "pump"); got != lowDemand {
+		t.Fatalf("low price pump backlog = %d, want %d", got, lowDemand)
+	}
+	if got := backlogQuantityForProduct(highPriceResult.NextState.Plant.Backlog, "pump"); got != highDemand {
+		t.Fatalf("high price pump backlog = %d, want %d", got, highDemand)
+	}
+}
+
+func TestStarterExpiredBacklogBecomesLostSalesAndReducesSentiment(t *testing.T) {
+	starter := scenario.Starter()
+	state := starter.InitialState("match-18", []domain.RoleAssignment{
+		{RoleID: domain.RoleProcurementManager, PlayerID: "proc"},
+		{RoleID: domain.RoleProductionManager, PlayerID: "prod"},
+		{RoleID: domain.RoleSalesManager, PlayerID: "sales"},
+		{RoleID: domain.RoleFinanceController, PlayerID: "fin"},
+	})
+	state.CurrentRound = 3
+	state.Plant.Backlog = []domain.BacklogEntry{
+		{CustomerID: "northbuild", ProductID: "pump", Quantity: 2, OriginRound: 1, AgeInRounds: 2},
+	}
+	state.Plant.FinishedInventory = nil
+	for index := range state.Customers {
+		state.Customers[index].Backlog = nil
+	}
+	state.Customers[0].Backlog = []domain.BacklogEntry{
+		{CustomerID: "northbuild", ProductID: "pump", Quantity: 2, OriginRound: 1, AgeInRounds: 2},
+	}
+
+	resolver := engine.NewResolver(starter.ResolverOptions())
+	result, err := resolver.ResolveRound(state, []domain.ActionSubmission{
+		starterSalesAction(state, 100, 100),
+	}, seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() error = %v", err)
+	}
+
+	if got := result.Round.Metrics.LostSalesUnits; got != 2 {
+		t.Fatalf("LostSalesUnits = %d, want 2", got)
+	}
+	if got := result.NextState.Customers[0].Sentiment; got != 5 {
+		t.Fatalf("northbuild sentiment = %d, want 5", got)
+	}
+	if got := len(result.NextState.Plant.Backlog); got != 0 {
+		t.Fatalf("Plant.Backlog len = %d, want 0 after expiry without new demand", got)
+	}
+	if !containsEvent(result.Round.Events, domain.EventBacklogExpired) {
+		t.Fatalf("Round.Events missing %q: %#v", domain.EventBacklogExpired, result.Round.Events)
+	}
+	if !containsEvent(result.Round.Events, domain.EventCustomerSentimentMoved) {
+		t.Fatalf("Round.Events missing %q: %#v", domain.EventCustomerSentimentMoved, result.Round.Events)
+	}
+}
+
 func containsDemandEvent(events []domain.RoundEvent) bool {
 	for _, event := range events {
 		if event.Type == domain.EventDemandRealized {
@@ -216,4 +304,55 @@ func containsDemandEvent(events []domain.RoundEvent) bool {
 		}
 	}
 	return false
+}
+
+func containsEvent(events []domain.RoundEvent, eventType domain.RoundEventType) bool {
+	for _, event := range events {
+		if event.Type == eventType {
+			return true
+		}
+	}
+	return false
+}
+
+func starterSalesAction(state domain.MatchState, pumpPrice, valvePrice domain.Money) domain.ActionSubmission {
+	return domain.ActionSubmission{
+		ActionID: "sales-1",
+		MatchID:  state.MatchID,
+		Round:    state.CurrentRound,
+		RoleID:   domain.RoleSalesManager,
+		Action: domain.RoleAction{
+			Sales: &domain.SalesAction{
+				ProductOffers: []domain.ProductOffer{
+					{ProductID: "pump", UnitPrice: pumpPrice},
+					{ProductID: "valve", UnitPrice: valvePrice},
+				},
+			},
+		},
+	}
+}
+
+func demandQuantityForProduct(events []domain.RoundEvent, productID domain.ProductID) domain.Units {
+	total := domain.Units(0)
+	for _, event := range events {
+		if event.Type != domain.EventDemandRealized || event.Payload["product_id"] != string(productID) {
+			continue
+		}
+		quantity, ok := event.Payload["quantity"].(int)
+		if !ok {
+			continue
+		}
+		total += domain.Units(quantity)
+	}
+	return total
+}
+
+func backlogQuantityForProduct(backlog []domain.BacklogEntry, productID domain.ProductID) domain.Units {
+	total := domain.Units(0)
+	for _, entry := range backlog {
+		if entry.ProductID == productID {
+			total += entry.Quantity
+		}
+	}
+	return total
 }

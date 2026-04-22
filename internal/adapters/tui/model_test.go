@@ -5,7 +5,9 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/jpconstantineau/herbiego/internal/adapters/random/seeded"
 	"github.com/jpconstantineau/herbiego/internal/domain"
+	"github.com/jpconstantineau/herbiego/internal/engine"
 	"github.com/jpconstantineau/herbiego/internal/scenario"
 )
 
@@ -592,6 +594,81 @@ func TestModelRoundFeedExplainsResolvingAndRevealedStates(t *testing.T) {
 	} {
 		if !strings.Contains(revealedView, want) {
 			t.Fatalf("revealed view missing %q\n%s", want, revealedView)
+		}
+	}
+}
+
+func TestModelRoundFeedShowsResolvedStarterHistory(t *testing.T) {
+	starter := scenario.Starter()
+	state := starter.InitialState("starter-match", starterAssignments())
+	resolver := engine.NewResolver(starter.ResolverOptions())
+
+	result, err := resolver.ResolveRound(state, []domain.ActionSubmission{
+		{
+			ActionID: "prod-1",
+			MatchID:  state.MatchID,
+			Round:    state.CurrentRound,
+			RoleID:   domain.RoleProductionManager,
+			Action: domain.RoleAction{
+				Production: &domain.ProductionAction{
+					CapacityAllocation: []domain.CapacityAllocation{
+						{WorkstationID: "assembly", ProductID: "pump", Capacity: 2},
+					},
+				},
+			},
+			Commentary: domain.CommentaryRecord{Body: "Finishing inherited pump WIP before releasing more work."},
+		},
+		{
+			ActionID: "sales-1",
+			MatchID:  state.MatchID,
+			Round:    state.CurrentRound,
+			RoleID:   domain.RoleSalesManager,
+			Action: domain.RoleAction{
+				Sales: &domain.SalesAction{
+					ProductOffers: []domain.ProductOffer{
+						{ProductID: "pump", UnitPrice: 14},
+						{ProductID: "valve", UnitPrice: 9},
+					},
+				},
+			},
+			Commentary: domain.CommentaryRecord{Body: "Holding starter prices while we clear inherited backlog."},
+		},
+	}, seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() error = %v", err)
+	}
+
+	next := result.NextState
+	next.RoundFlow.Phase = domain.RoundPhaseRevealed
+	next.RoundFlow.SubmittedRoles = []domain.RoleID{
+		domain.RoleProductionManager,
+		domain.RoleSalesManager,
+	}
+	next.RoundFlow.WaitingOnRoles = []domain.RoleID{
+		domain.RoleProcurementManager,
+		domain.RoleFinanceController,
+	}
+
+	model := NewModel(starter, testStateSource{snapshot: next})
+	loaded, _ := model.Update(stateLoadedMsg{state: next})
+	shell := loaded.(Model)
+	shell.workspace = workspaceRoundFeed
+	shell.width = 120
+	shell.height = 32
+
+	view := shell.View()
+	for _, want := range []string{
+		"Current phase: revealed round results",
+		"Recent resolved rounds (1 shown)",
+		"[R1] 20 events | 2 commentary",
+		"Sales Manager: Holding starter prices while we",
+		"clear inherited backlog.",
+		"Event: Shipped 2 pump to northbuild",
+		"Event: Realized 4 units of pump demand from",
+		"northbuild",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("revealed round feed missing %q\n%s", want, view)
 		}
 	}
 }
