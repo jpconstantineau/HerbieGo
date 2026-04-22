@@ -117,7 +117,7 @@ func (m Model) renderSupplierLookup(width int) []string {
 	}
 	lookup, err := m.scenario.ListValidSuppliers(part.ID)
 	if err != nil {
-		return []string{wrapLine("Lookup error: "+err.Error(), width-4)}
+		return []string{wrapLine("Lookup error: "+err.Error(), paneTextWidth(width))}
 	}
 
 	return []string{
@@ -125,7 +125,7 @@ func (m Model) renderSupplierLookup(width int) []string {
 		fmt.Sprintf("Part: %s (%s)", lookup.DisplayName, lookup.PartID),
 		"Tool parity: list_valid_suppliers(part_id)",
 		fmt.Sprintf("Suppliers: %s", joinIDs(lookup.Suppliers)),
-		wrapLine("Browse order: "+joinPartNames(m.scenario.Parts()), width-4),
+		wrapLine("Browse order: "+joinPartNames(m.scenario.Parts()), paneTextWidth(width)),
 	}
 }
 
@@ -136,7 +136,7 @@ func (m Model) renderRouteLookup(width int) []string {
 	}
 	lookup, err := m.scenario.ShowProductRoute(product.ID)
 	if err != nil {
-		return []string{wrapLine("Lookup error: "+err.Error(), width-4)}
+		return []string{wrapLine("Lookup error: "+err.Error(), paneTextWidth(width))}
 	}
 
 	lines := []string{
@@ -147,9 +147,9 @@ func (m Model) renderRouteLookup(width int) []string {
 		fmt.Sprintf("Bottleneck: %s", lookup.BottleneckID),
 	}
 	if strings.TrimSpace(lookup.BottleneckWhy) != "" {
-		lines = append(lines, wrapLine("Bottleneck context: "+lookup.BottleneckWhy, width-4))
+		lines = append(lines, wrapLine("Bottleneck context: "+lookup.BottleneckWhy, paneTextWidth(width)))
 	}
-	lines = append(lines, wrapLine("Browse order: "+joinProductNames(m.scenario.Products()), width-4))
+	lines = append(lines, wrapLine("Browse order: "+joinProductNames(m.scenario.Products()), paneTextWidth(width)))
 	return lines
 }
 
@@ -160,7 +160,7 @@ func (m Model) renderBOMLookup(width int) []string {
 	}
 	lookup, err := m.scenario.ShowProductBOM(product.ID)
 	if err != nil {
-		return []string{wrapLine("Lookup error: "+err.Error(), width-4)}
+		return []string{wrapLine("Lookup error: "+err.Error(), paneTextWidth(width))}
 	}
 
 	lines := []string{
@@ -173,7 +173,7 @@ func (m Model) renderBOMLookup(width int) []string {
 	for _, item := range lookup.BOM {
 		lines = append(lines, fmt.Sprintf("- %s x%d", item.PartID, item.Quantity))
 	}
-	lines = append(lines, wrapLine("Browse order: "+joinProductNames(m.scenario.Products()), width-4))
+	lines = append(lines, wrapLine("Browse order: "+joinProductNames(m.scenario.Products()), paneTextWidth(width)))
 	return lines
 }
 
@@ -184,7 +184,7 @@ func (m Model) renderDemandLookup(width int) []string {
 	}
 	lookup, err := m.scenario.ShowCustomerDemandProfile(ref.CustomerID, ref.ProductID)
 	if err != nil {
-		return []string{wrapLine("Lookup error: "+err.Error(), width-4)}
+		return []string{wrapLine("Lookup error: "+err.Error(), paneTextWidth(width))}
 	}
 
 	return []string{
@@ -195,7 +195,7 @@ func (m Model) renderDemandLookup(width int) []string {
 		fmt.Sprintf("Reference price: %d", lookup.ReferencePrice),
 		fmt.Sprintf("Base demand: %d", lookup.BaseDemand),
 		fmt.Sprintf("Price sensitivity: %d", lookup.PriceSensitivity),
-		wrapLine("Browse order: "+joinDemandNames(m.scenario.DemandProfileReferences()), width-4),
+		wrapLine("Browse order: "+joinDemandNames(m.scenario.DemandProfileReferences()), paneTextWidth(width)),
 	}
 }
 

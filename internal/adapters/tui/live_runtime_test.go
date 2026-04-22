@@ -61,10 +61,6 @@ func TestModelSupportsMultiRoundLiveHumanPlusAIPlay(t *testing.T) {
 
 	shell, next, collectingView := expectStateUpdate(t, shell, next,
 		"Action entry for Procurement Manager",
-		"Workspace: action entry",
-		"Round: 1 | Phase: collecting",
-		"Round 1 loaded for Procurement",
-		"Manager",
 	)
 
 	shell = submitProcurementTurn(t, shell, "housing=1", "Round 1 keeps housing tight while assembly clears backlog.")

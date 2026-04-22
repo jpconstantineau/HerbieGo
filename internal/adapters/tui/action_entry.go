@@ -217,14 +217,14 @@ func (m Model) renderActionEntryWorkspace(width int) []string {
 
 	draft := m.currentDraft()
 	if previous := m.previousAcceptedAction(assignment.RoleID); previous != nil {
-		lines = append(lines, "", "Previous accepted commentary", wrapLine(previous.Commentary.Body, width-4))
+		lines = append(lines, "", "Previous accepted commentary", wrapLine(previous.Commentary.Body, paneTextWidth(width)))
 	}
 
 	if draft.stage == draftStageReview {
 		lines = append(lines, "", "Review draft", "Press s to submit and lock, or b to return to editing.")
 		if draft.submission != nil {
 			for _, line := range summarizeSubmission(*draft.submission) {
-				lines = append(lines, wrapLine("- "+line, width-4))
+				lines = append(lines, wrapLine("- "+line, paneTextWidth(width)))
 			}
 		}
 		return append(lines, m.renderDraftStatus(width, draft)...)
@@ -250,7 +250,7 @@ func (m Model) renderActionEntryWorkspace(width int) []string {
 		if draft.submission != nil {
 			lines = append(lines, "")
 			for _, line := range summarizeSubmission(*draft.submission) {
-				lines = append(lines, wrapLine("- "+line, width-4))
+				lines = append(lines, wrapLine("- "+line, paneTextWidth(width)))
 			}
 		}
 		return append(lines, m.renderDraftStatus(width, draft)...)
@@ -274,7 +274,7 @@ func (m Model) renderActionEntryWorkspace(width int) []string {
 			value = field.placeholder
 		}
 		lines = append(lines, fmt.Sprintf("%s %s: %s", cursor, field.label, value))
-		lines = append(lines, wrapLine("  "+field.help, width-4))
+		lines = append(lines, wrapLine("  "+field.help, paneTextWidth(width)))
 	}
 
 	return append(lines, m.renderDraftStatus(width, draft)...)
@@ -283,10 +283,10 @@ func (m Model) renderActionEntryWorkspace(width int) []string {
 func (m Model) renderDraftStatus(width int, draft actionDraft) []string {
 	var lines []string
 	if strings.TrimSpace(draft.status) != "" {
-		lines = append(lines, "", wrapLine("Status: "+draft.status, width-4))
+		lines = append(lines, "", wrapLine("Status: "+draft.status, paneTextWidth(width)))
 	}
 	if strings.TrimSpace(draft.errorText) != "" {
-		lines = append(lines, wrapLine("Validation: "+draft.errorText, width-4))
+		lines = append(lines, wrapLine("Validation: "+draft.errorText, paneTextWidth(width)))
 	}
 	return lines
 }
