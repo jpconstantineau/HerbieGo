@@ -55,22 +55,22 @@ type SubmitFunc func(domain.ActionSubmission) error
 
 // Model is the Bubble Tea shell for the round-based gameplay UI.
 type Model struct {
-	scenario     scenario.Definition
-	source       StateSource
-	updates      <-chan domain.MatchState
-	submit       SubmitFunc
-	state        domain.MatchState
-	selectedRole int
-	focusedPane  int
-	workspace    workspaceMode
-	width        int
-	height       int
-	status       string
-	streamClosed bool
-	spinnerFrame int
+	scenario      scenario.Definition
+	source        StateSource
+	updates       <-chan domain.MatchState
+	submit        SubmitFunc
+	state         domain.MatchState
+	selectedRole  int
+	focusedPane   int
+	workspace     workspaceMode
+	width         int
+	height        int
+	status        string
+	streamClosed  bool
+	spinnerFrame  int
 	historyScroll int
-	drafts       map[domain.RoleID]actionDraft
-	lookup       lookupBrowserState
+	drafts        map[domain.RoleID]actionDraft
+	lookup        lookupBrowserState
 }
 
 // NewModel constructs the main gameplay shell model.
