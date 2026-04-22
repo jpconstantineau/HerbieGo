@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jpconstantineau/herbiego/internal/domain"
+	"github.com/jpconstantineau/herbiego/internal/projection"
 )
 
 type draftStage int
@@ -132,7 +133,7 @@ func (m *Model) handleActionEntryKey(msg tea.KeyMsg) bool {
 			draft.status = "Submission locked for this round"
 			draft.errorText = ""
 			m.drafts[assignment.RoleID] = draft
-			m.status = fmt.Sprintf("%s submitted and locked for round %d", m.roleTitle(), m.state.CurrentRound)
+			m.advanceAfterSubmission(assignment.RoleID)
 			return true
 		}
 	case "b":
@@ -219,6 +220,16 @@ func (m Model) renderActionEntryWorkspace(width int) []string {
 	}
 
 	if draft.stage == draftStageSubmitted {
+		if m.hideSubmittedHumanDetails(assignment.RoleID) {
+			lines = append(lines,
+				"",
+				"Submission locked for this round.",
+				waitingOnSummary(m.effectiveRoundFlow().WaitingOnRoles),
+				"Locked human entries stay private in multi-human games.",
+			)
+			return append(lines, m.renderDraftStatus(width, draft)...)
+		}
+
 		lines = append(lines,
 			"",
 			"Submission locked for this round.",
@@ -303,22 +314,19 @@ func (m Model) actionFields() []fieldSpec {
 }
 
 func (m Model) currentDraft() actionDraft {
-	roleID := m.selectedAssignment().RoleID
-	draft, ok := m.drafts[roleID]
-	if ok {
-		return draft
+	return m.currentDraftForRole(m.selectedAssignment().RoleID)
+}
+
+func (m *Model) advanceAfterSubmission(roleID domain.RoleID) {
+	if nextIndex, ok := m.nextPendingHumanRole(roleID); ok {
+		m.selectedRole = nextIndex
+		m.workspace = workspaceActionEntry
+		m.status = fmt.Sprintf("%s submitted. Moved to %s for entry.", displayRoleName(roleID), m.roleTitle())
+		return
 	}
 
-	draft = actionDraft{}
-	if m.selectedAssignment().RoleID == domain.RoleFinanceController {
-		targets := m.selectedRoleView().ActiveTargets
-		draft.financeProcurement = strconv.Itoa(int(targets.ProcurementBudget))
-		draft.financeProduction = strconv.Itoa(int(targets.ProductionSpendBudget))
-		draft.financeRevenue = strconv.Itoa(int(targets.RevenueTarget))
-		draft.financeCashFloor = strconv.Itoa(int(targets.CashFloorTarget))
-		draft.financeDebtCeiling = strconv.Itoa(int(targets.DebtCeilingTarget))
-	}
-	return draft
+	m.workspace = workspaceRoundFeed
+	m.status = fmt.Sprintf("%s submitted. All human entries are locked; switched to the round feed.", displayRoleName(roleID))
 }
 
 func (m *Model) setDraftField(draft *actionDraft, field draftField, value string) {
@@ -562,6 +570,51 @@ func (m Model) effectiveRoundFlow() domain.RoundFlowState {
 		flow.Phase = domain.RoundPhaseResolving
 	}
 	return flow
+}
+
+func (m Model) nextPendingHumanRole(submittedRoleID domain.RoleID) (int, bool) {
+	if len(m.state.Roles) == 0 {
+		return 0, false
+	}
+
+	start := clampRoleIndex(m.selectedRole, len(m.state.Roles))
+	for step := 1; step <= len(m.state.Roles); step++ {
+		index := (start + step) % len(m.state.Roles)
+		assignment := m.state.Roles[index]
+		if !assignment.IsHuman || assignment.RoleID == submittedRoleID {
+			continue
+		}
+		if m.currentDraftForRole(assignment.RoleID).stage == draftStageSubmitted {
+			continue
+		}
+		return index, true
+	}
+	return 0, false
+}
+
+func (m Model) currentDraftForRole(roleID domain.RoleID) actionDraft {
+	draft, ok := m.drafts[roleID]
+	if ok {
+		return draft
+	}
+
+	draft = actionDraft{}
+	if roleID != domain.RoleFinanceController {
+		return draft
+	}
+
+	view := projection.BuildRoundView(m.state, roleID)
+	targets := view.ActiveTargets
+	draft.financeProcurement = strconv.Itoa(int(targets.ProcurementBudget))
+	draft.financeProduction = strconv.Itoa(int(targets.ProductionSpendBudget))
+	draft.financeRevenue = strconv.Itoa(int(targets.RevenueTarget))
+	draft.financeCashFloor = strconv.Itoa(int(targets.CashFloorTarget))
+	draft.financeDebtCeiling = strconv.Itoa(int(targets.DebtCeilingTarget))
+	return draft
+}
+
+func (m Model) hideSubmittedHumanDetails(roleID domain.RoleID) bool {
+	return m.selectedAssignment().IsHuman && humanRoleCount(m.state.Roles) > 1 && m.currentDraftForRole(roleID).stage == draftStageSubmitted
 }
 
 func (m Model) previousAcceptedAction(roleID domain.RoleID) *domain.ActionSubmission {
