@@ -19,7 +19,6 @@ func main() {
 		humanPlayers = flag.Int("human-players", -1, "override the number of human-controlled roles; use 0 for an AI-only test run")
 		rounds       = flag.Int("rounds", 3, "number of rounds to play before exiting")
 		seed         = flag.Uint64("seed", 0, "override the deterministic runtime seed")
-		inspect      = flag.Bool("inspect", false, "open the TUI inspector for the initial match instead of playing rounds")
 	)
 	flag.Parse()
 
@@ -37,14 +36,6 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "bootstrap failed:\n%v\n", err)
 		os.Exit(1)
-	}
-
-	if *inspect {
-		if err := tui.Run(runtime.Scenario, runtime.InitialMatch); err != nil {
-			fmt.Fprintf(os.Stderr, "tui failed:\n%v\n", err)
-			os.Exit(1)
-		}
-		return
 	}
 
 	if err := runLiveGameplay(context.Background(), runtime, *rounds); err != nil {

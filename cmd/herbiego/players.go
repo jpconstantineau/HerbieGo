@@ -13,10 +13,6 @@ import (
 	"github.com/jpconstantineau/herbiego/internal/ports"
 )
 
-func buildPlayers(runtime app.Runtime, controller *terminalController) (map[domain.RoleID]ports.Player, error) {
-	return buildPlayersWithHumanSubmit(runtime, controller.submitRound)
-}
-
 func buildPlayersWithHumanSubmit(runtime app.Runtime, submit human.SubmitFunc) (map[domain.RoleID]ports.Player, error) {
 	providers, err := buildDecisionClients(runtime.Config)
 	if err != nil {
