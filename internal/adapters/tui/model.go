@@ -68,6 +68,7 @@ type Model struct {
 	status       string
 	streamClosed bool
 	spinnerFrame int
+	historyScroll int
 	drafts       map[domain.RoleID]actionDraft
 	lookup       lookupBrowserState
 }
@@ -110,6 +111,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.handleActionEntryKey(typed) {
 			return m, nil
 		}
+		if m.handleHistoryScrollKey(typed) {
+			return m, nil
+		}
 		switch typed.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
@@ -139,9 +143,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.moveRole(1)
 		}
 		return m, nil
+	case tea.MouseMsg:
+		if m.handleHistoryScrollMouse(typed) {
+			return m, nil
+		}
+		return m, nil
 	case stateLoadedMsg:
 		if typed.state.CurrentRound != m.state.CurrentRound {
 			clear(m.drafts)
+			m.historyScroll = 0
 		}
 		m.state = typed.state.Clone()
 		m.selectedRole = clampRoleIndex(m.selectedRole, len(m.state.Roles))
@@ -235,12 +245,14 @@ func (m *Model) moveRole(delta int) {
 	}
 
 	m.selectedRole = (m.selectedRole + delta + roleCount) % roleCount
+	m.historyScroll = 0
 	m.status = fmt.Sprintf("Selected %s", m.roleTitle())
 }
 
 func (m *Model) moveWorkspace(delta int) {
 	modeCount := int(workspaceHistoryArchive) + 1
 	m.workspace = workspaceMode((int(m.workspace) + delta + modeCount) % modeCount)
+	m.historyScroll = 0
 	m.status = fmt.Sprintf("Workspace switched to %s", m.workspace.label())
 }
 
@@ -251,6 +263,7 @@ func (m *Model) setWorkspace(mode workspaceMode) {
 	}
 
 	m.workspace = mode
+	m.historyScroll = 0
 	m.status = fmt.Sprintf("Workspace switched to %s", m.workspace.label())
 }
 
@@ -319,6 +332,14 @@ func (m Model) renderDepartmentsPane(width, height int) string {
 }
 
 func (m Model) renderHistoryPane(width, height int) string {
+	lines := m.renderHistoryWorkspaceLines(width)
+	if m.historyWorkspaceSupportsScroll() {
+		return renderScrollablePane(workspacePaneTitle(), lines, width, height, m.focusedPane == paneHistory, m.historyScroll)
+	}
+	return renderPane(workspacePaneTitle(), lines, width, height, m.focusedPane == paneHistory)
+}
+
+func (m Model) renderHistoryWorkspaceLines(width int) []string {
 	lines := []string{
 		fmt.Sprintf("Mode: %s", m.workspace.label()),
 		workspaceNavigationLine(m.workspace),
@@ -337,7 +358,7 @@ func (m Model) renderHistoryPane(width, height int) string {
 		lines = append(lines, m.renderRoundFeedWorkspace(width)...)
 	}
 
-	return renderPane(workspacePaneTitle(), lines, width, height, m.focusedPane == paneHistory)
+	return lines
 }
 
 func (m Model) renderRoundFeedWorkspace(width int) []string {
@@ -485,6 +506,19 @@ func renderPane(title string, lines []string, width, height int, focused bool) s
 		Render(label + "\n" + strings.Join(content, "\n"))
 }
 
+func renderScrollablePane(title string, lines []string, width, height int, focused bool, offset int) string {
+	label := title
+	if focused {
+		label = title + " [focus]"
+	}
+
+	content := viewportLines(lines, max(height-1, 0), offset)
+	return paneStyle(focused).
+		Width(width).
+		Height(height).
+		Render(label + "\n" + strings.Join(content, "\n"))
+}
+
 func paneStyle(focused bool) lipgloss.Style {
 	borderColor := lipgloss.Color("62")
 	if focused {
@@ -501,10 +535,7 @@ func fitLines(lines []string, maxLines int) []string {
 		return nil
 	}
 
-	flattened := make([]string, 0, len(lines))
-	for _, line := range lines {
-		flattened = append(flattened, strings.Split(line, "\n")...)
-	}
+	flattened := flattenLines(lines)
 	if len(flattened) <= maxLines {
 		return flattened
 	}
@@ -514,6 +545,43 @@ func fitLines(lines []string, maxLines int) []string {
 
 	fitted := append([]string{}, flattened[:maxLines-1]...)
 	return append(fitted, "...")
+}
+
+func flattenLines(lines []string) []string {
+	flattened := make([]string, 0, len(lines))
+	for _, line := range lines {
+		flattened = append(flattened, strings.Split(line, "\n")...)
+	}
+	return flattened
+}
+
+func viewportLines(lines []string, maxLines, offset int) []string {
+	if maxLines <= 0 {
+		return nil
+	}
+
+	flattened := flattenLines(lines)
+	if len(flattened) <= maxLines {
+		return flattened
+	}
+
+	clamped := clampScrollOffset(offset, len(flattened), maxLines)
+	return append([]string{}, flattened[clamped:clamped+maxLines]...)
+}
+
+func clampScrollOffset(offset, lineCount, visibleLines int) int {
+	if visibleLines <= 0 || lineCount <= visibleLines {
+		return 0
+	}
+	if offset < 0 {
+		return 0
+	}
+
+	maxOffset := lineCount - visibleLines
+	if offset > maxOffset {
+		return maxOffset
+	}
+	return offset
 }
 
 func paneWidths(totalWidth int) (int, int, int) {
@@ -833,9 +901,105 @@ func workspaceCommandHints(active workspaceMode) string {
 	case workspaceRoleReport:
 		return base + " | report shows briefing, company snapshot, and role metrics"
 	case workspaceHistoryArchive:
-		return base + " | archive shows retained round summaries and older history"
+		return base + " | up/down/pgup/pgdn/home/end scroll history | archive shows retained round summaries and older history"
 	default:
-		return base + " | round feed shows current phase plus the most recent resolved rounds"
+		return base + " | up/down/pgup/pgdn/home/end scroll history | round feed shows current phase plus the most recent resolved rounds"
+	}
+}
+
+func (m Model) historyWorkspaceSupportsScroll() bool {
+	return m.workspace == workspaceRoundFeed || m.workspace == workspaceHistoryArchive
+}
+
+func (m *Model) handleHistoryScrollKey(msg tea.KeyMsg) bool {
+	if m.focusedPane != paneHistory || !m.historyWorkspaceSupportsScroll() {
+		return false
+	}
+
+	switch msg.String() {
+	case "up":
+		m.scrollHistoryBy(-1)
+	case "down":
+		m.scrollHistoryBy(1)
+	case "pgup":
+		m.scrollHistoryBy(-m.historyPageSize())
+	case "pgdown":
+		m.scrollHistoryBy(m.historyPageSize())
+	case "home":
+		m.historyScroll = 0
+	case "end":
+		m.historyScroll = m.maxHistoryScrollOffset()
+	default:
+		return false
+	}
+
+	return true
+}
+
+func (m *Model) handleHistoryScrollMouse(msg tea.MouseMsg) bool {
+	if m.focusedPane != paneHistory || !m.historyWorkspaceSupportsScroll() || !tea.MouseEvent(msg).IsWheel() {
+		return false
+	}
+
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		m.scrollHistoryBy(-3)
+	case tea.MouseButtonWheelDown:
+		m.scrollHistoryBy(3)
+	default:
+		return false
+	}
+
+	return true
+}
+
+func (m *Model) scrollHistoryBy(delta int) {
+	if delta == 0 {
+		return
+	}
+
+	m.historyScroll = clampScrollOffset(m.historyScroll+delta, m.historyLineCount(), m.historyVisibleLineCount())
+}
+
+func (m Model) maxHistoryScrollOffset() int {
+	return clampScrollOffset(m.historyLineCount(), m.historyLineCount(), m.historyVisibleLineCount())
+}
+
+func (m Model) historyPageSize() int {
+	return max(m.historyVisibleLineCount()-1, 1)
+}
+
+func (m Model) historyLineCount() int {
+	width, _ := m.historyPaneDimensions()
+	return len(flattenLines(m.renderHistoryWorkspaceLines(width)))
+}
+
+func (m Model) historyVisibleLineCount() int {
+	_, height := m.historyPaneDimensions()
+	return max(height-1, 0)
+}
+
+func (m Model) historyPaneDimensions() (int, int) {
+	width := fallbackDimension(m.width, 120)
+	height := fallbackDimension(m.height, 32)
+	layout := chooseLayout(width, height)
+	frame := paneStyle(false)
+	totalRows := layoutPaneRows(layout) + 1
+	availableContentHeight := max(height-(totalRows*frame.GetVerticalFrameSize()), totalRows)
+	commandHeight := commandBarHeight(availableContentHeight)
+	contentHeight := max(availableContentHeight-commandHeight, layoutPaneRows(layout))
+	frameWidth := frame.GetHorizontalFrameSize()
+
+	switch layout {
+	case layoutStacked:
+		_, historyHeight, _ := stackedPaneHeights(contentHeight)
+		return max(width-frameWidth, 1), historyHeight
+	case layoutCompact:
+		_, historyHeight := compactPaneHeights(contentHeight)
+		return max(width-frameWidth, 1), historyHeight
+	default:
+		_, centerWidth, _ := paneWidths(max(width-(3*frameWidth), 3))
+		return centerWidth, contentHeight
 	}
 }
 
