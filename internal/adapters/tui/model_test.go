@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -810,6 +811,104 @@ func TestModelArchiveShowsRetainedHistorySummaries(t *testing.T) {
 			t.Fatalf("archive view missing %q\n%s", want, view)
 		}
 	}
+}
+
+func TestModelScrollsRoundFeedHistoryWithKeyboard(t *testing.T) {
+	model := NewModel(scenario.Starter(), testStateSource{
+		snapshot: scenario.Starter().InitialState("starter-match", starterAssignments()),
+	})
+
+	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
+	shell := loaded.(Model)
+	shell.workspace = workspaceRoundFeed
+	shell.focusedPane = paneHistory
+	shell.width = 140
+	shell.height = 24
+	shell.state.History.RecentRounds = []domain.RoundRecord{
+		longRoundRecord(3, 18),
+	}
+
+	initialView := shell.View()
+	if !strings.Contains(initialView, "Event 01 for round 03") {
+		t.Fatalf("initial round feed view missing first event\n%s", initialView)
+	}
+	if strings.Contains(initialView, "Event 18 for round 03") {
+		t.Fatalf("initial round feed view unexpectedly showed final event\n%s", initialView)
+	}
+
+	scrolled, _ := shell.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	scrolledShell := scrolled.(Model)
+	scrolledShell.width = shell.width
+	scrolledShell.height = shell.height
+
+	scrolledView := scrolledShell.View()
+	if !strings.Contains(scrolledView, "Event 18 for round 03") {
+		t.Fatalf("scrolled round feed view missing final event\n%s", scrolledView)
+	}
+}
+
+func TestModelScrollsArchiveHistoryWithMouseWheel(t *testing.T) {
+	model := NewModel(scenario.Starter(), testStateSource{
+		snapshot: scenario.Starter().InitialState("starter-match", starterAssignments()),
+	})
+
+	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
+	shell := loaded.(Model)
+	shell.workspace = workspaceHistoryArchive
+	shell.focusedPane = paneHistory
+	shell.width = 140
+	shell.height = 24
+	shell.state.History.RecentRounds = []domain.RoundRecord{
+		longRoundRecord(1, 1),
+		longRoundRecord(2, 1),
+		longRoundRecord(3, 1),
+		longRoundRecord(4, 1),
+	}
+
+	initialView := shell.View()
+	if !strings.Contains(initialView, "[R4] 1 actions | 1 events | 1 commentary") {
+		t.Fatalf("initial archive view missing newest round\n%s", initialView)
+	}
+	if strings.Contains(initialView, "[R1] 1 actions | 1 events | 1 commentary") {
+		t.Fatalf("initial archive view unexpectedly showed oldest round\n%s", initialView)
+	}
+
+	var next tea.Model = shell
+	for i := 0; i < 8; i++ {
+		next, _ = next.(Model).Update(tea.MouseMsg(tea.MouseEvent{
+			Button: tea.MouseButtonWheelDown,
+			Action: tea.MouseActionPress,
+		}))
+	}
+	scrolledShell := next.(Model)
+	scrolledShell.width = shell.width
+	scrolledShell.height = shell.height
+
+	scrolledView := scrolledShell.View()
+	if !strings.Contains(scrolledView, "[R1] 1 actions | 1 events | 1 commentary") {
+		t.Fatalf("scrolled archive view missing oldest round\n%s", scrolledView)
+	}
+}
+
+func longRoundRecord(round, eventCount int) domain.RoundRecord {
+	events := make([]domain.RoundEvent, 0, eventCount)
+	for index := 1; index <= eventCount; index++ {
+		events = append(events, domain.RoundEvent{Summary: "Event " + twoDigit(index) + " for round " + twoDigit(round)})
+	}
+
+	return domain.RoundRecord{
+		Round:   domain.RoundNumber(round),
+		Actions: []domain.ActionSubmission{{ActionID: domain.ActionID("a-" + twoDigit(round))}},
+		Events:  events,
+		Commentary: []domain.CommentaryRecord{
+			{RoleID: domain.RoleSalesManager, Body: "Commentary for round " + twoDigit(round)},
+		},
+		Metrics: domain.PlantMetrics{RoundProfit: domain.Money(round), NetCashChange: domain.Money(round)},
+	}
+}
+
+func twoDigit(value int) string {
+	return fmt.Sprintf("%02d", value)
 }
 
 func starterAssignments() []domain.RoleAssignment {
