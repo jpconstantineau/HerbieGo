@@ -29,6 +29,7 @@ type layoutMode int
 
 const (
 	workspaceActionEntry workspaceMode = iota
+	workspaceScenarioLookup
 	workspaceRoleReport
 	workspaceRoundFeed
 	workspaceHistoryArchive
@@ -56,6 +57,7 @@ type Model struct {
 	status       string
 	streamClosed bool
 	drafts       map[domain.RoleID]actionDraft
+	lookup       lookupBrowserState
 }
 
 // NewModel constructs the main gameplay shell model.
@@ -83,6 +85,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = typed.Height
 		return m, nil
 	case tea.KeyMsg:
+		if m.handleScenarioLookupKey(typed) {
+			return m, nil
+		}
 		if m.handleActionEntryKey(typed) {
 			return m, nil
 		}
@@ -102,10 +107,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "1":
 			m.setWorkspace(workspaceActionEntry)
 		case "2":
-			m.setWorkspace(workspaceRoleReport)
+			m.setWorkspace(workspaceScenarioLookup)
 		case "3":
-			m.setWorkspace(workspaceRoundFeed)
+			m.setWorkspace(workspaceRoleReport)
 		case "4":
+			m.setWorkspace(workspaceRoundFeed)
+		case "5":
 			m.setWorkspace(workspaceHistoryArchive)
 		case "left", "h", "p":
 			m.moveRole(-1)
@@ -264,6 +271,8 @@ func (m Model) renderHistoryPane(width, height int) string {
 	}
 
 	switch m.workspace {
+	case workspaceScenarioLookup:
+		lines = append(lines, m.renderScenarioLookupWorkspace(width)...)
 	case workspaceRoleReport:
 		lines = append(lines, m.renderRoleReportWorkspace(width)...)
 	case workspaceActionEntry:
@@ -703,6 +712,8 @@ func (mode workspaceMode) label() string {
 	switch mode {
 	case workspaceActionEntry:
 		return "action entry"
+	case workspaceScenarioLookup:
+		return "scenario lookup"
 	case workspaceRoleReport:
 		return "role report"
 	case workspaceHistoryArchive:
@@ -713,7 +724,7 @@ func (mode workspaceMode) label() string {
 }
 
 func workspaceNavigationLine(active workspaceMode) string {
-	items := []workspaceMode{workspaceActionEntry, workspaceRoleReport, workspaceRoundFeed, workspaceHistoryArchive}
+	items := []workspaceMode{workspaceActionEntry, workspaceScenarioLookup, workspaceRoleReport, workspaceRoundFeed, workspaceHistoryArchive}
 	labels := make([]string, 0, len(items))
 	for index, mode := range items {
 		label := fmt.Sprintf("%d %s", index+1, mode.shortLabel())
@@ -726,11 +737,13 @@ func workspaceNavigationLine(active workspaceMode) string {
 }
 
 func workspaceCommandHints(active workspaceMode) string {
-	base := "Inspect mode | tab/shift+tab focus panes | left/right cycle roles | 1/2/3/4 switch workspace | [/] cycle | q quit"
+	base := "Inspect mode | tab/shift+tab focus panes | left/right cycle roles | 1/2/3/4/5 switch workspace | [/] cycle | q quit"
 
 	switch active {
 	case workspaceActionEntry:
 		return base + " | action entry uses up/down to move fields, enter to edit, r review, s submit"
+	case workspaceScenarioLookup:
+		return base + " | lookup uses v/r/b/d tabs and up/down to browse scenario data"
 	case workspaceRoleReport:
 		return base + " | report shows briefing, company snapshot, and role metrics"
 	case workspaceHistoryArchive:
@@ -744,6 +757,8 @@ func (mode workspaceMode) shortLabel() string {
 	switch mode {
 	case workspaceActionEntry:
 		return "action"
+	case workspaceScenarioLookup:
+		return "lookup"
 	case workspaceRoleReport:
 		return "report"
 	case workspaceHistoryArchive:
