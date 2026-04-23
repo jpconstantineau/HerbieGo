@@ -375,6 +375,8 @@ HerbieGo aims to be both a game and a systems-thinking simulation: a place where
 
 - [MVP Game Design](docs/mvp-game-design.md)
 - [Canonical Domain Model](docs/domain-model.md)
+- [Simulation Invariants](docs/simulation-invariants.md)
+- [Invariant Audit](docs/invariant-audit.md)
 - [Configure, Launch, and Play](docs/configure-launch-play.md)
 - [Architecture Decision Records](docs/adr/README.md)
 - [Contributor Guide](CONTRIBUTING.md)

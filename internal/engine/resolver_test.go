@@ -67,6 +67,9 @@ func TestResolverExecutesRoundPhasesAndSchedulesNextTargets(t *testing.T) {
 	if result.NextState.ActiveTargets.EffectiveRound != 3 {
 		t.Fatalf("ActiveTargets.EffectiveRound = %d, want 3", result.NextState.ActiveTargets.EffectiveRound)
 	}
+	if result.NextState.Plant.DebtCeiling != 6 {
+		t.Fatalf("Plant.DebtCeiling = %d, want 6", result.NextState.Plant.DebtCeiling)
+	}
 	if result.NextState.Plant.Cash != 19 {
 		t.Fatalf("Plant.Cash = %d, want 19", result.NextState.Plant.Cash)
 	}
@@ -578,6 +581,42 @@ func TestResolverTracksLostSalesAndDebtServiceInMetrics(t *testing.T) {
 	}
 	if got := result.NextState.Customers[0].Sentiment; got != 4 {
 		t.Fatalf("Customer sentiment = %d, want 4", got)
+	}
+}
+
+func TestResolverUsesConfiguredBacklogExpiryRounds(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{
+		BacklogExpiryRounds: 3,
+	})
+	state := fixtureState()
+	state.Plant.Backlog = []domain.BacklogEntry{
+		{CustomerID: "cust-1", ProductID: "widget", Quantity: 2, OriginRound: 1, AgeInRounds: 2},
+	}
+	state.Plant.FinishedInventory = nil
+	state.Plant.InTransitSupply = nil
+
+	actions := fixtureActions()
+	actions[0].Action.Procurement.Orders = nil
+	actions[1].Action.Production.Releases = nil
+	actions[1].Action.Production.CapacityAllocation = nil
+	actions[2].Action.Sales.ProductOffers = nil
+
+	result, err := resolver.ResolveRound(state, actions, seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() error = %v", err)
+	}
+
+	if got := backlogQty(result.NextState.Plant.Backlog, "cust-1", "widget"); got != 2 {
+		t.Fatalf("Backlog(cust-1/widget) = %d, want 2", got)
+	}
+	if got := result.Round.Metrics.LostSalesUnits; got != 0 {
+		t.Fatalf("LostSalesUnits = %d, want 0", got)
+	}
+
+	for _, event := range result.Round.Events {
+		if event.Type == domain.EventBacklogExpired {
+			t.Fatalf("unexpected backlog expiry event: %#v", event)
+		}
 	}
 }
 
