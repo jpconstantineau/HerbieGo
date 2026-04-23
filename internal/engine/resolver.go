@@ -13,13 +13,14 @@ import (
 )
 
 type Options struct {
-	HistoryLimit     int
-	ProcurementTerms ProcurementTermsHook
-	ProductionBOM    ProductionBOMHook
-	ProductionRoute  ProductionRouteHook
-	ProductionCost   ProductionCostHook
-	InventoryCost    InventoryCarryingCostHook
-	WorldUpdate      WorldUpdateHook
+	HistoryLimit        int
+	BacklogExpiryRounds int
+	ProcurementTerms    ProcurementTermsHook
+	ProductionBOM       ProductionBOMHook
+	ProductionRoute     ProductionRouteHook
+	ProductionCost      ProductionCostHook
+	InventoryCost       InventoryCarryingCostHook
+	WorldUpdate         WorldUpdateHook
 }
 
 // ProcurementTermsHook lets scenario data supply part cost, MOQ, and quantity-based pricing rules.
@@ -120,24 +121,26 @@ type Result struct {
 }
 
 type Resolver struct {
-	historyLimit     int
-	procurementTerms ProcurementTermsHook
-	productionBOM    ProductionBOMHook
-	productionRoute  ProductionRouteHook
-	productionCost   ProductionCostHook
-	inventoryCost    InventoryCarryingCostHook
-	worldUpdate      WorldUpdateHook
+	historyLimit        int
+	backlogExpiryRounds int
+	procurementTerms    ProcurementTermsHook
+	productionBOM       ProductionBOMHook
+	productionRoute     ProductionRouteHook
+	productionCost      ProductionCostHook
+	inventoryCost       InventoryCarryingCostHook
+	worldUpdate         WorldUpdateHook
 }
 
 func NewResolver(options Options) *Resolver {
 	return &Resolver{
-		historyLimit:     normalizedHistoryLimit(options.HistoryLimit),
-		procurementTerms: defaultProcurementTerms(options.ProcurementTerms),
-		productionBOM:    defaultProductionBOM(options.ProductionBOM),
-		productionRoute:  defaultProductionRoute(options.ProductionRoute),
-		productionCost:   defaultProductionCost(options.ProductionCost),
-		inventoryCost:    options.InventoryCost,
-		worldUpdate:      options.WorldUpdate,
+		historyLimit:        normalizedHistoryLimit(options.HistoryLimit),
+		backlogExpiryRounds: normalizedBacklogExpiryRounds(options.BacklogExpiryRounds),
+		procurementTerms:    defaultProcurementTerms(options.ProcurementTerms),
+		productionBOM:       defaultProductionBOM(options.ProductionBOM),
+		productionRoute:     defaultProductionRoute(options.ProductionRoute),
+		productionCost:      defaultProductionCost(options.ProductionCost),
+		inventoryCost:       options.InventoryCost,
+		worldUpdate:         options.WorldUpdate,
 	}
 }
 
@@ -164,15 +167,16 @@ func (r *Resolver) ResolveRound(state domain.MatchState, actions []domain.Action
 	}
 
 	phase := roundPhase{
-		state:            &nextState,
-		round:            &round,
-		currentRound:     state.CurrentRound,
-		stats:            &resolutionStats{},
-		procurementTerms: r.procurementTerms,
-		productionBOM:    r.productionBOM,
-		productionRoute:  r.productionRoute,
-		productionCost:   r.productionCost,
-		inventoryCost:    r.inventoryCost,
+		state:               &nextState,
+		round:               &round,
+		currentRound:        state.CurrentRound,
+		stats:               &resolutionStats{},
+		backlogExpiryRounds: r.backlogExpiryRounds,
+		procurementTerms:    r.procurementTerms,
+		productionBOM:       r.productionBOM,
+		productionRoute:     r.productionRoute,
+		productionCost:      r.productionCost,
+		inventoryCost:       r.inventoryCost,
 	}
 
 	if nextState.ActiveTargets.EffectiveRound == state.CurrentRound {
@@ -218,16 +222,17 @@ func (r *Resolver) ResolveRound(state domain.MatchState, actions []domain.Action
 }
 
 type roundPhase struct {
-	state            *domain.MatchState
-	round            *domain.RoundRecord
-	currentRound     domain.RoundNumber
-	stats            *resolutionStats
-	procurementTerms ProcurementTermsHook
-	productionBOM    ProductionBOMHook
-	productionRoute  ProductionRouteHook
-	productionCost   ProductionCostHook
-	inventoryCost    InventoryCarryingCostHook
-	eventSeq         int
+	state               *domain.MatchState
+	round               *domain.RoundRecord
+	currentRound        domain.RoundNumber
+	stats               *resolutionStats
+	backlogExpiryRounds int
+	procurementTerms    ProcurementTermsHook
+	productionBOM       ProductionBOMHook
+	productionRoute     ProductionRouteHook
+	productionCost      ProductionCostHook
+	inventoryCost       InventoryCarryingCostHook
+	eventSeq            int
 }
 
 type resolutionStats struct {
@@ -622,7 +627,7 @@ func (p *roundPhase) finalizeRound(action *domain.ActionSubmission) {
 	aged := make([]domain.BacklogEntry, 0, len(backlog))
 	for _, entry := range backlog {
 		entry.AgeInRounds++
-		if entry.AgeInRounds > 2 {
+		if entry.AgeInRounds > p.backlogExpiryRounds {
 			p.stats.lostSalesUnits += entry.Quantity
 			p.appendEvent(domain.EventBacklogExpired, domain.ActorPlantSystem, fmt.Sprintf("Expired backlog for %s/%s", entry.CustomerID, entry.ProductID), map[string]any{
 				"customer_id": string(entry.CustomerID),
@@ -648,6 +653,7 @@ func (p *roundPhase) finalizeRound(action *domain.ActionSubmission) {
 		targets := action.Action.Finance.NextRoundTargets
 		targets.EffectiveRound = p.currentRound + 1
 		p.state.ActiveTargets = targets
+		p.state.Plant.DebtCeiling = targets.DebtCeilingTarget
 	}
 
 	holdingCost, debtCost := p.applyRoundOperatingCosts()
@@ -1332,6 +1338,13 @@ func normalizedHistoryLimit(limit int) int {
 		return 10
 	}
 	return limit
+}
+
+func normalizedBacklogExpiryRounds(rounds int) int {
+	if rounds <= 0 {
+		return 2
+	}
+	return rounds
 }
 
 func minUnits(values ...domain.Units) domain.Units {

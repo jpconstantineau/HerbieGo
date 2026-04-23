@@ -150,7 +150,8 @@ func (d Definition) ResolverOptions() engine.Options {
 	workstationByID := d.workstationsByID()
 
 	return engine.Options{
-		HistoryLimit: d.DefaultHistoryLimit,
+		HistoryLimit:        d.DefaultHistoryLimit,
+		BacklogExpiryRounds: d.MarketModel.DemandAssumptions.BacklogExpiryRounds,
 		ProcurementTerms: func(ctx engine.ProcurementTermsContext) engine.ProcurementTerms {
 			part, ok := partByID[ctx.Order.PartID]
 			if !ok {
