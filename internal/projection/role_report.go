@@ -50,10 +50,12 @@ func buildDepartmentPerformanceReport(state domain.MatchState, viewerRoleID doma
 			KeyMetrics: []domain.MetricValue{
 				{MetricID: "wip_units", Value: int(sumWIPUnits(state.Plant.WIPInventory)), DisplayUnit: "units"},
 				{MetricID: "output_units", Value: int(state.Metrics.ProductionOutputUnits), DisplayUnit: "units"},
+				{MetricID: "capacity_loss", Value: int(state.Metrics.CapacityLossUnits), DisplayUnit: "units"},
 			},
 			DetailLines: []string{
 				fmt.Sprintf("Current WIP totals %d units across active workstations.", sumWIPUnits(state.Plant.WIPInventory)),
 				fmt.Sprintf("Finished goods on hand total %d units.", state.Metrics.FinishedGoodsUnits),
+				stressSummaryLine(state.Plant.Workstations),
 			},
 			BonusSummary: bonusReminder(viewerRoleID),
 		}
@@ -245,6 +247,24 @@ func sumWIPUnits(items []domain.WIPInventory) domain.Units {
 		total += item.Quantity
 	}
 	return total
+}
+
+func stressSummaryLine(items []domain.WorkstationState) string {
+	if len(items) == 0 {
+		return "No workstation stress profile is currently active."
+	}
+
+	worst := items[0]
+	for _, item := range items[1:] {
+		if item.StressCapacityLoss > worst.StressCapacityLoss {
+			worst = item
+		}
+	}
+
+	if worst.StressCapacityLoss <= 0 {
+		return "No workstation lost effective capacity to congestion last round."
+	}
+	return fmt.Sprintf("%s lost %d unit(s) of effective capacity and closed at %d/%d.", worst.DisplayName, worst.StressCapacityLoss, worst.EffectiveCapacityPerRound, worst.CapacityPerRound)
 }
 
 func inventoryBucketTotal(items []domain.PartInventory) domain.Money {

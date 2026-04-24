@@ -177,6 +177,7 @@ func (r *Resolver) ResolveRound(state domain.MatchState, actions []domain.Action
 		productionRoute:     r.productionRoute,
 		productionCost:      r.productionCost,
 		inventoryCost:       r.inventoryCost,
+		stressedStations:    map[domain.WorkstationID]bool{},
 	}
 
 	if nextState.ActiveTargets.EffectiveRound == state.CurrentRound {
@@ -233,6 +234,7 @@ type roundPhase struct {
 	productionCost      ProductionCostHook
 	inventoryCost       InventoryCarryingCostHook
 	eventSeq            int
+	stressedStations    map[domain.WorkstationID]bool
 }
 
 type resolutionStats struct {
@@ -446,7 +448,18 @@ func (p *roundPhase) resolveProduction(action *domain.ActionSubmission) {
 			continue
 		}
 
-		remainingCapacity := p.state.Plant.Workstations[wsIndex].CapacityPerRound - p.state.Plant.Workstations[wsIndex].CapacityUsed
+		effectiveCapacity, capacityLoss := stressedCapacity(p.state.Plant.Workstations[wsIndex], wipUnitsAtWorkstation(p.state.Plant.WIPInventory, allocation.WorkstationID))
+		p.state.Plant.Workstations[wsIndex].EffectiveCapacityPerRound = effectiveCapacity
+		p.state.Plant.Workstations[wsIndex].StressCapacityLoss = capacityLoss
+		if capacityLoss > 0 && !p.stressedStations[allocation.WorkstationID] {
+			p.stressedStations[allocation.WorkstationID] = true
+			p.appendEvent(domain.EventWorkstationStressed, domain.ActorPlantSystem, fmt.Sprintf("%s lost effective capacity to congestion", allocation.WorkstationID), map[string]any{
+				"workstation_id":     string(allocation.WorkstationID),
+				"effective_capacity": int(effectiveCapacity),
+				"capacity_loss":      int(capacityLoss),
+			})
+		}
+		remainingCapacity := effectiveCapacity - p.state.Plant.Workstations[wsIndex].CapacityUsed
 		availableWIP := wipQuantity(p.state.Plant.WIPInventory, allocation.ProductID, allocation.WorkstationID)
 		advance := minCapacity(allocation.Capacity, remainingCapacity, domain.CapacityUnits(availableWIP))
 		costing := p.productionCost(ProductionCostContext{
@@ -475,6 +488,7 @@ func (p *roundPhase) resolveProduction(action *domain.ActionSubmission) {
 				"product_id":         string(allocation.ProductID),
 				"requested_capacity": int(allocation.Capacity),
 				"accepted_capacity":  int(advance),
+				"effective_capacity": int(effectiveCapacity),
 			})
 		}
 		if advance <= 0 {
@@ -696,6 +710,11 @@ func (p *roundPhase) computeMetrics() domain.PlantMetrics {
 		inventoryValue += inventoryCost(item.OnHandQty, item.UnitCost)
 	}
 
+	capacityLossUnits := domain.Units(0)
+	for _, workstation := range p.state.Plant.Workstations {
+		capacityLossUnits += domain.Units(workstation.StressCapacityLoss)
+	}
+
 	operatingExpense := p.stats.procurementSpend + p.stats.productionSpend + p.stats.holdingCost + p.stats.debtServiceCost
 	netCashChange := p.stats.revenue - operatingExpense
 	demandUnits := p.stats.shippedUnits + backlogUnits + p.stats.lostSalesUnits
@@ -720,6 +739,7 @@ func (p *roundPhase) computeMetrics() domain.PlantMetrics {
 		PartsOnHandUnits:      partsUnits,
 		FinishedGoodsUnits:    finishedUnits,
 		ProductionOutputUnits: p.stats.producedUnits,
+		CapacityLossUnits:     capacityLossUnits,
 	}
 }
 
@@ -1292,8 +1312,42 @@ func resetCapacityUsage(items []domain.WorkstationState) []domain.WorkstationSta
 	cloned := slices.Clone(items)
 	for index := range cloned {
 		cloned[index].CapacityUsed = 0
+		cloned[index].EffectiveCapacityPerRound = cloned[index].CapacityPerRound
+		cloned[index].StressCapacityLoss = 0
 	}
 	return cloned
+}
+
+func stressedCapacity(workstation domain.WorkstationState, wipUnits domain.Units) (domain.CapacityUnits, domain.CapacityUnits) {
+	nominal := workstation.CapacityPerRound
+	if nominal <= 0 {
+		return 0, 0
+	}
+	if workstation.StressPenaltyPerExcessUnit <= 0 {
+		return nominal, 0
+	}
+
+	threshold := domain.Units(nominal + workstation.StressBufferUnits)
+	if wipUnits <= threshold {
+		return nominal, 0
+	}
+
+	excess := domain.CapacityUnits(wipUnits - threshold)
+	loss := excess * workstation.StressPenaltyPerExcessUnit
+	if loss > nominal {
+		loss = nominal
+	}
+	return nominal - loss, loss
+}
+
+func wipUnitsAtWorkstation(items []domain.WIPInventory, workstationID domain.WorkstationID) domain.Units {
+	total := domain.Units(0)
+	for _, item := range items {
+		if item.WorkstationID == workstationID {
+			total += item.Quantity
+		}
+	}
+	return total
 }
 
 func findCustomer(customers []domain.CustomerState, customerID domain.CustomerID) *domain.CustomerState {

@@ -148,8 +148,8 @@ func StarterProductionModel() ProductionModel {
 			},
 		},
 		Workstations: []Workstation{
-			{ID: "fabrication", DisplayName: "Fabrication", CapacityPerRound: 7, CostPerUnit: 2},
-			{ID: "assembly", DisplayName: "Assembly", CapacityPerRound: 4, CostPerUnit: 3},
+			{ID: "fabrication", DisplayName: "Fabrication", CapacityPerRound: 7, CostPerUnit: 2, StressBufferUnits: 2, StressPenaltyPerExcessUnit: 1},
+			{ID: "assembly", DisplayName: "Assembly", CapacityPerRound: 4, CostPerUnit: 3, StressBufferUnits: 1, StressPenaltyPerExcessUnit: 1},
 		},
 		Bottleneck: BottleneckAssumption{
 			WorkstationID: "assembly",
