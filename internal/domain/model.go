@@ -76,6 +76,8 @@ type PlantState struct {
 	WIPInventory      []WIPInventory
 	FinishedInventory []FinishedInventory
 	InTransitSupply   []SupplyLot
+	Receivables       []CashCommitment
+	Payables          []CashCommitment
 	Workstations      []WorkstationState
 	Backlog           []BacklogEntry
 }
@@ -109,6 +111,22 @@ type SupplyLot struct {
 	ArrivalRound    RoundNumber
 }
 
+type CashCommitment struct {
+	CommitmentID string
+	Kind         CashCommitmentKind
+	Amount       Money
+	DueRound     RoundNumber
+	CreatedRound RoundNumber
+	ReferenceID  string
+}
+
+type CashCommitmentKind string
+
+const (
+	CashCommitmentReceivable CashCommitmentKind = "receivable"
+	CashCommitmentPayable    CashCommitmentKind = "payable"
+)
+
 type WorkstationState struct {
 	WorkstationID              WorkstationID
 	DisplayName                string
@@ -139,10 +157,11 @@ type PartDefinition struct {
 }
 
 type CustomerState struct {
-	CustomerID  CustomerID
-	DisplayName string
-	Sentiment   int
-	Backlog     []BacklogEntry
+	CustomerID         CustomerID
+	DisplayName        string
+	Sentiment          int
+	PaymentDelayRounds int
+	Backlog            []BacklogEntry
 }
 
 type BudgetTargets struct {
@@ -159,10 +178,14 @@ type PlantMetrics struct {
 	OperatingExpense      Money
 	ProcurementSpend      Money
 	ProductionSpend       Money
+	PayrollExpense        Money
 	HoldingCost           Money
 	DebtServiceCost       Money
 	InventoryValue        Money
 	NetCashChange         Money
+	CashReceipts          Money
+	CashDisbursements     Money
+	EndingCash            Money
 	RoundProfit           Money
 	OnTimeShipmentRate    Percentage
 	BacklogUnits          Units
@@ -327,6 +350,8 @@ type RoundEventType string
 const (
 	EventBudgetActivated        RoundEventType = "budget_activated"
 	EventPurchaseOrderPlaced    RoundEventType = "purchase_order_placed"
+	EventPayableScheduled       RoundEventType = "payable_scheduled"
+	EventPayablePaid            RoundEventType = "payable_paid"
 	EventSupplyArrived          RoundEventType = "supply_arrived"
 	EventProductionReleased     RoundEventType = "production_released"
 	EventWorkstationStressed    RoundEventType = "workstation_stressed"
@@ -334,10 +359,13 @@ const (
 	EventFinishedGoodsProduced  RoundEventType = "finished_goods_produced"
 	EventDemandRealized         RoundEventType = "demand_realized"
 	EventShipmentCompleted      RoundEventType = "shipment_completed"
+	EventReceivableScheduled    RoundEventType = "receivable_scheduled"
+	EventReceivableCollected    RoundEventType = "receivable_collected"
 	EventBacklogCreated         RoundEventType = "backlog_created"
 	EventBacklogExpired         RoundEventType = "backlog_expired"
 	EventCustomerSentimentMoved RoundEventType = "customer_sentiment_moved"
 	EventCashChanged            RoundEventType = "cash_changed"
+	EventPayrollPaid            RoundEventType = "payroll_paid"
 	EventMetricSnapshot         RoundEventType = "metric_snapshot"
 	EventRuleAdjustment         RoundEventType = "rule_adjustment"
 )
@@ -396,6 +424,8 @@ func (s PlantState) Clone() PlantState {
 		WIPInventory:      slices.Clone(s.WIPInventory),
 		FinishedInventory: slices.Clone(s.FinishedInventory),
 		InTransitSupply:   slices.Clone(s.InTransitSupply),
+		Receivables:       slices.Clone(s.Receivables),
+		Payables:          slices.Clone(s.Payables),
 		Workstations:      slices.Clone(s.Workstations),
 		Backlog:           slices.Clone(s.Backlog),
 	}
@@ -403,10 +433,11 @@ func (s PlantState) Clone() PlantState {
 
 func (s CustomerState) Clone() CustomerState {
 	return CustomerState{
-		CustomerID:  s.CustomerID,
-		DisplayName: s.DisplayName,
-		Sentiment:   s.Sentiment,
-		Backlog:     slices.Clone(s.Backlog),
+		CustomerID:         s.CustomerID,
+		DisplayName:        s.DisplayName,
+		Sentiment:          s.Sentiment,
+		PaymentDelayRounds: s.PaymentDelayRounds,
+		Backlog:            slices.Clone(s.Backlog),
 	}
 }
 

@@ -638,6 +638,69 @@ func TestResolverTracksLostSalesAndDebtServiceInMetrics(t *testing.T) {
 	}
 }
 
+func TestResolverSchedulesReceivablesPayablesAndUsesProjectedDebtCapacity(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{
+		ProductionBOM:         widgetBOM,
+		ReceivableDelayRounds: 1,
+		PayableDelayRounds:    1,
+	})
+
+	state := fixtureState()
+	state.Customers[0].PaymentDelayRounds = 2
+	state.Plant.Payables = []domain.CashCommitment{
+		{
+			CommitmentID: "ap-1",
+			Kind:         domain.CashCommitmentPayable,
+			Amount:       12,
+			DueRound:     3,
+			CreatedRound: 2,
+			ReferenceID:  "legacy-procurement",
+		},
+	}
+
+	result, err := resolver.ResolveRound(state, fixtureActions(), seeded.New(7))
+	if err != nil {
+		t.Fatalf("ResolveRound() error = %v", err)
+	}
+
+	if got := result.NextState.Plant.Cash; got != 5 {
+		t.Fatalf("Plant.Cash = %d, want 5", got)
+	}
+	if got := result.NextState.Plant.Debt; got != 0 {
+		t.Fatalf("Plant.Debt = %d, want 0", got)
+	}
+	if got := len(result.NextState.Plant.Receivables); got != 1 {
+		t.Fatalf("Receivables len = %d, want 1", got)
+	}
+	if got := len(result.NextState.Plant.Payables); got != 2 {
+		t.Fatalf("Payables len = %d, want 2", got)
+	}
+	if got := result.NextState.Plant.Receivables[0].DueRound; got != 4 {
+		t.Fatalf("Customer-specific receivable due round = %d, want 4", got)
+	}
+	if got := result.NextState.Plant.Payables[1].DueRound; got != 3 {
+		t.Fatalf("Scheduled payable due round = %d, want 3", got)
+	}
+	if got := result.NextState.Plant.Payables[1].Amount; got != 3 {
+		t.Fatalf("Trimmed payable amount = %d, want 3", got)
+	}
+	if got := result.Round.Metrics.CashReceipts; got != 0 {
+		t.Fatalf("CashReceipts = %d, want 0", got)
+	}
+	if got := result.Round.Metrics.CashDisbursements; got != 5 {
+		t.Fatalf("CashDisbursements = %d, want 5", got)
+	}
+	if got := result.Round.Metrics.NetCashChange; got != -5 {
+		t.Fatalf("NetCashChange = %d, want -5", got)
+	}
+	if got := result.Round.Metrics.PayrollExpense; got != 0 {
+		t.Fatalf("PayrollExpense = %d, want 0", got)
+	}
+	if got := result.Round.Metrics.RoundProfit; got != 10 {
+		t.Fatalf("RoundProfit = %d, want 10", got)
+	}
+}
+
 func TestResolverUsesConfiguredBacklogExpiryRounds(t *testing.T) {
 	resolver := engine.NewResolver(engine.Options{
 		BacklogExpiryRounds: 3,

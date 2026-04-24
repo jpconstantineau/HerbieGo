@@ -17,6 +17,7 @@ type Definition struct {
 	StartingConditions  StartingConditions
 	MarketModel         MarketModel
 	ProductionModel     ProductionModel
+	FinanceModel        FinanceModel
 	DefaultHistoryLimit int
 }
 
@@ -36,9 +37,10 @@ type StartingConditions struct {
 }
 
 type CustomerSeed struct {
-	ID          domain.CustomerID
-	DisplayName string
-	Sentiment   int
+	ID                 domain.CustomerID
+	DisplayName        string
+	Sentiment          int
+	PaymentDelayRounds int
 }
 
 type MarketModel struct {
@@ -100,11 +102,19 @@ type BottleneckAssumption struct {
 	Summary       string
 }
 
+type FinanceModel struct {
+	ID                    string
+	DisplayName           string
+	Description           string
+	ReceivableDelayRounds int
+	PayableDelayRounds    int
+}
+
 type DemandAssumptions struct {
 	BacklogExpiryRounds int
 }
 
-func NewDefinition(id domain.ScenarioID, displayName, description string, setup MatchSetup, starting StartingConditions, market MarketModel, production ProductionModel) Definition {
+func NewDefinition(id domain.ScenarioID, displayName, description string, setup MatchSetup, starting StartingConditions, market MarketModel, production ProductionModel, finance FinanceModel) Definition {
 	return Definition{
 		ID:                  id,
 		DisplayName:         displayName,
@@ -113,6 +123,7 @@ func NewDefinition(id domain.ScenarioID, displayName, description string, setup 
 		StartingConditions:  starting,
 		MarketModel:         market,
 		ProductionModel:     production,
+		FinanceModel:        finance,
 		DefaultHistoryLimit: 10,
 	}
 }
@@ -124,10 +135,11 @@ func (d Definition) InitialState(matchID domain.MatchID, roles []domain.RoleAssi
 	customers := make([]domain.CustomerState, 0, len(d.StartingConditions.Customers))
 	for _, customer := range d.StartingConditions.Customers {
 		customers = append(customers, domain.CustomerState{
-			CustomerID:  customer.ID,
-			DisplayName: customer.DisplayName,
-			Sentiment:   customer.Sentiment,
-			Backlog:     customerBacklog(plant.Backlog, customer.ID),
+			CustomerID:         customer.ID,
+			DisplayName:        customer.DisplayName,
+			Sentiment:          customer.Sentiment,
+			PaymentDelayRounds: customer.PaymentDelayRounds,
+			Backlog:            customerBacklog(plant.Backlog, customer.ID),
 		})
 	}
 
@@ -193,6 +205,8 @@ func (d Definition) ResolverOptions() engine.Options {
 			}
 			return engine.ProductionCost{CostPerCapacityUnit: workstation.CostPerUnit}
 		},
+		ReceivableDelayRounds: d.FinanceModel.ReceivableDelayRounds,
+		PayableDelayRounds:    d.FinanceModel.PayableDelayRounds,
 		WorldUpdate: func(ctx *engine.WorldUpdateContext) error {
 			return d.applyDemand(ctx)
 		},
@@ -206,6 +220,7 @@ func (d Definition) SummaryLines() []string {
 		fmt.Sprintf("starting_conditions=%s", d.StartingConditions.ID),
 		fmt.Sprintf("market_model=%s", d.MarketModel.ID),
 		fmt.Sprintf("production_model=%s", d.ProductionModel.ID),
+		fmt.Sprintf("finance_model=%s", d.FinanceModel.ID),
 		fmt.Sprintf("bottleneck=%s", d.ProductionModel.Bottleneck.WorkstationID),
 		fmt.Sprintf("roles=%s", strings.Join(roleNames(d.Setup.RoleRoster), ", ")),
 	}
