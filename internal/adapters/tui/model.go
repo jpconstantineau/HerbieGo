@@ -123,10 +123,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "shift+tab":
 			m.focusedPane = (m.focusedPane + 3) % 4
 			m.status = fmt.Sprintf("Focused %s pane", paneName(m.focusedPane))
-		case "]":
-			m.moveWorkspace(1)
-		case "[":
-			m.moveWorkspace(-1)
 		case "1":
 			m.setWorkspace(workspaceActionEntry)
 		case "2":
@@ -144,6 +140,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "down", "j":
 			if m.focusedPane == paneDepartments {
 				m.moveRole(1)
+			}
+		case "left", "h":
+			if m.focusedPane == paneHistory {
+				m.moveWorkspace(-1)
+			}
+		case "right", "l":
+			if m.focusedPane == paneHistory {
+				m.moveWorkspace(1)
 			}
 		}
 		return m, nil
@@ -891,17 +895,17 @@ func workspaceNavigationLine(active workspaceMode) string {
 		}
 		labels = append(labels, label)
 	}
-	return "Navigate: " + strings.Join(labels, " | ") + " | [/] cycle"
+	return "Navigate: " + strings.Join(labels, " | ") + " | left/right cycle"
 }
 
 func focusedPaneCommandHints(focusedPane int, active workspaceMode) string {
-	base := "Inspect mode | tab/shift+tab focus panes | 1/2/3/4/5 switch workspace | [/] cycle | q quit"
+	base := "Inspect mode | tab/shift+tab focus panes | 1/2/3/4/5 switch workspace | q quit"
 
 	switch focusedPane {
 	case paneDepartments:
 		return base + " | departments: up/down select role"
 	case paneHistory:
-		return base + " | center workspace: " + workspaceInteractionHint(active)
+		return base + " | center workspace: left/right cycle workspaces, " + workspaceInteractionHint(active)
 	case paneStats:
 		return base + " | plant stats: read-only summary"
 	case paneCommandBar:
