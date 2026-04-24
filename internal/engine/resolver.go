@@ -25,8 +25,8 @@ type Options struct {
 	WorldUpdate           WorldUpdateHook
 }
 
-// ProcurementTermsHook lets scenario data supply part cost, MOQ, and quantity-based pricing rules.
-// The default implementation uses a unit cost fallback of 1 with no MOQ.
+// ProcurementTermsHook lets scenario data supply part cost, MOQ, lead time, and supplier behavior.
+// The default implementation assumes a known supplier with unit cost fallback of 1 and next-round arrival.
 type ProcurementTermsHook func(ProcurementTermsContext) ProcurementTerms
 
 type ProcurementTermsContext struct {
@@ -190,6 +190,7 @@ func (r *Resolver) ResolveRound(state domain.MatchState, actions []domain.Action
 		inventoryCost:         r.inventoryCost,
 		receivableDelayRounds: r.receivableDelayRounds,
 		payableDelayRounds:    r.payableDelayRounds,
+		random:                random,
 		stressedStations:      map[domain.WorkstationID]bool{},
 		random:                random,
 	}
@@ -1729,6 +1730,92 @@ func projectedOvertimeUnits(quantity, baseLaborRemaining, overtimeRequested doma
 		return 0
 	}
 	return min(quantity-baseLaborRemaining, max(overtimeRequested, 0))
+}
+
+func findSupplier(suppliers []domain.SupplierState, supplierID domain.SupplierID) *domain.SupplierState {
+	for index := range suppliers {
+		if suppliers[index].SupplierID == supplierID {
+			return &suppliers[index]
+		}
+	}
+	return nil
+}
+
+func (p *roundPhase) recordSupplierOrder(supplierID domain.SupplierID) {
+	supplier := findSupplier(p.state.Suppliers, supplierID)
+	if supplier == nil {
+		return
+	}
+	supplier.OrdersPlaced++
+}
+
+func (p *roundPhase) recordSupplierReceipt(supplierID domain.SupplierID) {
+	supplier := findSupplier(p.state.Suppliers, supplierID)
+	if supplier == nil {
+		return
+	}
+	supplier.OrdersReceived++
+	if supplier.LateDeliveries == 0 || supplier.ReliabilityScore >= supplier.OnTimeDeliveryPct {
+		return
+	}
+	supplier.ReliabilityScore = min(100, supplier.ReliabilityScore+2)
+	p.appendEvent(domain.EventSupplierScoreChanged, domain.ActorPlantSystem, fmt.Sprintf("Supplier %s score recovered after an on-time receipt", supplierID), map[string]any{
+		"supplier_id":       string(supplierID),
+		"reliability_score": supplier.ReliabilityScore,
+	})
+}
+
+func (p *roundPhase) recordSupplierDelay(supplierID domain.SupplierID) {
+	supplier := findSupplier(p.state.Suppliers, supplierID)
+	if supplier == nil {
+		return
+	}
+	supplier.LateDeliveries++
+	supplier.ReliabilityScore = max(0, supplier.ReliabilityScore-10)
+	p.appendEvent(domain.EventSupplierScoreChanged, domain.ActorPlantSystem, fmt.Sprintf("Supplier %s score dropped after a late promise", supplierID), map[string]any{
+		"supplier_id":       string(supplierID),
+		"reliability_score": supplier.ReliabilityScore,
+		"late_deliveries":   supplier.LateDeliveries,
+	})
+}
+
+func shouldDelayLot(lot domain.SupplyLot, suppliers []domain.SupplierState, random ports.RandomSource) bool {
+	if random == nil {
+		return false
+	}
+	supplier := findSupplier(suppliers, lot.SupplierID)
+	if supplier == nil || supplier.LateDeliveryRounds <= 0 || supplier.OnTimeDeliveryPct >= 100 {
+		return false
+	}
+	return random.IntN(100) >= supplier.OnTimeDeliveryPct
+}
+
+func supplierLateDelay(suppliers []domain.SupplierState, supplierID domain.SupplierID) domain.RoundNumber {
+	supplier := findSupplier(suppliers, supplierID)
+	if supplier == nil || supplier.LateDeliveryRounds <= 0 {
+		return 0
+	}
+	return domain.RoundNumber(supplier.LateDeliveryRounds)
+}
+
+func supplierReliabilityScore(suppliers []domain.SupplierState, supplierID domain.SupplierID) int {
+	supplier := findSupplier(suppliers, supplierID)
+	if supplier == nil {
+		return 0
+	}
+	return supplier.ReliabilityScore
+}
+
+func averageSupplierReliability(suppliers []domain.SupplierState) domain.Percentage {
+	if len(suppliers) == 0 {
+		return 0
+	}
+
+	total := 0
+	for _, supplier := range suppliers {
+		total += supplier.ReliabilityScore
+	}
+	return domain.Percentage(total / len(suppliers))
 }
 
 func findCustomer(customers []domain.CustomerState, customerID domain.CustomerID) *domain.CustomerState {

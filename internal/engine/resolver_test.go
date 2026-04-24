@@ -218,11 +218,13 @@ func TestResolverUsesScenarioProcurementTermsAndRoutingHooks(t *testing.T) {
 	resolver := engine.NewResolver(engine.Options{
 		ProcurementTerms: func(ctx engine.ProcurementTermsContext) engine.ProcurementTerms {
 			if ctx.Order.PartID != "housing" {
-				return engine.ProcurementTerms{UnitCost: 1, KnownSupplier: true}
+				return engine.ProcurementTerms{UnitCost: 1, LeadTimeRounds: 1, OnTimeDeliveryPct: 100, KnownSupplier: true}
 			}
 			return engine.ProcurementTerms{
 				UnitCost:             2,
 				MinimumOrderQuantity: 5,
+				LeadTimeRounds:       1,
+				OnTimeDeliveryPct:    100,
 				KnownSupplier:        true,
 			}
 		},
@@ -325,9 +327,9 @@ func TestResolverUsesLaborCapacityAndOvertime(t *testing.T) {
 			DisplayName:                 "Fabrication",
 			CapacityPerRound:            3,
 			EffectiveCapacityPerRound:   3,
-			StressBufferUnits:           0,
+			StressBufferUnits:           5,
 			StressPenaltyPerExcessUnit:  1,
-			LaborCapacityPerRound:       1,
+			LaborCapacityPerRound:       2,
 			LaborCostPerCapacityUnit:    1,
 			OvertimeCostPerCapacityUnit: 2,
 		},
@@ -349,7 +351,7 @@ func TestResolverUsesLaborCapacityAndOvertime(t *testing.T) {
 	actions := fixtureActions()
 	actions[1].Action.Production.Releases = []domain.ProductionRelease{{ProductID: "widget", Quantity: 2}}
 	actions[1].Action.Production.CapacityAllocation = []domain.CapacityAllocation{
-		{WorkstationID: "fabrication", ProductID: "widget", Capacity: 2},
+		{WorkstationID: "fabrication", ProductID: "widget", Capacity: 3},
 	}
 
 	noOvertime, err := resolver.ResolveRound(state, actions, seeded.New(1))
@@ -362,8 +364,8 @@ func TestResolverUsesLaborCapacityAndOvertime(t *testing.T) {
 	if got := noOvertime.Round.Metrics.OvertimeUnits; got != 0 {
 		t.Fatalf("OvertimeUnits without overtime = %d, want 0", got)
 	}
-	if got := noOvertime.Round.Metrics.LaborCost; got != 3 {
-		t.Fatalf("LaborCost without overtime = %d, want 3", got)
+	if got := noOvertime.Round.Metrics.LaborCost; got != 4 {
+		t.Fatalf("LaborCost without overtime = %d, want 4", got)
 	}
 
 	actions[1].Action.Production.Overtime = []domain.OvertimeAllocation{
