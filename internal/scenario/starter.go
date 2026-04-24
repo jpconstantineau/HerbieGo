@@ -20,6 +20,7 @@ func Starter() Definition {
 		StarterStartingConditions(),
 		StarterMarketModel(),
 		StarterProductionModel(),
+		StarterFinanceModel(),
 	)
 }
 
@@ -155,5 +156,17 @@ func StarterProductionModel() ProductionModel {
 			WorkstationID: "assembly",
 			Summary:       "Assembly is the chronic near-term bottleneck, so overselling or over-releasing work tends to inflate WIP and burn cash faster than throughput improves.",
 		},
+	}
+}
+
+func StarterFinanceModel() FinanceModel {
+	return FinanceModel{
+		ID:                    "net30-lite-weekly",
+		DisplayName:           "Net-30 Lite Weekly Cash Timing",
+		Description:           "Customer receipts and supplier invoices settle one round later, while payroll hits every other round to keep near-term cash pressure visible.",
+		ReceivableDelayRounds: 1,
+		PayableDelayRounds:    1,
+		PayrollCycleRounds:    2,
+		PayrollPerCycle:       6,
 	}
 }

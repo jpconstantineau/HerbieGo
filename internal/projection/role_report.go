@@ -78,10 +78,14 @@ func buildDepartmentPerformanceReport(state domain.MatchState, viewerRoleID doma
 			KeyMetrics: []domain.MetricValue{
 				{MetricID: "margin", Value: int(state.Metrics.RoundProfit), DisplayUnit: "money"},
 				{MetricID: "cash_position", Value: int(state.Plant.Cash), DisplayUnit: "money"},
+				{MetricID: "cash_receipts", Value: int(state.Metrics.CashReceipts), DisplayUnit: "money"},
+				{MetricID: "cash_disbursements", Value: int(state.Metrics.CashDisbursements), DisplayUnit: "money"},
 			},
 			DetailLines: []string{
 				fmt.Sprintf("Current cash is %d against debt ceiling %d.", state.Plant.Cash, state.Plant.DebtCeiling),
 				fmt.Sprintf("Round profit most recently closed at %d.", state.Metrics.RoundProfit),
+				fmt.Sprintf("Open receivables total %d, with %d due next round.", sumCommitmentAmount(state.Plant.Receivables), sumCommitmentsDue(state.Plant.Receivables, state.CurrentRound)),
+				fmt.Sprintf("Open payables total %d, with %d due next round.", sumCommitmentAmount(state.Plant.Payables), sumCommitmentsDue(state.Plant.Payables, state.CurrentRound)),
 			},
 			BonusSummary: bonusReminder(viewerRoleID),
 		}
@@ -265,6 +269,24 @@ func stressSummaryLine(items []domain.WorkstationState) string {
 		return "No workstation lost effective capacity to congestion last round."
 	}
 	return fmt.Sprintf("%s lost %d unit(s) of effective capacity and closed at %d/%d.", worst.DisplayName, worst.StressCapacityLoss, worst.EffectiveCapacityPerRound, worst.CapacityPerRound)
+}
+
+func sumCommitmentAmount(items []domain.CashCommitment) domain.Money {
+	total := domain.Money(0)
+	for _, item := range items {
+		total += item.Amount
+	}
+	return total
+}
+
+func sumCommitmentsDue(items []domain.CashCommitment, round domain.RoundNumber) domain.Money {
+	total := domain.Money(0)
+	for _, item := range items {
+		if item.DueRound == round {
+			total += item.Amount
+		}
+	}
+	return total
 }
 
 func inventoryBucketTotal(items []domain.PartInventory) domain.Money {

@@ -58,6 +58,9 @@ func TestStarterInitialStateProvidesKnownPlayableSetup(t *testing.T) {
 	if got := starter.ProductionModel.ID; got != "two_stage_pump_valve_line" {
 		t.Fatalf("ProductionModel.ID = %q, want two_stage_pump_valve_line", got)
 	}
+	if got := starter.FinanceModel.ID; got != "net30-lite-weekly" {
+		t.Fatalf("FinanceModel.ID = %q, want net30-lite-weekly", got)
+	}
 }
 
 func TestStarterResolverOptionsApplyScenarioHooks(t *testing.T) {
@@ -166,6 +169,7 @@ func TestScenarioComponentsCanBeSelectedIndependently(t *testing.T) {
 		starting,
 		market,
 		production,
+		scenario.StarterFinanceModel(),
 	)
 
 	if got := definition.StartingConditions.ID; got != "cash_heavy_bootstrap" {

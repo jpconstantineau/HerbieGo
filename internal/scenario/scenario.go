@@ -17,6 +17,7 @@ type Definition struct {
 	StartingConditions  StartingConditions
 	MarketModel         MarketModel
 	ProductionModel     ProductionModel
+	FinanceModel        FinanceModel
 	DefaultHistoryLimit int
 }
 
@@ -100,11 +101,21 @@ type BottleneckAssumption struct {
 	Summary       string
 }
 
+type FinanceModel struct {
+	ID                    string
+	DisplayName           string
+	Description           string
+	ReceivableDelayRounds int
+	PayableDelayRounds    int
+	PayrollCycleRounds    int
+	PayrollPerCycle       domain.Money
+}
+
 type DemandAssumptions struct {
 	BacklogExpiryRounds int
 }
 
-func NewDefinition(id domain.ScenarioID, displayName, description string, setup MatchSetup, starting StartingConditions, market MarketModel, production ProductionModel) Definition {
+func NewDefinition(id domain.ScenarioID, displayName, description string, setup MatchSetup, starting StartingConditions, market MarketModel, production ProductionModel, finance FinanceModel) Definition {
 	return Definition{
 		ID:                  id,
 		DisplayName:         displayName,
@@ -113,6 +124,7 @@ func NewDefinition(id domain.ScenarioID, displayName, description string, setup 
 		StartingConditions:  starting,
 		MarketModel:         market,
 		ProductionModel:     production,
+		FinanceModel:        finance,
 		DefaultHistoryLimit: 10,
 	}
 }
@@ -193,6 +205,10 @@ func (d Definition) ResolverOptions() engine.Options {
 			}
 			return engine.ProductionCost{CostPerCapacityUnit: workstation.CostPerUnit}
 		},
+		ReceivableDelayRounds: d.FinanceModel.ReceivableDelayRounds,
+		PayableDelayRounds:    d.FinanceModel.PayableDelayRounds,
+		PayrollCycleRounds:    d.FinanceModel.PayrollCycleRounds,
+		PayrollPerCycle:       d.FinanceModel.PayrollPerCycle,
 		WorldUpdate: func(ctx *engine.WorldUpdateContext) error {
 			return d.applyDemand(ctx)
 		},
@@ -206,6 +222,7 @@ func (d Definition) SummaryLines() []string {
 		fmt.Sprintf("starting_conditions=%s", d.StartingConditions.ID),
 		fmt.Sprintf("market_model=%s", d.MarketModel.ID),
 		fmt.Sprintf("production_model=%s", d.ProductionModel.ID),
+		fmt.Sprintf("finance_model=%s", d.FinanceModel.ID),
 		fmt.Sprintf("bottleneck=%s", d.ProductionModel.Bottleneck.WorkstationID),
 		fmt.Sprintf("roles=%s", strings.Join(roleNames(d.Setup.RoleRoster), ", ")),
 	}

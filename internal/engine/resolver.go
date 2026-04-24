@@ -13,14 +13,18 @@ import (
 )
 
 type Options struct {
-	HistoryLimit        int
-	BacklogExpiryRounds int
-	ProcurementTerms    ProcurementTermsHook
-	ProductionBOM       ProductionBOMHook
-	ProductionRoute     ProductionRouteHook
-	ProductionCost      ProductionCostHook
-	InventoryCost       InventoryCarryingCostHook
-	WorldUpdate         WorldUpdateHook
+	HistoryLimit          int
+	BacklogExpiryRounds   int
+	ProcurementTerms      ProcurementTermsHook
+	ProductionBOM         ProductionBOMHook
+	ProductionRoute       ProductionRouteHook
+	ProductionCost        ProductionCostHook
+	InventoryCost         InventoryCarryingCostHook
+	ReceivableDelayRounds int
+	PayableDelayRounds    int
+	PayrollCycleRounds    int
+	PayrollPerCycle       domain.Money
+	WorldUpdate           WorldUpdateHook
 }
 
 // ProcurementTermsHook lets scenario data supply part cost, MOQ, and quantity-based pricing rules.
@@ -121,26 +125,34 @@ type Result struct {
 }
 
 type Resolver struct {
-	historyLimit        int
-	backlogExpiryRounds int
-	procurementTerms    ProcurementTermsHook
-	productionBOM       ProductionBOMHook
-	productionRoute     ProductionRouteHook
-	productionCost      ProductionCostHook
-	inventoryCost       InventoryCarryingCostHook
-	worldUpdate         WorldUpdateHook
+	historyLimit          int
+	backlogExpiryRounds   int
+	procurementTerms      ProcurementTermsHook
+	productionBOM         ProductionBOMHook
+	productionRoute       ProductionRouteHook
+	productionCost        ProductionCostHook
+	inventoryCost         InventoryCarryingCostHook
+	receivableDelayRounds int
+	payableDelayRounds    int
+	payrollCycleRounds    int
+	payrollPerCycle       domain.Money
+	worldUpdate           WorldUpdateHook
 }
 
 func NewResolver(options Options) *Resolver {
 	return &Resolver{
-		historyLimit:        normalizedHistoryLimit(options.HistoryLimit),
-		backlogExpiryRounds: normalizedBacklogExpiryRounds(options.BacklogExpiryRounds),
-		procurementTerms:    defaultProcurementTerms(options.ProcurementTerms),
-		productionBOM:       defaultProductionBOM(options.ProductionBOM),
-		productionRoute:     defaultProductionRoute(options.ProductionRoute),
-		productionCost:      defaultProductionCost(options.ProductionCost),
-		inventoryCost:       options.InventoryCost,
-		worldUpdate:         options.WorldUpdate,
+		historyLimit:          normalizedHistoryLimit(options.HistoryLimit),
+		backlogExpiryRounds:   normalizedBacklogExpiryRounds(options.BacklogExpiryRounds),
+		procurementTerms:      defaultProcurementTerms(options.ProcurementTerms),
+		productionBOM:         defaultProductionBOM(options.ProductionBOM),
+		productionRoute:       defaultProductionRoute(options.ProductionRoute),
+		productionCost:        defaultProductionCost(options.ProductionCost),
+		inventoryCost:         options.InventoryCost,
+		receivableDelayRounds: normalizedDelayRounds(options.ReceivableDelayRounds),
+		payableDelayRounds:    normalizedDelayRounds(options.PayableDelayRounds),
+		payrollCycleRounds:    normalizedCycleRounds(options.PayrollCycleRounds),
+		payrollPerCycle:       maxMoney(0, options.PayrollPerCycle),
+		worldUpdate:           options.WorldUpdate,
 	}
 }
 
@@ -167,17 +179,22 @@ func (r *Resolver) ResolveRound(state domain.MatchState, actions []domain.Action
 	}
 
 	phase := roundPhase{
-		state:               &nextState,
-		round:               &round,
-		currentRound:        state.CurrentRound,
-		stats:               &resolutionStats{},
-		backlogExpiryRounds: r.backlogExpiryRounds,
-		procurementTerms:    r.procurementTerms,
-		productionBOM:       r.productionBOM,
-		productionRoute:     r.productionRoute,
-		productionCost:      r.productionCost,
-		inventoryCost:       r.inventoryCost,
-		stressedStations:    map[domain.WorkstationID]bool{},
+		state:                 &nextState,
+		round:                 &round,
+		currentRound:          state.CurrentRound,
+		beginningCash:         state.Plant.Cash,
+		stats:                 &resolutionStats{},
+		backlogExpiryRounds:   r.backlogExpiryRounds,
+		procurementTerms:      r.procurementTerms,
+		productionBOM:         r.productionBOM,
+		productionRoute:       r.productionRoute,
+		productionCost:        r.productionCost,
+		inventoryCost:         r.inventoryCost,
+		receivableDelayRounds: r.receivableDelayRounds,
+		payableDelayRounds:    r.payableDelayRounds,
+		payrollCycleRounds:    r.payrollCycleRounds,
+		payrollPerCycle:       r.payrollPerCycle,
+		stressedStations:      map[domain.WorkstationID]bool{},
 	}
 
 	if nextState.ActiveTargets.EffectiveRound == state.CurrentRound {
@@ -223,29 +240,37 @@ func (r *Resolver) ResolveRound(state domain.MatchState, actions []domain.Action
 }
 
 type roundPhase struct {
-	state               *domain.MatchState
-	round               *domain.RoundRecord
-	currentRound        domain.RoundNumber
-	stats               *resolutionStats
-	backlogExpiryRounds int
-	procurementTerms    ProcurementTermsHook
-	productionBOM       ProductionBOMHook
-	productionRoute     ProductionRouteHook
-	productionCost      ProductionCostHook
-	inventoryCost       InventoryCarryingCostHook
-	eventSeq            int
-	stressedStations    map[domain.WorkstationID]bool
+	state                 *domain.MatchState
+	round                 *domain.RoundRecord
+	currentRound          domain.RoundNumber
+	beginningCash         domain.Money
+	stats                 *resolutionStats
+	backlogExpiryRounds   int
+	procurementTerms      ProcurementTermsHook
+	productionBOM         ProductionBOMHook
+	productionRoute       ProductionRouteHook
+	productionCost        ProductionCostHook
+	inventoryCost         InventoryCarryingCostHook
+	receivableDelayRounds int
+	payableDelayRounds    int
+	payrollCycleRounds    int
+	payrollPerCycle       domain.Money
+	eventSeq              int
+	stressedStations      map[domain.WorkstationID]bool
 }
 
 type resolutionStats struct {
-	revenue          domain.Money
-	procurementSpend domain.Money
-	productionSpend  domain.Money
-	holdingCost      domain.Money
-	debtServiceCost  domain.Money
-	shippedUnits     domain.Units
-	producedUnits    domain.Units
-	lostSalesUnits   domain.Units
+	revenue           domain.Money
+	procurementSpend  domain.Money
+	productionSpend   domain.Money
+	payrollExpense    domain.Money
+	holdingCost       domain.Money
+	debtServiceCost   domain.Money
+	shippedUnits      domain.Units
+	producedUnits     domain.Units
+	lostSalesUnits    domain.Units
+	cashReceipts      domain.Money
+	cashDisbursements domain.Money
 }
 
 func (p *roundPhase) resolveProcurement(action *domain.ActionSubmission) {
@@ -337,12 +362,7 @@ func (p *roundPhase) resolveProcurement(action *domain.ActionSubmission) {
 	}
 
 	if spendUsed > 0 {
-		p.applyCashDelta(-spendUsed)
-		p.appendEvent(domain.EventCashChanged, domain.ActorPlantSystem, "Procurement spending applied", map[string]any{
-			"delta": -int(spendUsed),
-			"cash":  int(p.state.Plant.Cash),
-			"debt":  int(p.state.Plant.Debt),
-		})
+		p.schedulePayable(spendUsed, fmt.Sprintf("procurement-r%d", p.currentRound))
 	}
 }
 
@@ -560,6 +580,7 @@ func (p *roundPhase) resolveProduction(action *domain.ActionSubmission) {
 
 	if spendUsed > 0 {
 		p.applyCashDelta(-spendUsed)
+		p.stats.cashDisbursements += spendUsed
 		p.appendEvent(domain.EventCashChanged, domain.ActorPlantSystem, "Production spending applied", map[string]any{
 			"delta": -int(spendUsed),
 			"cash":  int(p.state.Plant.Cash),
@@ -609,7 +630,7 @@ func (p *roundPhase) resolveSales(action *domain.ActionSubmission) {
 			revenue := domain.Money(shipped) * unitPrice
 			p.stats.revenue += revenue
 			p.stats.shippedUnits += shipped
-			p.applyCashDelta(revenue)
+			p.scheduleReceivable(revenue, fmt.Sprintf("%s-%s-r%d", entry.CustomerID, entry.ProductID, p.currentRound))
 
 			p.appendEvent(domain.EventShipmentCompleted, domain.ActorPlantSystem, fmt.Sprintf("Shipped %d %s to %s", shipped, entry.ProductID, entry.CustomerID), map[string]any{
 				"customer_id": string(entry.CustomerID),
@@ -622,14 +643,6 @@ func (p *roundPhase) resolveSales(action *domain.ActionSubmission) {
 		if entry.Quantity > 0 {
 			remaining = append(remaining, entry)
 		}
-	}
-
-	if p.stats.revenue > 0 {
-		p.appendEvent(domain.EventCashChanged, domain.ActorPlantSystem, "Shipment revenue applied", map[string]any{
-			"delta": int(p.stats.revenue),
-			"cash":  int(p.state.Plant.Cash),
-			"debt":  int(p.state.Plant.Debt),
-		})
 	}
 
 	p.state.Plant.Backlog = remaining
@@ -669,6 +682,10 @@ func (p *roundPhase) finalizeRound(action *domain.ActionSubmission) {
 		p.state.ActiveTargets = targets
 		p.state.Plant.DebtCeiling = targets.DebtCeilingTarget
 	}
+
+	p.collectReceivablesDue()
+	p.payPayablesDue()
+	p.applyPayrollIfDue()
 
 	holdingCost, debtCost := p.applyRoundOperatingCosts()
 	p.stats.holdingCost = holdingCost
@@ -715,8 +732,8 @@ func (p *roundPhase) computeMetrics() domain.PlantMetrics {
 		capacityLossUnits += domain.Units(workstation.StressCapacityLoss)
 	}
 
-	operatingExpense := p.stats.procurementSpend + p.stats.productionSpend + p.stats.holdingCost + p.stats.debtServiceCost
-	netCashChange := p.stats.revenue - operatingExpense
+	operatingExpense := p.stats.procurementSpend + p.stats.productionSpend + p.stats.payrollExpense + p.stats.holdingCost + p.stats.debtServiceCost
+	netCashChange := p.state.Plant.Cash - p.beginningCash
 	demandUnits := p.stats.shippedUnits + backlogUnits + p.stats.lostSalesUnits
 	onTime := domain.Percentage(100)
 	if demandUnits > 0 {
@@ -728,10 +745,14 @@ func (p *roundPhase) computeMetrics() domain.PlantMetrics {
 		OperatingExpense:      operatingExpense,
 		ProcurementSpend:      p.stats.procurementSpend,
 		ProductionSpend:       p.stats.productionSpend,
+		PayrollExpense:        p.stats.payrollExpense,
 		HoldingCost:           p.stats.holdingCost,
 		DebtServiceCost:       p.stats.debtServiceCost,
 		InventoryValue:        inventoryValue,
 		NetCashChange:         netCashChange,
+		CashReceipts:          p.stats.cashReceipts,
+		CashDisbursements:     p.stats.cashDisbursements,
+		EndingCash:            p.state.Plant.Cash,
 		RoundProfit:           p.stats.revenue - operatingExpense,
 		OnTimeShipmentRate:    onTime,
 		BacklogUnits:          backlogUnits,
@@ -782,6 +803,7 @@ func (p *roundPhase) applyRoundOperatingCosts() (domain.Money, domain.Money) {
 	total := holdingCost + debtCost
 	if total > 0 {
 		p.applyCashDelta(-total)
+		p.stats.cashDisbursements += total
 		p.appendEvent(domain.EventCashChanged, domain.ActorPlantSystem, "Round-end carrying costs applied", map[string]any{
 			"delta":             -int(total),
 			"cash":              int(p.state.Plant.Cash),
@@ -792,6 +814,164 @@ func (p *roundPhase) applyRoundOperatingCosts() (domain.Money, domain.Money) {
 	}
 
 	return holdingCost, debtCost
+}
+
+func (p *roundPhase) collectReceivablesDue() {
+	if len(p.state.Plant.Receivables) == 0 {
+		return
+	}
+
+	due := make([]domain.CashCommitment, 0, len(p.state.Plant.Receivables))
+	remaining := make([]domain.CashCommitment, 0, len(p.state.Plant.Receivables))
+	for _, item := range p.state.Plant.Receivables {
+		if item.DueRound <= p.currentRound {
+			due = append(due, item)
+			continue
+		}
+		remaining = append(remaining, item)
+	}
+	p.state.Plant.Receivables = remaining
+
+	collected := sumCommitments(due)
+	for _, item := range due {
+		p.applyCashDelta(item.Amount)
+		p.appendEvent(domain.EventReceivableCollected, domain.ActorPlantSystem, "Collected customer receivable", map[string]any{
+			"commitment_id": item.CommitmentID,
+			"amount":        int(item.Amount),
+			"due_round":     int(item.DueRound),
+			"cash":          int(p.state.Plant.Cash),
+			"debt":          int(p.state.Plant.Debt),
+		})
+	}
+	if collected > 0 {
+		p.stats.cashReceipts += collected
+		p.appendEvent(domain.EventCashChanged, domain.ActorPlantSystem, "Customer receipts collected", map[string]any{
+			"delta": int(collected),
+			"cash":  int(p.state.Plant.Cash),
+			"debt":  int(p.state.Plant.Debt),
+		})
+	}
+}
+
+func (p *roundPhase) payPayablesDue() {
+	if len(p.state.Plant.Payables) == 0 {
+		return
+	}
+
+	due := make([]domain.CashCommitment, 0, len(p.state.Plant.Payables))
+	remaining := make([]domain.CashCommitment, 0, len(p.state.Plant.Payables))
+	for _, item := range p.state.Plant.Payables {
+		if item.DueRound <= p.currentRound {
+			due = append(due, item)
+			continue
+		}
+		remaining = append(remaining, item)
+	}
+	p.state.Plant.Payables = remaining
+
+	disbursed := sumCommitments(due)
+	for _, item := range due {
+		p.applyCashDelta(-item.Amount)
+		p.appendEvent(domain.EventPayablePaid, domain.ActorPlantSystem, "Paid supplier payable", map[string]any{
+			"commitment_id": item.CommitmentID,
+			"amount":        int(item.Amount),
+			"due_round":     int(item.DueRound),
+			"cash":          int(p.state.Plant.Cash),
+			"debt":          int(p.state.Plant.Debt),
+		})
+	}
+	if disbursed > 0 {
+		p.stats.cashDisbursements += disbursed
+		p.appendEvent(domain.EventCashChanged, domain.ActorPlantSystem, "Supplier payments applied", map[string]any{
+			"delta": -int(disbursed),
+			"cash":  int(p.state.Plant.Cash),
+			"debt":  int(p.state.Plant.Debt),
+		})
+	}
+}
+
+func (p *roundPhase) applyPayrollIfDue() {
+	if p.payrollCycleRounds <= 0 || p.payrollPerCycle <= 0 || int(p.currentRound)%p.payrollCycleRounds != 0 {
+		return
+	}
+
+	p.applyCashDelta(-p.payrollPerCycle)
+	p.stats.payrollExpense += p.payrollPerCycle
+	p.stats.cashDisbursements += p.payrollPerCycle
+	p.appendEvent(domain.EventPayrollPaid, domain.ActorPlantSystem, "Payroll cadence applied", map[string]any{
+		"amount": int(p.payrollPerCycle),
+		"cash":   int(p.state.Plant.Cash),
+		"debt":   int(p.state.Plant.Debt),
+	})
+	p.appendEvent(domain.EventCashChanged, domain.ActorPlantSystem, "Payroll cash applied", map[string]any{
+		"delta": -int(p.payrollPerCycle),
+		"cash":  int(p.state.Plant.Cash),
+		"debt":  int(p.state.Plant.Debt),
+	})
+}
+
+func (p *roundPhase) scheduleReceivable(amount domain.Money, referenceID string) {
+	if amount <= 0 {
+		return
+	}
+	if p.receivableDelayRounds == 0 {
+		p.applyCashDelta(amount)
+		p.stats.cashReceipts += amount
+		p.appendEvent(domain.EventCashChanged, domain.ActorPlantSystem, "Shipment revenue applied", map[string]any{
+			"delta": int(amount),
+			"cash":  int(p.state.Plant.Cash),
+			"debt":  int(p.state.Plant.Debt),
+		})
+		return
+	}
+
+	item := domain.CashCommitment{
+		CommitmentID: fmt.Sprintf("ar-r%d-%d", p.currentRound, len(p.state.Plant.Receivables)+1),
+		Kind:         domain.CashCommitmentReceivable,
+		Amount:       amount,
+		DueRound:     p.currentRound + domain.RoundNumber(p.receivableDelayRounds),
+		CreatedRound: p.currentRound,
+		ReferenceID:  referenceID,
+	}
+	p.state.Plant.Receivables = append(p.state.Plant.Receivables, item)
+	p.appendEvent(domain.EventReceivableScheduled, domain.ActorPlantSystem, "Scheduled customer receivable", map[string]any{
+		"commitment_id": item.CommitmentID,
+		"amount":        int(item.Amount),
+		"due_round":     int(item.DueRound),
+		"reference_id":  item.ReferenceID,
+	})
+}
+
+func (p *roundPhase) schedulePayable(amount domain.Money, referenceID string) {
+	if amount <= 0 {
+		return
+	}
+	if p.payableDelayRounds == 0 {
+		p.applyCashDelta(-amount)
+		p.stats.cashDisbursements += amount
+		p.appendEvent(domain.EventCashChanged, domain.ActorPlantSystem, "Procurement spending applied", map[string]any{
+			"delta": -int(amount),
+			"cash":  int(p.state.Plant.Cash),
+			"debt":  int(p.state.Plant.Debt),
+		})
+		return
+	}
+
+	item := domain.CashCommitment{
+		CommitmentID: fmt.Sprintf("ap-r%d-%d", p.currentRound, len(p.state.Plant.Payables)+1),
+		Kind:         domain.CashCommitmentPayable,
+		Amount:       amount,
+		DueRound:     p.currentRound + domain.RoundNumber(p.payableDelayRounds),
+		CreatedRound: p.currentRound,
+		ReferenceID:  referenceID,
+	}
+	p.state.Plant.Payables = append(p.state.Plant.Payables, item)
+	p.appendEvent(domain.EventPayableScheduled, domain.ActorPlantSystem, "Scheduled supplier payable", map[string]any{
+		"commitment_id": item.CommitmentID,
+		"amount":        int(item.Amount),
+		"due_round":     int(item.DueRound),
+		"reference_id":  item.ReferenceID,
+	})
 }
 
 func (p *roundPhase) syncCustomerBacklog(backlog []domain.BacklogEntry) {
@@ -1403,6 +1583,20 @@ func normalizedBacklogExpiryRounds(rounds int) int {
 	return rounds
 }
 
+func normalizedDelayRounds(rounds int) int {
+	if rounds < 0 {
+		return 0
+	}
+	return rounds
+}
+
+func normalizedCycleRounds(rounds int) int {
+	if rounds <= 0 {
+		return 0
+	}
+	return rounds
+}
+
 func minUnits(values ...domain.Units) domain.Units {
 	result := values[0]
 	for _, value := range values[1:] {
@@ -1504,4 +1698,19 @@ func minMoney(values ...domain.Money) domain.Money {
 		}
 	}
 	return result
+}
+
+func maxMoney(left, right domain.Money) domain.Money {
+	if left > right {
+		return left
+	}
+	return right
+}
+
+func sumCommitments(items []domain.CashCommitment) domain.Money {
+	total := domain.Money(0)
+	for _, item := range items {
+		total += item.Amount
+	}
+	return total
 }

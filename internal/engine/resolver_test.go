@@ -638,6 +638,55 @@ func TestResolverTracksLostSalesAndDebtServiceInMetrics(t *testing.T) {
 	}
 }
 
+func TestResolverSchedulesReceivablesPayablesAndPayrollTiming(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{
+		ProductionBOM:         widgetBOM,
+		ReceivableDelayRounds: 1,
+		PayableDelayRounds:    1,
+		PayrollCycleRounds:    2,
+		PayrollPerCycle:       5,
+	})
+
+	result, err := resolver.ResolveRound(fixtureState(), fixtureActions(), seeded.New(7))
+	if err != nil {
+		t.Fatalf("ResolveRound() error = %v", err)
+	}
+
+	if got := result.NextState.Plant.Cash; got != 0 {
+		t.Fatalf("Plant.Cash = %d, want 0", got)
+	}
+	if got := result.NextState.Plant.Debt; got != 0 {
+		t.Fatalf("Plant.Debt = %d, want 0", got)
+	}
+	if got := len(result.NextState.Plant.Receivables); got != 1 {
+		t.Fatalf("Receivables len = %d, want 1", got)
+	}
+	if got := len(result.NextState.Plant.Payables); got != 1 {
+		t.Fatalf("Payables len = %d, want 1", got)
+	}
+	if got := result.NextState.Plant.Receivables[0].DueRound; got != 3 {
+		t.Fatalf("Receivable due round = %d, want 3", got)
+	}
+	if got := result.NextState.Plant.Payables[0].DueRound; got != 3 {
+		t.Fatalf("Payable due round = %d, want 3", got)
+	}
+	if got := result.Round.Metrics.PayrollExpense; got != 5 {
+		t.Fatalf("PayrollExpense = %d, want 5", got)
+	}
+	if got := result.Round.Metrics.CashReceipts; got != 0 {
+		t.Fatalf("CashReceipts = %d, want 0", got)
+	}
+	if got := result.Round.Metrics.CashDisbursements; got != 10 {
+		t.Fatalf("CashDisbursements = %d, want 10", got)
+	}
+	if got := result.Round.Metrics.NetCashChange; got != -10 {
+		t.Fatalf("NetCashChange = %d, want -10", got)
+	}
+	if got := result.Round.Metrics.RoundProfit; got != 4 {
+		t.Fatalf("RoundProfit = %d, want 4", got)
+	}
+}
+
 func TestResolverUsesConfiguredBacklogExpiryRounds(t *testing.T) {
 	resolver := engine.NewResolver(engine.Options{
 		BacklogExpiryRounds: 3,
