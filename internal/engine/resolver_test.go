@@ -441,6 +441,58 @@ func TestResolverReducesEffectiveCapacityUnderCongestion(t *testing.T) {
 	}
 }
 
+func TestResolverLimitsOvertimeThroughProductionBudget(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{
+		ProductionBOM: widgetBOM,
+	})
+	state := fixtureState()
+	state.ActiveTargets.ProductionSpendBudget = 3
+	state.Plant.Workstations = []domain.WorkstationState{
+		{
+			WorkstationID:               "fabrication",
+			DisplayName:                 "Fabrication",
+			CapacityPerRound:            3,
+			EffectiveCapacityPerRound:   3,
+			StressBufferUnits:           0,
+			StressPenaltyPerExcessUnit:  1,
+			LaborCapacityPerRound:       1,
+			LaborCostPerCapacityUnit:    1,
+			OvertimeCostPerCapacityUnit: 2,
+		},
+		{
+			WorkstationID:               "assembly",
+			DisplayName:                 "Assembly",
+			CapacityPerRound:            2,
+			EffectiveCapacityPerRound:   2,
+			StressBufferUnits:           0,
+			StressPenaltyPerExcessUnit:  0,
+			LaborCapacityPerRound:       2,
+			LaborCostPerCapacityUnit:    1,
+			OvertimeCostPerCapacityUnit: 0,
+		},
+	}
+	actions := fixtureActions()
+	actions[1].Action.Production.Releases = []domain.ProductionRelease{{ProductID: "widget", Quantity: 2}}
+	actions[1].Action.Production.CapacityAllocation = []domain.CapacityAllocation{
+		{WorkstationID: "fabrication", ProductID: "widget", Capacity: 2},
+	}
+	actions[1].Action.Production.Overtime = []domain.OvertimeAllocation{
+		{WorkstationID: "fabrication", Capacity: 1},
+	}
+
+	result, err := resolver.ResolveRound(state, actions, seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() error = %v", err)
+	}
+
+	if got := wipQty(result.NextState.Plant.WIPInventory, "widget", "assembly"); got != 2 {
+		t.Fatalf("WIP(widget/assembly) = %d, want 2 because overtime should be budget-trimmed", got)
+	}
+	if got := result.Round.Metrics.OvertimeUnits; got != 0 {
+		t.Fatalf("OvertimeUnits = %d, want 0 when production budget cannot absorb overtime", got)
+	}
+}
+
 func TestResolverRequiresExplicitRolePayload(t *testing.T) {
 	resolver := engine.NewResolver(engine.Options{})
 	actions := fixtureActions()

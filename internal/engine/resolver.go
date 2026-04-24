@@ -501,7 +501,7 @@ func (p *roundPhase) resolveProduction(action *domain.ActionSubmission) {
 	}
 
 	hardCap := cappedBudget(p.state.ActiveTargets.ProductionSpendBudget)
-	spendUsed := domain.Money(0)
+	budgetUsed := domain.Money(0)
 	for _, allocation := range action.Action.Production.CapacityAllocation {
 		if allocation.Capacity <= 0 {
 			continue
@@ -527,9 +527,12 @@ func (p *roundPhase) resolveProduction(action *domain.ActionSubmission) {
 				"capacity_loss":      int(capacityLoss),
 			})
 		}
-		remainingCapacity := effectiveCapacity - p.state.Plant.Workstations[wsIndex].CapacityUsed
+		workstation := p.state.Plant.Workstations[wsIndex]
+		remainingCapacity := effectiveCapacity - workstation.CapacityUsed
 		availableWIP := wipQuantity(p.state.Plant.WIPInventory, allocation.ProductID, allocation.WorkstationID)
-		laborRemaining := availableLaborCapacity(p.state.Plant.Workstations[wsIndex], overtimeRequests[allocation.WorkstationID])
+		baseLaborRemaining := availableBaseLaborCapacity(workstation)
+		overtimeRemaining := overtimeRequests[allocation.WorkstationID]
+		laborRemaining := availableLaborCapacity(workstation, overtimeRemaining)
 		advance := minCapacity(allocation.Capacity, remainingCapacity, domain.CapacityUnits(availableWIP), laborRemaining)
 		costing := p.productionCost(ProductionCostContext{
 			State:         p.state.Clone(),
@@ -542,15 +545,15 @@ func (p *roundPhase) resolveProduction(action *domain.ActionSubmission) {
 			costing.CostPerCapacityUnit = 1
 		}
 		if hardCap > 0 {
-			remainingBudget := hardCap - spendUsed
+			remainingBudget := hardCap - budgetUsed
 			if remainingBudget <= 0 {
 				advance = 0
 			} else {
-				advance = minCapacity(advance, domain.CapacityUnits(affordableQuantity(remainingBudget, costing.CostPerCapacityUnit)))
+				advance = affordableProductionAdvance(advance, baseLaborRemaining, overtimeRemaining, costing.CostPerCapacityUnit, workstation.OvertimeCostPerCapacityUnit, remainingBudget)
 			}
 		}
 		affordable := availableSpendCapacity(p.state.Plant)
-		advance = minCapacity(advance, domain.CapacityUnits(affordableQuantity(affordable, costing.CostPerCapacityUnit)))
+		advance = affordableProductionAdvance(advance, baseLaborRemaining, overtimeRemaining, costing.CostPerCapacityUnit, workstation.OvertimeCostPerCapacityUnit, affordable)
 		if advance < allocation.Capacity {
 			p.appendEvent(domain.EventRuleAdjustment, domain.ActorPlantSystem, "Trimmed production advance to available work or capacity", map[string]any{
 				"workstation_id":     string(allocation.WorkstationID),
@@ -569,7 +572,8 @@ func (p *roundPhase) resolveProduction(action *domain.ActionSubmission) {
 		p.state.Plant.Workstations[wsIndex].CapacityUsed += advance
 		overtimeRequests[allocation.WorkstationID] = max(0, overtimeRequests[allocation.WorkstationID]-overtimeUsed)
 		lineSpend := spendForQuantity(domain.Units(advance), costing.CostPerCapacityUnit)
-		spendUsed += lineSpend
+		overtimeSpend := spendForQuantity(domain.Units(overtimeUsed), p.state.Plant.Workstations[wsIndex].OvertimeCostPerCapacityUnit)
+		budgetUsed += lineSpend + overtimeSpend
 		p.stats.productionSpend += lineSpend
 		if overtimeUsed > 0 {
 			p.stats.overtimeUnits += domain.Units(overtimeUsed)
@@ -636,11 +640,11 @@ func (p *roundPhase) resolveProduction(action *domain.ActionSubmission) {
 		})
 	}
 
-	if spendUsed > 0 {
-		p.applyCashDelta(-spendUsed)
-		p.stats.cashDisbursements += spendUsed
+	if p.stats.productionSpend > 0 {
+		p.applyCashDelta(-p.stats.productionSpend)
+		p.stats.cashDisbursements += p.stats.productionSpend
 		p.appendEvent(domain.EventCashChanged, domain.ActorPlantSystem, "Production spending applied", map[string]any{
-			"delta": -int(spendUsed),
+			"delta": -int(p.stats.productionSpend),
 			"cash":  int(p.state.Plant.Cash),
 			"debt":  int(p.state.Plant.Debt),
 		})
