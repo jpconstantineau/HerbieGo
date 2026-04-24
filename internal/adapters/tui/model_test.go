@@ -65,7 +65,7 @@ func TestModelLoadsInitialSnapshotAndRendersShell(t *testing.T) {
 		"Center Workspace",
 		"Mode: action entry",
 		"Navigate: [1 action] | 2 lookup | 3 report | 4 feed | 5",
-		"archive | [/] cycle",
+		"archive | left/right cycle",
 		"cycle",
 		"Action entry for Procurement Manager",
 		"View: draft, review, and submit a private turn without",
@@ -148,10 +148,15 @@ func TestModelCyclesRoleSelectionAndPaneFocus(t *testing.T) {
 		t.Fatalf("roleTitle() with history focus = %q, want Production Manager", got)
 	}
 
-	switched, _ := unchangedShell.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
+	switched, _ := unchangedShell.Update(tea.KeyMsg{Type: tea.KeyRight})
 	switchedShell := switched.(Model)
 	if switchedShell.workspace != workspaceScenarioLookup {
 		t.Fatalf("workspace = %v, want %v", switchedShell.workspace, workspaceScenarioLookup)
+	}
+
+	notSwitched, _ := switchedShell.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
+	if got := notSwitched.(Model).workspace; got != workspaceScenarioLookup {
+		t.Fatalf("workspace with ] = %v, want %v", got, workspaceScenarioLookup)
 	}
 
 	reset, _ := switchedShell.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
@@ -210,7 +215,7 @@ func TestModelRendersScenarioLookupWorkspaceAndSupportsBrowsing(t *testing.T) {
 	for _, want := range []string{
 		"Mode: scenario lookup",
 		"Navigate: 1 action | [2 lookup] | 3 report | 4 feed | 5",
-		"archive | [/] cycle",
+		"archive | left/right cycle",
 		"Scenario lookups for Prairie Pump Starter Plant",
 		"same canonical scenario lookup surface",
 		"used by AI tool calls",
@@ -469,7 +474,7 @@ func TestRoundFeedKeepsCurrentTurnSubmissionHidden(t *testing.T) {
 	for _, want := range []string{
 		"Mode: round feed",
 		"Navigate: 1 action | 2 lookup | 3 report | [4 feed] | 5",
-		"archive | [/] cycle",
+		"archive | left/right cycle",
 		"cycle",
 		"Submissions received: 1/4",
 		"Waiting on: Production Manager, Sales Manager, Finance",
@@ -564,7 +569,7 @@ func TestModelUsesCompactLayoutAndEmptyStatesOnSmallerTerminal(t *testing.T) {
 		"Plant Stats",
 		"Center Workspace",
 		"Navigate: [1 action] | 2 lookup | 3 report | 4 feed | 5",
-		"archive | [/] cycle",
+		"archive | left/right cycle",
 		"Action entry for Procurement Manager",
 		"Orders: housing=2, seal_kit=1",
 		"Cash: 24",
@@ -625,13 +630,13 @@ func TestCommandBarHintsFollowFocusedPane(t *testing.T) {
 
 	shell.focusedPane = paneHistory
 	historyView := shell.View()
-	if !strings.Contains(historyView, "center workspace: up/down") || !strings.Contains(historyView, "move fields, enter edit/save, esc cancel, r review, s submit") {
+	if !strings.Contains(historyView, "center workspace: left/right cycle") || !strings.Contains(historyView, "workspaces, up/down move fields") || !strings.Contains(historyView, "enter edit/save, esc cancel, r review, s submit") {
 		t.Fatalf("history hint missing action-entry controls\n%s", historyView)
 	}
 
 	shell.workspace = workspaceScenarioLookup
 	lookupView := shell.View()
-	if !strings.Contains(lookupView, "center workspace: v/r/b/d") || !strings.Contains(lookupView, "switch lookup tabs, up/down browse entries") {
+	if !strings.Contains(lookupView, "center workspace: left/right cycle") || !strings.Contains(lookupView, "workspaces, v/r/b/d") || !strings.Contains(lookupView, "switch lookup tabs, up/down browse entries") {
 		t.Fatalf("history hint missing lookup controls\n%s", lookupView)
 	}
 
@@ -657,7 +662,7 @@ func TestModelRoleReportShowsCompanySnapshot(t *testing.T) {
 	for _, want := range []string{
 		"Mode: role report",
 		"1 action | 2 lookup | [3 report] | 4 feed | 5",
-		"archive | [/] cycle",
+		"archive | left/right cycle",
 		"cycle",
 		"Role report for Procurement Manager",
 		"Company snapshot",
@@ -840,7 +845,7 @@ func TestModelArchiveShowsRetainedHistorySummaries(t *testing.T) {
 	for _, want := range []string{
 		"Mode: history archive",
 		"1 action | 2 lookup | 3 report | 4 feed | [5",
-		"archive] | [/] cycle",
+		"archive] | left/right cycle",
 		"cycle",
 		"Rounds retained: 1",
 		"Use this view for older rounds and per-round summaries",
