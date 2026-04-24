@@ -21,8 +21,8 @@ func TestStarterLookupsExposeCanonicalScenarioData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListValidSuppliers() error = %v", err)
 	}
-	if !reflect.DeepEqual(suppliers.Suppliers, []domain.SupplierID{"forgeco"}) {
-		t.Fatalf("Suppliers = %#v, want [forgeco]", suppliers.Suppliers)
+	if !reflect.DeepEqual(suppliers.Suppliers, []domain.SupplierID{"forgeco", "prairiefast"}) {
+		t.Fatalf("Suppliers = %#v, want [forgeco prairiefast]", suppliers.Suppliers)
 	}
 
 	route, err := definition.ShowProductRoute("pump")

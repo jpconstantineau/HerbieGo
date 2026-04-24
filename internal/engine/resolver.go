@@ -38,6 +38,10 @@ type ProcurementTermsContext struct {
 type ProcurementTerms struct {
 	UnitCost             domain.Money
 	MinimumOrderQuantity domain.Units
+	LeadTimeRounds       int
+	OnTimeDeliveryPct    int
+	LateDeliveryRounds   int
+	KnownSupplier        bool
 }
 
 // ProductionBOMHook lets scenario data define the parts consumed when a product is released.
@@ -187,6 +191,7 @@ func (r *Resolver) ResolveRound(state domain.MatchState, actions []domain.Action
 		receivableDelayRounds: r.receivableDelayRounds,
 		payableDelayRounds:    r.payableDelayRounds,
 		stressedStations:      map[domain.WorkstationID]bool{},
+		random:                random,
 	}
 
 	if nextState.ActiveTargets.EffectiveRound == state.CurrentRound {
@@ -245,6 +250,7 @@ type roundPhase struct {
 	inventoryCost         InventoryCarryingCostHook
 	receivableDelayRounds int
 	payableDelayRounds    int
+	random                ports.RandomSource
 	eventSeq              int
 	stressedStations      map[domain.WorkstationID]bool
 }
@@ -282,8 +288,22 @@ func (p *roundPhase) resolveProcurement(action *domain.ActionSubmission) {
 			CurrentRound: p.currentRound,
 			Order:        order,
 		})
+		if !terms.KnownSupplier {
+			p.appendEvent(domain.EventRuleAdjustment, domain.ActorPlantSystem, "Rejected procurement order for unsupported supplier/part combination", map[string]any{
+				"part_id":     string(order.PartID),
+				"supplier_id": string(order.SupplierID),
+				"quantity":    int(order.Quantity),
+			})
+			continue
+		}
 		if terms.UnitCost <= 0 {
 			terms.UnitCost = 1
+		}
+		if terms.LeadTimeRounds <= 0 {
+			terms.LeadTimeRounds = 1
+		}
+		if terms.OnTimeDeliveryPct < 0 {
+			terms.OnTimeDeliveryPct = 100
 		}
 		if order.Quantity < terms.MinimumOrderQuantity {
 			allowed = terms.MinimumOrderQuantity
@@ -327,6 +347,15 @@ func (p *roundPhase) resolveProcurement(action *domain.ActionSubmission) {
 			continue
 		}
 
+		arrivalRound := p.currentRound + domain.RoundNumber(terms.LeadTimeRounds)
+		lateDelivery := false
+		if terms.OnTimeDeliveryPct < 100 && terms.LateDeliveryRounds > 0 && p.random != nil {
+			if p.random.IntN(100) >= terms.OnTimeDeliveryPct {
+				arrivalRound += domain.RoundNumber(terms.LateDeliveryRounds)
+				lateDelivery = true
+			}
+		}
+
 		lot := domain.SupplyLot{
 			PurchaseOrderID: fmt.Sprintf("%s-po-%02d", action.ActionID, index+1),
 			SupplierID:      order.SupplierID,
@@ -334,7 +363,7 @@ func (p *roundPhase) resolveProcurement(action *domain.ActionSubmission) {
 			Quantity:        allowed,
 			UnitCost:        terms.UnitCost,
 			OrderedRound:    p.currentRound,
-			ArrivalRound:    p.currentRound + 1,
+			ArrivalRound:    arrivalRound,
 		}
 		p.state.Plant.InTransitSupply = append(p.state.Plant.InTransitSupply, lot)
 		lineSpend := spendForQuantity(allowed, lot.UnitCost)
@@ -346,6 +375,9 @@ func (p *roundPhase) resolveProcurement(action *domain.ActionSubmission) {
 			"part_id":           string(order.PartID),
 			"supplier_id":       string(order.SupplierID),
 			"quantity":          int(allowed),
+			"lead_time_rounds":  terms.LeadTimeRounds,
+			"on_time_pct":       terms.OnTimeDeliveryPct,
+			"late_delivery":     lateDelivery,
 			"arrival_round":     int(lot.ArrivalRound),
 			"unit_cost":         int(lot.UnitCost),
 		})
@@ -1626,7 +1658,12 @@ func defaultProcurementTerms(hook ProcurementTermsHook) ProcurementTermsHook {
 	}
 
 	return func(_ ProcurementTermsContext) ProcurementTerms {
-		return ProcurementTerms{UnitCost: 1}
+		return ProcurementTerms{
+			UnitCost:          1,
+			LeadTimeRounds:    1,
+			OnTimeDeliveryPct: 100,
+			KnownSupplier:     true,
+		}
 	}
 }
 

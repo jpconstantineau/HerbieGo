@@ -82,10 +82,24 @@ type Product struct {
 }
 
 type Part struct {
-	ID          domain.PartID
-	DisplayName string
-	UnitCost    domain.Money
-	SupplierID  domain.SupplierID
+	ID                   domain.PartID
+	DisplayName          string
+	UnitCost             domain.Money
+	SupplierID           domain.SupplierID
+	LeadTimeRounds       int
+	OnTimeDeliveryPct    int
+	LateDeliveryRounds   int
+	MinimumOrderQuantity domain.Units
+	AlternateSuppliers   []SupplierOption
+}
+
+type SupplierOption struct {
+	ID                   domain.SupplierID
+	UnitCost             domain.Money
+	LeadTimeRounds       int
+	OnTimeDeliveryPct    int
+	LateDeliveryRounds   int
+	MinimumOrderQuantity domain.Units
 }
 
 type Workstation struct {
@@ -169,9 +183,20 @@ func (d Definition) ResolverOptions() engine.Options {
 		ProcurementTerms: func(ctx engine.ProcurementTermsContext) engine.ProcurementTerms {
 			part, ok := partByID[ctx.Order.PartID]
 			if !ok {
-				return engine.ProcurementTerms{UnitCost: 1}
+				return engine.ProcurementTerms{}
 			}
-			return engine.ProcurementTerms{UnitCost: part.UnitCost}
+			supplier, ok := part.supplier(ctx.Order.SupplierID)
+			if !ok {
+				return engine.ProcurementTerms{}
+			}
+			return engine.ProcurementTerms{
+				UnitCost:             supplier.UnitCost,
+				MinimumOrderQuantity: supplier.MinimumOrderQuantity,
+				LeadTimeRounds:       supplier.LeadTimeRounds,
+				OnTimeDeliveryPct:    supplier.OnTimeDeliveryPct,
+				LateDeliveryRounds:   supplier.LateDeliveryRounds,
+				KnownSupplier:        true,
+			}
 		},
 		ProductionBOM: func(ctx engine.ProductionBOMContext) engine.ProductionBOM {
 			product, ok := productByID[ctx.ProductID]
@@ -271,6 +296,57 @@ func (d Definition) productionWorkstationState() []domain.WorkstationState {
 		})
 	}
 	return items
+}
+
+func (p Part) suppliers() []SupplierOption {
+	items := []SupplierOption{
+		{
+			ID:                   p.SupplierID,
+			UnitCost:             p.UnitCost,
+			LeadTimeRounds:       normalizedLeadTime(p.LeadTimeRounds),
+			OnTimeDeliveryPct:    normalizedOnTimePct(p.OnTimeDeliveryPct),
+			LateDeliveryRounds:   normalizedLateRounds(p.LateDeliveryRounds),
+			MinimumOrderQuantity: p.MinimumOrderQuantity,
+		},
+	}
+	items = append(items, slices.Clone(p.AlternateSuppliers)...)
+	return items
+}
+
+func (p Part) supplier(supplierID domain.SupplierID) (SupplierOption, bool) {
+	for _, item := range p.suppliers() {
+		if item.ID == supplierID {
+			item.LeadTimeRounds = normalizedLeadTime(item.LeadTimeRounds)
+			item.OnTimeDeliveryPct = normalizedOnTimePct(item.OnTimeDeliveryPct)
+			item.LateDeliveryRounds = normalizedLateRounds(item.LateDeliveryRounds)
+			return item, true
+		}
+	}
+	return SupplierOption{}, false
+}
+
+func normalizedLeadTime(rounds int) int {
+	if rounds <= 0 {
+		return 1
+	}
+	return rounds
+}
+
+func normalizedOnTimePct(pct int) int {
+	if pct < 0 {
+		return 100
+	}
+	if pct > 100 {
+		return 100
+	}
+	return pct
+}
+
+func normalizedLateRounds(rounds int) int {
+	if rounds < 0 {
+		return 0
+	}
+	return rounds
 }
 
 func (d Definition) applyDemand(ctx *engine.WorldUpdateContext) error {

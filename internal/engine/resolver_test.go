@@ -218,11 +218,12 @@ func TestResolverUsesScenarioProcurementTermsAndRoutingHooks(t *testing.T) {
 	resolver := engine.NewResolver(engine.Options{
 		ProcurementTerms: func(ctx engine.ProcurementTermsContext) engine.ProcurementTerms {
 			if ctx.Order.PartID != "housing" {
-				return engine.ProcurementTerms{UnitCost: 1}
+				return engine.ProcurementTerms{UnitCost: 1, KnownSupplier: true}
 			}
 			return engine.ProcurementTerms{
 				UnitCost:             2,
 				MinimumOrderQuantity: 5,
+				KnownSupplier:        true,
 			}
 		},
 		ProductionBOM: widgetBOM,
@@ -698,6 +699,47 @@ func TestResolverSchedulesReceivablesPayablesAndUsesProjectedDebtCapacity(t *tes
 	}
 	if got := result.Round.Metrics.RoundProfit; got != 10 {
 		t.Fatalf("RoundProfit = %d, want 10", got)
+	}
+}
+
+func TestResolverUsesSupplierLeadTimeAndReliabilityTerms(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{
+		ProcurementTerms: func(ctx engine.ProcurementTermsContext) engine.ProcurementTerms {
+			if ctx.Order.SupplierID == "slow" {
+				return engine.ProcurementTerms{
+					UnitCost:           1,
+					LeadTimeRounds:     2,
+					OnTimeDeliveryPct:  0,
+					LateDeliveryRounds: 1,
+					KnownSupplier:      true,
+				}
+			}
+			return engine.ProcurementTerms{
+				UnitCost:          3,
+				LeadTimeRounds:    1,
+				OnTimeDeliveryPct: 100,
+				KnownSupplier:     true,
+			}
+		},
+	})
+
+	state := fixtureState()
+	actions := fixtureActions()
+	actions[0].Action.Procurement.Orders = []domain.PurchaseOrderIntent{
+		{PartID: "housing", SupplierID: "slow", Quantity: 1},
+		{PartID: "housing", SupplierID: "fast", Quantity: 1},
+	}
+
+	result, err := resolver.ResolveRound(state, actions, seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() error = %v", err)
+	}
+
+	if got := result.NextState.Plant.InTransitSupply[0].ArrivalRound; got != 5 {
+		t.Fatalf("slow supplier arrival round = %d, want 5", got)
+	}
+	if got := result.NextState.Plant.InTransitSupply[1].ArrivalRound; got != 3 {
+		t.Fatalf("fast supplier arrival round = %d, want 3", got)
 	}
 }
 

@@ -41,6 +41,7 @@ func buildDepartmentPerformanceReport(state domain.MatchState, viewerRoleID doma
 			DetailLines: []string{
 				fmt.Sprintf("In-transit supply totals %d units across open purchase orders.", sumInTransitSupply(state.Plant.InTransitSupply)),
 				fmt.Sprintf("On-hand parts inventory value is %d.", inventoryBucketTotal(state.Plant.PartsInventory)),
+				nextSupplyArrivalLine(state.Plant.InTransitSupply, state.CurrentRound),
 			},
 			BonusSummary: bonusReminder(viewerRoleID),
 		}
@@ -327,6 +328,24 @@ func applyProjectedCashDelta(cash, debt, delta domain.Money) (domain.Money, doma
 	}
 
 	return 0, debt + (spend - cash)
+}
+
+func nextSupplyArrivalLine(lots []domain.SupplyLot, currentRound domain.RoundNumber) string {
+	if len(lots) == 0 {
+		return "No inbound supply is currently scheduled."
+	}
+
+	next := lots[0]
+	for _, lot := range lots[1:] {
+		if lot.ArrivalRound < next.ArrivalRound {
+			next = lot
+		}
+	}
+
+	if next.ArrivalRound <= currentRound {
+		return fmt.Sprintf("Next inbound lot from %s is due this round.", next.SupplierID)
+	}
+	return fmt.Sprintf("Next inbound lot from %s is due in %d round(s).", next.SupplierID, next.ArrivalRound-currentRound)
 }
 
 func inventoryBucketTotal(items []domain.PartInventory) domain.Money {

@@ -141,11 +141,59 @@ func TestStarterResolverOptionsApplyScenarioHooks(t *testing.T) {
 	if got := result.NextState.Plant.InTransitSupply[0].UnitCost; got != 3 {
 		t.Fatalf("housing unit cost = %d, want 3", got)
 	}
+	if got := result.NextState.Plant.InTransitSupply[0].ArrivalRound; got != 3 {
+		t.Fatalf("housing arrival round = %d, want 3", got)
+	}
 	if got := len(result.NextState.Plant.Backlog); got == 0 {
 		t.Fatal("starter scenario demand hook did not create any backlog")
 	}
 	if !containsDemandEvent(result.Round.Events) {
 		t.Fatalf("Round.Events missing demand event: %#v", result.Round.Events)
+	}
+}
+
+func TestStarterAlternateSupplierChangesLeadTimeAndCost(t *testing.T) {
+	starter := scenario.Starter()
+	state := starter.InitialState("match-19", []domain.RoleAssignment{
+		{RoleID: domain.RoleProcurementManager, PlayerID: "proc"},
+		{RoleID: domain.RoleProductionManager, PlayerID: "prod"},
+		{RoleID: domain.RoleSalesManager, PlayerID: "sales"},
+		{RoleID: domain.RoleFinanceController, PlayerID: "fin"},
+	})
+	state.Plant.Backlog = nil
+	for index := range state.Customers {
+		state.Customers[index].Backlog = nil
+	}
+
+	resolver := engine.NewResolver(starter.ResolverOptions())
+	result, err := resolver.ResolveRound(state, []domain.ActionSubmission{
+		{
+			ActionID: "proc-1",
+			MatchID:  state.MatchID,
+			Round:    state.CurrentRound,
+			RoleID:   domain.RoleProcurementManager,
+			Action: domain.RoleAction{
+				Procurement: &domain.ProcurementAction{
+					Orders: []domain.PurchaseOrderIntent{
+						{PartID: "housing", SupplierID: "prairiefast", Quantity: 1},
+					},
+				},
+			},
+		},
+	}, seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() error = %v", err)
+	}
+
+	lot := result.NextState.Plant.InTransitSupply[0]
+	if got := lot.SupplierID; got != "prairiefast" {
+		t.Fatalf("SupplierID = %q, want prairiefast", got)
+	}
+	if got := lot.UnitCost; got != 5 {
+		t.Fatalf("UnitCost = %d, want 5", got)
+	}
+	if got := lot.ArrivalRound; got != 2 {
+		t.Fatalf("ArrivalRound = %d, want 2", got)
 	}
 }
 

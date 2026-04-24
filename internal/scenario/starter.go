@@ -121,10 +121,50 @@ func StarterProductionModel() ProductionModel {
 		DisplayName: "Two-Stage Pump/Valve Line",
 		Description: "Two products share fabrication and assembly, with assembly intentionally sized as the tighter capacity pool.",
 		Parts: []Part{
-			{ID: "housing", DisplayName: "Housing", UnitCost: 3, SupplierID: "forgeco"},
-			{ID: "seal_kit", DisplayName: "Seal Kit", UnitCost: 2, SupplierID: "sealworks"},
-			{ID: "body", DisplayName: "Valve Body", UnitCost: 2, SupplierID: "forgeco"},
-			{ID: "fastener_kit", DisplayName: "Fastener Kit", UnitCost: 1, SupplierID: "fastenall"},
+			{
+				ID:                 "housing",
+				DisplayName:        "Housing",
+				UnitCost:           3,
+				SupplierID:         "forgeco",
+				LeadTimeRounds:     2,
+				OnTimeDeliveryPct:  70,
+				LateDeliveryRounds: 1,
+				AlternateSuppliers: []SupplierOption{
+					{ID: "prairiefast", UnitCost: 5, LeadTimeRounds: 1, OnTimeDeliveryPct: 100},
+				},
+			},
+			{
+				ID:                "seal_kit",
+				DisplayName:       "Seal Kit",
+				UnitCost:          2,
+				SupplierID:        "sealworks",
+				LeadTimeRounds:    1,
+				OnTimeDeliveryPct: 95,
+				AlternateSuppliers: []SupplierOption{
+					{ID: "prairiefast", UnitCost: 3, LeadTimeRounds: 1, OnTimeDeliveryPct: 100},
+				},
+			},
+			{
+				ID:                 "body",
+				DisplayName:        "Valve Body",
+				UnitCost:           2,
+				SupplierID:         "forgeco",
+				LeadTimeRounds:     2,
+				OnTimeDeliveryPct:  70,
+				LateDeliveryRounds: 1,
+				AlternateSuppliers: []SupplierOption{
+					{ID: "prairiefast", UnitCost: 4, LeadTimeRounds: 1, OnTimeDeliveryPct: 100},
+				},
+			},
+			{
+				ID:                 "fastener_kit",
+				DisplayName:        "Fastener Kit",
+				UnitCost:           1,
+				SupplierID:         "fastenall",
+				LeadTimeRounds:     1,
+				OnTimeDeliveryPct:  90,
+				LateDeliveryRounds: 1,
+			},
 		},
 		Products: []Product{
 			{
