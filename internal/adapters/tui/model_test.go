@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -764,6 +765,12 @@ func TestModelDepartmentsPaneShowsBrailleSpinnerForProviderWaits(t *testing.T) {
 	}
 	if strings.Contains(view, "Procurement Manager "+providerSpinnerFrames[0]+" [Human]") {
 		t.Fatalf("departments view showed spinner for unrelated human role\n%s", view)
+	}
+}
+
+func TestProviderSpinnerCompletesOneCyclePerSecond(t *testing.T) {
+	if got, want := providerSpinnerFrameInterval, 125*time.Millisecond; got != want {
+		t.Fatalf("providerSpinnerFrameInterval = %s, want %s", got, want)
 	}
 }
 

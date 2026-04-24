@@ -182,11 +182,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 var providerSpinnerFrames = []string{"⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇"}
 
+var providerSpinnerFrameInterval = time.Second / time.Duration(len(providerSpinnerFrames))
+
 func (m Model) spinnerCmd() tea.Cmd {
 	if !m.hasProviderWaits() {
 		return nil
 	}
-	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg {
+	return tea.Tick(providerSpinnerFrameInterval, func(time.Time) tea.Msg {
 		return spinnerTickMsg{}
 	})
 }
