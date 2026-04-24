@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -809,6 +810,32 @@ func TestModelDepartmentsPaneShowsBrailleSpinnerForProviderWaits(t *testing.T) {
 	}
 	if strings.Contains(view, "Procurement Manager "+providerSpinnerFrames[0]+" [Human]") {
 		t.Fatalf("departments view showed spinner for unrelated human role\n%s", view)
+	}
+}
+
+func TestProviderSpinnerCompletesOneCycleEveryTwoSeconds(t *testing.T) {
+	if got, want := providerSpinnerFrameInterval, 250*time.Millisecond; got != want {
+		t.Fatalf("providerSpinnerFrameInterval = %s, want %s", got, want)
+	}
+}
+
+func TestModelIgnoresStaleSpinnerTicks(t *testing.T) {
+	model := NewModel(scenario.Starter(), testStateSource{
+		snapshot: scenario.Starter().InitialState("starter-match", starterAssignments()),
+	})
+
+	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
+	shell := loaded.(Model)
+	shell.state.RoundFlow.ProviderWaitingRoles = []domain.RoleID{domain.RoleProductionManager}
+	shell.spinnerActive = true
+	shell.spinnerGen = 2
+
+	next, cmd := shell.Update(spinnerTickMsg{generation: 1})
+	if cmd != nil {
+		t.Fatalf("stale spinner tick unexpectedly scheduled follow-up work")
+	}
+	if got := next.(Model).spinnerFrame; got != 0 {
+		t.Fatalf("spinnerFrame = %d after stale tick, want 0", got)
 	}
 }
 

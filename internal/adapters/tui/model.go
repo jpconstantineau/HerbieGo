@@ -44,7 +44,9 @@ type stateLoadedMsg struct {
 
 type stateStreamClosedMsg struct{}
 
-type spinnerTickMsg struct{}
+type spinnerTickMsg struct {
+	generation int
+}
 
 // StatusMsg updates the command-bar status from outside the Bubble Tea model.
 type StatusMsg struct {
@@ -68,6 +70,8 @@ type Model struct {
 	status        string
 	streamClosed  bool
 	spinnerFrame  int
+	spinnerActive bool
+	spinnerGen    int
 	historyScroll int
 	drafts        map[domain.RoleID]actionDraft
 	lookup        lookupBrowserState
@@ -160,7 +164,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state = typed.state.Clone()
 		m.selectedRole = clampRoleIndex(m.selectedRole, len(m.state.Roles))
 		m.status = fmt.Sprintf("Round %d loaded for %s", m.state.CurrentRound, m.roleTitle())
-		return m, tea.Batch(waitForUpdateCmd(m.updates), m.spinnerCmd())
+		cmds := []tea.Cmd{waitForUpdateCmd(m.updates)}
+		if m.hasProviderWaits() {
+			if !m.spinnerActive {
+				m.spinnerActive = true
+				m.spinnerGen++
+				cmds = append(cmds, m.spinnerCmd(m.spinnerGen))
+			}
+		} else {
+			m.spinnerActive = false
+			m.spinnerFrame = 0
+			m.spinnerGen++
+		}
+		return m, tea.Batch(cmds...)
 	case StatusMsg:
 		if strings.TrimSpace(typed.Text) != "" {
 			m.status = typed.Text
@@ -173,12 +189,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case spinnerTickMsg:
+		if typed.generation != m.spinnerGen {
+			return m, nil
+		}
 		if !m.hasProviderWaits() {
+			m.spinnerActive = false
 			m.spinnerFrame = 0
 			return m, nil
 		}
 		m.spinnerFrame = (m.spinnerFrame + 1) % len(providerSpinnerFrames)
-		return m, m.spinnerCmd()
+		return m, m.spinnerCmd(m.spinnerGen)
 	}
 
 	return m, nil
@@ -186,12 +206,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 var providerSpinnerFrames = []string{"⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇"}
 
-func (m Model) spinnerCmd() tea.Cmd {
+var providerSpinnerFrameInterval = (2 * time.Second) / time.Duration(len(providerSpinnerFrames))
+
+func (m Model) spinnerCmd(generation int) tea.Cmd {
 	if !m.hasProviderWaits() {
 		return nil
 	}
-	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg {
-		return spinnerTickMsg{}
+	return tea.Tick(providerSpinnerFrameInterval, func(time.Time) tea.Msg {
+		return spinnerTickMsg{generation: generation}
 	})
 }
 
