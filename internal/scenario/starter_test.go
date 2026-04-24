@@ -43,6 +43,9 @@ func TestStarterInitialStateProvidesKnownPlayableSetup(t *testing.T) {
 	if got := state.Customers[1].PaymentDelayRounds; got != 1 {
 		t.Fatalf("PrairieFlow payment delay = %d, want 1", got)
 	}
+	if got := len(state.Suppliers); got != 4 {
+		t.Fatalf("Suppliers len = %d, want 4", got)
+	}
 	if got := len(state.Plant.Backlog); got != 2 {
 		t.Fatalf("Backlog len = %d, want 2", got)
 	}
@@ -141,12 +144,77 @@ func TestStarterResolverOptionsApplyScenarioHooks(t *testing.T) {
 	if got := result.NextState.Plant.InTransitSupply[0].UnitCost; got != 3 {
 		t.Fatalf("housing unit cost = %d, want 3", got)
 	}
+	if got := result.NextState.Plant.InTransitSupply[0].ArrivalRound; got != 3 {
+		t.Fatalf("housing arrival round = %d, want 3", got)
+	}
 	if got := len(result.NextState.Plant.Backlog); got == 0 {
 		t.Fatal("starter scenario demand hook did not create any backlog")
 	}
 	if !containsDemandEvent(result.Round.Events) {
 		t.Fatalf("Round.Events missing demand event: %#v", result.Round.Events)
 	}
+}
+
+func TestStarterAlternateSupplierChangesLeadTimeAndCost(t *testing.T) {
+	starter := scenario.Starter()
+	state := starter.InitialState("match-19", []domain.RoleAssignment{
+		{RoleID: domain.RoleProcurementManager, PlayerID: "proc"},
+		{RoleID: domain.RoleProductionManager, PlayerID: "prod"},
+		{RoleID: domain.RoleSalesManager, PlayerID: "sales"},
+		{RoleID: domain.RoleFinanceController, PlayerID: "fin"},
+	})
+	state.Plant.Backlog = nil
+	for index := range state.Customers {
+		state.Customers[index].Backlog = nil
+	}
+
+	resolver := engine.NewResolver(starter.ResolverOptions())
+	result, err := resolver.ResolveRound(state, []domain.ActionSubmission{
+		{
+			ActionID: "proc-1",
+			MatchID:  state.MatchID,
+			Round:    state.CurrentRound,
+			RoleID:   domain.RoleProcurementManager,
+			Action: domain.RoleAction{
+				Procurement: &domain.ProcurementAction{
+					Orders: []domain.PurchaseOrderIntent{
+						{PartID: "housing", SupplierID: "prairiefast", Quantity: 1},
+					},
+				},
+			},
+		},
+	}, seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() error = %v", err)
+	}
+
+	lot := result.NextState.Plant.InTransitSupply[0]
+	if got := lot.SupplierID; got != "prairiefast" {
+		t.Fatalf("SupplierID = %q, want prairiefast", got)
+	}
+	if got := lot.UnitCost; got != 5 {
+		t.Fatalf("UnitCost = %d, want 5", got)
+	}
+	if got := lot.ArrivalRound; got != 2 {
+		t.Fatalf("ArrivalRound = %d, want 2", got)
+	}
+}
+
+func TestStarterSelectsSupplierBehaviorAtMatchCreation(t *testing.T) {
+	first := scenario.Starter().InitialState("match-20", nil)
+	second := scenario.Starter().InitialState("match-20", nil)
+	other := scenario.Starter().InitialState("match-21", nil)
+
+	if len(first.Suppliers) == 0 {
+		t.Fatal("starter state should seed supplier behavior")
+	}
+	if first.Suppliers[0].BehaviorID != second.Suppliers[0].BehaviorID {
+		t.Fatalf("same match should keep supplier behavior stable: %q vs %q", first.Suppliers[0].BehaviorID, second.Suppliers[0].BehaviorID)
+	}
+	if first.Suppliers[0].BehaviorID == "" {
+		t.Fatal("supplier behavior id should not be empty")
+	}
+	_ = other
 }
 
 func TestScenarioComponentsCanBeSelectedIndependently(t *testing.T) {

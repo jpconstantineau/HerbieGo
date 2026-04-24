@@ -120,11 +120,94 @@ func StarterProductionModel() ProductionModel {
 		ID:          "two_stage_pump_valve_line",
 		DisplayName: "Two-Stage Pump/Valve Line",
 		Description: "Two products share fabrication and assembly, with assembly intentionally sized as the tighter capacity pool.",
+		Suppliers: []Supplier{
+			{
+				ID:          "forgeco",
+				DisplayName: "ForgeCo",
+				BehaviorScript: []SupplierBehavior{
+					{ID: "steady", DisplayName: "Steady", OnTimeDeliveryPct: 82, LateDeliveryRounds: 1},
+					{ID: "strained", DisplayName: "Strained", OnTimeDeliveryPct: 62, LateDeliveryRounds: 2},
+				},
+			},
+			{
+				ID:          "prairiefast",
+				DisplayName: "PrairieFast",
+				BehaviorScript: []SupplierBehavior{
+					{ID: "expedite", DisplayName: "Expedite", OnTimeDeliveryPct: 97, LateDeliveryRounds: 1},
+					{ID: "premium_peak", DisplayName: "Premium Peak", OnTimeDeliveryPct: 92, LateDeliveryRounds: 1},
+				},
+			},
+			{
+				ID:          "sealworks",
+				DisplayName: "SealWorks",
+				BehaviorScript: []SupplierBehavior{
+					{ID: "stable", DisplayName: "Stable", OnTimeDeliveryPct: 94, LateDeliveryRounds: 1},
+					{ID: "choppy", DisplayName: "Choppy", OnTimeDeliveryPct: 74, LateDeliveryRounds: 2},
+				},
+			},
+			{
+				ID:          "fastenall",
+				DisplayName: "FastenAll",
+				BehaviorScript: []SupplierBehavior{
+					{ID: "routine", DisplayName: "Routine", OnTimeDeliveryPct: 90, LateDeliveryRounds: 1},
+					{ID: "backordered", DisplayName: "Backordered", OnTimeDeliveryPct: 70, LateDeliveryRounds: 2},
+				},
+			},
+		},
 		Parts: []Part{
-			{ID: "housing", DisplayName: "Housing", UnitCost: 3, SupplierID: "forgeco"},
-			{ID: "seal_kit", DisplayName: "Seal Kit", UnitCost: 2, SupplierID: "sealworks"},
-			{ID: "body", DisplayName: "Valve Body", UnitCost: 2, SupplierID: "forgeco"},
-			{ID: "fastener_kit", DisplayName: "Fastener Kit", UnitCost: 1, SupplierID: "fastenall"},
+			{
+				ID:                   "housing",
+				DisplayName:          "Housing",
+				UnitCost:             3,
+				SupplierID:           "forgeco",
+				LeadTimeRounds:       2,
+				MinimumOrderQuantity: 2,
+				PriceBreaks: []SupplierPriceBreak{
+					{MinimumQuantity: 4, UnitCost: 2},
+				},
+				AlternateSuppliers: []SupplierOption{
+					{ID: "prairiefast", UnitCost: 5, LeadTimeRounds: 1, MinimumOrderQuantity: 1},
+				},
+			},
+			{
+				ID:                   "seal_kit",
+				DisplayName:          "Seal Kit",
+				UnitCost:             2,
+				SupplierID:           "sealworks",
+				LeadTimeRounds:       1,
+				MinimumOrderQuantity: 2,
+				PriceBreaks: []SupplierPriceBreak{
+					{MinimumQuantity: 5, UnitCost: 1},
+				},
+				AlternateSuppliers: []SupplierOption{
+					{ID: "prairiefast", UnitCost: 3, LeadTimeRounds: 1, MinimumOrderQuantity: 1},
+				},
+			},
+			{
+				ID:                   "body",
+				DisplayName:          "Valve Body",
+				UnitCost:             2,
+				SupplierID:           "forgeco",
+				LeadTimeRounds:       2,
+				MinimumOrderQuantity: 2,
+				PriceBreaks: []SupplierPriceBreak{
+					{MinimumQuantity: 4, UnitCost: 1},
+				},
+				AlternateSuppliers: []SupplierOption{
+					{ID: "prairiefast", UnitCost: 4, LeadTimeRounds: 1, MinimumOrderQuantity: 1},
+				},
+			},
+			{
+				ID:                   "fastener_kit",
+				DisplayName:          "Fastener Kit",
+				UnitCost:             2,
+				SupplierID:           "fastenall",
+				LeadTimeRounds:       1,
+				MinimumOrderQuantity: 4,
+				PriceBreaks: []SupplierPriceBreak{
+					{MinimumQuantity: 8, UnitCost: 1},
+				},
+			},
 		},
 		Products: []Product{
 			{

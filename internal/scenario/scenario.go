@@ -2,6 +2,7 @@ package scenario
 
 import (
 	"fmt"
+	"hash/fnv"
 	"slices"
 	"strings"
 
@@ -69,6 +70,7 @@ type ProductionModel struct {
 	Description  string
 	Products     []Product
 	Parts        []Part
+	Suppliers    []Supplier
 	Workstations []Workstation
 	Bottleneck   BottleneckAssumption
 }
@@ -82,10 +84,40 @@ type Product struct {
 }
 
 type Part struct {
-	ID          domain.PartID
-	DisplayName string
-	UnitCost    domain.Money
-	SupplierID  domain.SupplierID
+	ID                   domain.PartID
+	DisplayName          string
+	UnitCost             domain.Money
+	SupplierID           domain.SupplierID
+	LeadTimeRounds       int
+	MinimumOrderQuantity domain.Units
+	PriceBreaks          []SupplierPriceBreak
+	AlternateSuppliers   []SupplierOption
+}
+
+type SupplierOption struct {
+	ID                   domain.SupplierID
+	UnitCost             domain.Money
+	LeadTimeRounds       int
+	MinimumOrderQuantity domain.Units
+	PriceBreaks          []SupplierPriceBreak
+}
+
+type SupplierPriceBreak struct {
+	MinimumQuantity domain.Units
+	UnitCost        domain.Money
+}
+
+type Supplier struct {
+	ID             domain.SupplierID
+	DisplayName    string
+	BehaviorScript []SupplierBehavior
+}
+
+type SupplierBehavior struct {
+	ID                 string
+	DisplayName        string
+	OnTimeDeliveryPct  int
+	LateDeliveryRounds int
 }
 
 type Workstation struct {
@@ -154,6 +186,7 @@ func (d Definition) InitialState(matchID domain.MatchID, roles []domain.RoleAssi
 		},
 		Plant:         plant,
 		Customers:     customers,
+		Suppliers:     d.supplierState(matchID),
 		ActiveTargets: d.StartingConditions.StartingTargets,
 	}
 }
@@ -169,9 +202,24 @@ func (d Definition) ResolverOptions() engine.Options {
 		ProcurementTerms: func(ctx engine.ProcurementTermsContext) engine.ProcurementTerms {
 			part, ok := partByID[ctx.Order.PartID]
 			if !ok {
-				return engine.ProcurementTerms{UnitCost: 1}
+				return engine.ProcurementTerms{}
 			}
-			return engine.ProcurementTerms{UnitCost: part.UnitCost}
+			supplierState, ok := supplierStateByID(ctx.State.Suppliers, ctx.Order.SupplierID)
+			if !ok {
+				return engine.ProcurementTerms{}
+			}
+			supplier, ok := part.supplier(ctx.Order.SupplierID)
+			if !ok {
+				return engine.ProcurementTerms{}
+			}
+			return engine.ProcurementTerms{
+				UnitCost:             supplier.unitCostForQuantity(ctx.Order.Quantity),
+				MinimumOrderQuantity: supplier.MinimumOrderQuantity,
+				LeadTimeRounds:       supplier.LeadTimeRounds,
+				OnTimeDeliveryPct:    supplierState.OnTimeDeliveryPct,
+				LateDeliveryRounds:   supplierState.LateDeliveryRounds,
+				KnownSupplier:        true,
+			}
 		},
 		ProductionBOM: func(ctx engine.ProductionBOMContext) engine.ProductionBOM {
 			product, ok := productByID[ctx.ProductID]
@@ -271,6 +319,117 @@ func (d Definition) productionWorkstationState() []domain.WorkstationState {
 		})
 	}
 	return items
+}
+
+func (p Part) suppliers() []SupplierOption {
+	items := []SupplierOption{
+		{
+			ID:                   p.SupplierID,
+			UnitCost:             p.UnitCost,
+			LeadTimeRounds:       normalizedLeadTime(p.LeadTimeRounds),
+			MinimumOrderQuantity: p.MinimumOrderQuantity,
+			PriceBreaks:          slices.Clone(p.PriceBreaks),
+		},
+	}
+	items = append(items, slices.Clone(p.AlternateSuppliers)...)
+	return items
+}
+
+func (p Part) supplier(supplierID domain.SupplierID) (SupplierOption, bool) {
+	for _, item := range p.suppliers() {
+		if item.ID == supplierID {
+			item.LeadTimeRounds = normalizedLeadTime(item.LeadTimeRounds)
+			return item, true
+		}
+	}
+	return SupplierOption{}, false
+}
+
+func (o SupplierOption) unitCostForQuantity(quantity domain.Units) domain.Money {
+	unitCost := o.UnitCost
+	bestBreak := domain.Units(0)
+	for _, item := range o.PriceBreaks {
+		if item.MinimumQuantity <= 0 || quantity < item.MinimumQuantity || item.MinimumQuantity < bestBreak {
+			continue
+		}
+		bestBreak = item.MinimumQuantity
+		unitCost = item.UnitCost
+	}
+	return unitCost
+}
+
+func (d Definition) supplierState(matchID domain.MatchID) []domain.SupplierState {
+	suppliers := d.ProductionModel.Suppliers
+	items := make([]domain.SupplierState, 0, len(suppliers))
+	for _, supplier := range suppliers {
+		behavior := supplier.selectBehavior(matchID)
+		items = append(items, domain.SupplierState{
+			SupplierID:         supplier.ID,
+			DisplayName:        supplier.DisplayName,
+			BehaviorID:         behavior.ID,
+			BehaviorDisplay:    behavior.DisplayName,
+			OnTimeDeliveryPct:  normalizedOnTimePct(behavior.OnTimeDeliveryPct),
+			LateDeliveryRounds: normalizedLateRounds(behavior.LateDeliveryRounds),
+			ReliabilityScore:   normalizedOnTimePct(behavior.OnTimeDeliveryPct),
+		})
+	}
+	return items
+}
+
+func (s Supplier) selectBehavior(matchID domain.MatchID) SupplierBehavior {
+	if len(s.BehaviorScript) == 0 {
+		return SupplierBehavior{ID: "steady", DisplayName: "Steady", OnTimeDeliveryPct: 100}
+	}
+	index := supplierBehaviorIndex(matchID, s.ID, len(s.BehaviorScript))
+	behavior := s.BehaviorScript[index]
+	behavior.OnTimeDeliveryPct = normalizedOnTimePct(behavior.OnTimeDeliveryPct)
+	behavior.LateDeliveryRounds = normalizedLateRounds(behavior.LateDeliveryRounds)
+	return behavior
+}
+
+func supplierBehaviorIndex(matchID domain.MatchID, supplierID domain.SupplierID, length int) int {
+	if length <= 1 {
+		return 0
+	}
+
+	hasher := fnv.New32a()
+	_, _ = hasher.Write([]byte(matchID))
+	_, _ = hasher.Write([]byte(":"))
+	_, _ = hasher.Write([]byte(supplierID))
+	return int(hasher.Sum32() % uint32(length))
+}
+
+func supplierStateByID(items []domain.SupplierState, supplierID domain.SupplierID) (domain.SupplierState, bool) {
+	for _, item := range items {
+		if item.SupplierID == supplierID {
+			return item, true
+		}
+	}
+	return domain.SupplierState{}, false
+}
+
+func normalizedLeadTime(rounds int) int {
+	if rounds <= 0 {
+		return 1
+	}
+	return rounds
+}
+
+func normalizedOnTimePct(pct int) int {
+	if pct < 0 {
+		return 100
+	}
+	if pct > 100 {
+		return 100
+	}
+	return pct
+}
+
+func normalizedLateRounds(rounds int) int {
+	if rounds < 0 {
+		return 0
+	}
+	return rounds
 }
 
 func (d Definition) applyDemand(ctx *engine.WorldUpdateContext) error {

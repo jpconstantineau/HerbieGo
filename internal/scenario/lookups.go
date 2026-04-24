@@ -188,10 +188,14 @@ func (d Definition) ListValidSuppliers(partID domain.PartID) (ValidSuppliersLook
 	if !ok {
 		return ValidSuppliersLookup{}, fmt.Errorf("unknown part_id %q", partID)
 	}
+	suppliers := make([]domain.SupplierID, 0, len(part.AlternateSuppliers)+1)
+	for _, supplier := range part.suppliers() {
+		suppliers = append(suppliers, supplier.ID)
+	}
 	return ValidSuppliersLookup{
 		PartID:      part.ID,
 		DisplayName: part.DisplayName,
-		Suppliers:   []domain.SupplierID{part.SupplierID},
+		Suppliers:   suppliers,
 	}, nil
 }
 

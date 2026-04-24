@@ -37,10 +37,13 @@ func buildDepartmentPerformanceReport(state domain.MatchState, viewerRoleID doma
 			KeyMetrics: []domain.MetricValue{
 				{MetricID: "ordered_parts", Value: int(sumInTransitSupply(state.Plant.InTransitSupply)), DisplayUnit: "units"},
 				{MetricID: "parts_on_hand", Value: int(state.Metrics.PartsOnHandUnits), DisplayUnit: "units"},
+				{MetricID: "supplier_reliability", Value: int(state.Metrics.SupplierReliability), DisplayUnit: "pct"},
 			},
 			DetailLines: []string{
 				fmt.Sprintf("In-transit supply totals %d units across open purchase orders.", sumInTransitSupply(state.Plant.InTransitSupply)),
 				fmt.Sprintf("On-hand parts inventory value is %d.", inventoryBucketTotal(state.Plant.PartsInventory)),
+				supplierScorecardLine(state.Suppliers),
+				nextSupplyArrivalLine(state.Plant.InTransitSupply, state.CurrentRound),
 			},
 			BonusSummary: bonusReminder(viewerRoleID),
 		}
@@ -327,6 +330,49 @@ func applyProjectedCashDelta(cash, debt, delta domain.Money) (domain.Money, doma
 	}
 
 	return 0, debt + (spend - cash)
+}
+
+func nextSupplyArrivalLine(lots []domain.SupplyLot, currentRound domain.RoundNumber) string {
+	if len(lots) == 0 {
+		return "No inbound supply is currently scheduled."
+	}
+
+	next := lots[0]
+	for _, lot := range lots[1:] {
+		if lot.ArrivalRound < next.ArrivalRound {
+			next = lot
+		}
+	}
+
+	if next.ArrivalRound <= currentRound {
+		return fmt.Sprintf("Next inbound lot from %s is due this round.", next.SupplierID)
+	}
+	if next.ArrivalRound > next.PromisedRound && next.PromisedRound <= currentRound {
+		return fmt.Sprintf("Next inbound lot from %s is running %d round(s) late.", next.SupplierID, next.ArrivalRound-currentRound)
+	}
+	return fmt.Sprintf("Next inbound lot from %s is due in %d round(s).", next.SupplierID, next.ArrivalRound-currentRound)
+}
+
+func supplierScorecardLine(suppliers []domain.SupplierState) string {
+	if len(suppliers) == 0 {
+		return "No supplier scorecard is available."
+	}
+
+	best := suppliers[0]
+	worst := suppliers[0]
+	for _, supplier := range suppliers[1:] {
+		if supplier.ReliabilityScore > best.ReliabilityScore {
+			best = supplier
+		}
+		if supplier.ReliabilityScore < worst.ReliabilityScore {
+			worst = supplier
+		}
+	}
+
+	if best.SupplierID == worst.SupplierID {
+		return fmt.Sprintf("%s is currently carrying a supplier score of %d.", best.SupplierID, best.ReliabilityScore)
+	}
+	return fmt.Sprintf("Supplier scorecard ranges from %s at %d to %s at %d.", worst.SupplierID, worst.ReliabilityScore, best.SupplierID, best.ReliabilityScore)
 }
 
 func inventoryBucketTotal(items []domain.PartInventory) domain.Money {
