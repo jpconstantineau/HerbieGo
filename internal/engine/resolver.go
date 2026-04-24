@@ -25,8 +25,8 @@ type Options struct {
 	WorldUpdate           WorldUpdateHook
 }
 
-// ProcurementTermsHook lets scenario data supply part cost, MOQ, and quantity-based pricing rules.
-// The default implementation uses a unit cost fallback of 1 with no MOQ.
+// ProcurementTermsHook lets scenario data supply part cost, MOQ, lead time, and supplier behavior.
+// The default implementation assumes a known supplier with unit cost fallback of 1 and next-round arrival.
 type ProcurementTermsHook func(ProcurementTermsContext) ProcurementTerms
 
 type ProcurementTermsContext struct {
@@ -190,8 +190,8 @@ func (r *Resolver) ResolveRound(state domain.MatchState, actions []domain.Action
 		inventoryCost:         r.inventoryCost,
 		receivableDelayRounds: r.receivableDelayRounds,
 		payableDelayRounds:    r.payableDelayRounds,
-		stressedStations:      map[domain.WorkstationID]bool{},
 		random:                random,
+		stressedStations:      map[domain.WorkstationID]bool{},
 	}
 
 	if nextState.ActiveTargets.EffectiveRound == state.CurrentRound {
@@ -260,6 +260,8 @@ type resolutionStats struct {
 	procurementSpend  domain.Money
 	productionSpend   domain.Money
 	payrollExpense    domain.Money
+	laborCost         domain.Money
+	overtimeCost      domain.Money
 	holdingCost       domain.Money
 	debtServiceCost   domain.Money
 	shippedUnits      domain.Units
@@ -267,6 +269,8 @@ type resolutionStats struct {
 	lostSalesUnits    domain.Units
 	cashReceipts      domain.Money
 	cashDisbursements domain.Money
+	idleLaborUnits    domain.Units
+	overtimeUnits     domain.Units
 }
 
 func (p *roundPhase) resolveProcurement(action *domain.ActionSubmission) {
@@ -439,6 +443,13 @@ func (p *roundPhase) resolveProduction(action *domain.ActionSubmission) {
 	}
 
 	firstStation := p.state.Plant.Workstations[0].WorkstationID
+	overtimeRequests := map[domain.WorkstationID]domain.CapacityUnits{}
+	for _, allocation := range action.Action.Production.Overtime {
+		if allocation.Capacity <= 0 {
+			continue
+		}
+		overtimeRequests[allocation.WorkstationID] += allocation.Capacity
+	}
 	for _, release := range action.Action.Production.Releases {
 		if release.Quantity <= 0 {
 			continue
@@ -490,7 +501,7 @@ func (p *roundPhase) resolveProduction(action *domain.ActionSubmission) {
 	}
 
 	hardCap := cappedBudget(p.state.ActiveTargets.ProductionSpendBudget)
-	spendUsed := domain.Money(0)
+	budgetUsed := domain.Money(0)
 	for _, allocation := range action.Action.Production.CapacityAllocation {
 		if allocation.Capacity <= 0 {
 			continue
@@ -516,9 +527,13 @@ func (p *roundPhase) resolveProduction(action *domain.ActionSubmission) {
 				"capacity_loss":      int(capacityLoss),
 			})
 		}
-		remainingCapacity := effectiveCapacity - p.state.Plant.Workstations[wsIndex].CapacityUsed
+		workstation := p.state.Plant.Workstations[wsIndex]
+		remainingCapacity := effectiveCapacity - workstation.CapacityUsed
 		availableWIP := wipQuantity(p.state.Plant.WIPInventory, allocation.ProductID, allocation.WorkstationID)
-		advance := minCapacity(allocation.Capacity, remainingCapacity, domain.CapacityUnits(availableWIP))
+		baseLaborRemaining := availableBaseLaborCapacity(workstation)
+		overtimeRemaining := overtimeRequests[allocation.WorkstationID]
+		laborRemaining := availableLaborCapacity(workstation, overtimeRemaining)
+		advance := minCapacity(allocation.Capacity, remainingCapacity, domain.CapacityUnits(availableWIP), laborRemaining)
 		costing := p.productionCost(ProductionCostContext{
 			State:         p.state.Clone(),
 			CurrentRound:  p.currentRound,
@@ -530,15 +545,15 @@ func (p *roundPhase) resolveProduction(action *domain.ActionSubmission) {
 			costing.CostPerCapacityUnit = 1
 		}
 		if hardCap > 0 {
-			remainingBudget := hardCap - spendUsed
+			remainingBudget := hardCap - budgetUsed
 			if remainingBudget <= 0 {
 				advance = 0
 			} else {
-				advance = minCapacity(advance, domain.CapacityUnits(affordableQuantity(remainingBudget, costing.CostPerCapacityUnit)))
+				advance = affordableProductionAdvance(advance, baseLaborRemaining, overtimeRemaining, costing.CostPerCapacityUnit, workstation.OvertimeCostPerCapacityUnit, remainingBudget)
 			}
 		}
 		affordable := availableSpendCapacity(p.state.Plant)
-		advance = minCapacity(advance, domain.CapacityUnits(affordableQuantity(affordable, costing.CostPerCapacityUnit)))
+		advance = affordableProductionAdvance(advance, baseLaborRemaining, overtimeRemaining, costing.CostPerCapacityUnit, workstation.OvertimeCostPerCapacityUnit, affordable)
 		if advance < allocation.Capacity {
 			p.appendEvent(domain.EventRuleAdjustment, domain.ActorPlantSystem, "Trimmed production advance to available work or capacity", map[string]any{
 				"workstation_id":     string(allocation.WorkstationID),
@@ -553,10 +568,20 @@ func (p *roundPhase) resolveProduction(action *domain.ActionSubmission) {
 		}
 
 		advancedCost := takeWIPInventory(&p.state.Plant.WIPInventory, allocation.ProductID, allocation.WorkstationID, domain.Units(advance))
+		overtimeUsed := consumeLaborCapacity(&p.state.Plant.Workstations[wsIndex], advance, overtimeRequests[allocation.WorkstationID])
 		p.state.Plant.Workstations[wsIndex].CapacityUsed += advance
+		overtimeRequests[allocation.WorkstationID] = max(0, overtimeRequests[allocation.WorkstationID]-overtimeUsed)
 		lineSpend := spendForQuantity(domain.Units(advance), costing.CostPerCapacityUnit)
-		spendUsed += lineSpend
+		overtimeSpend := spendForQuantity(domain.Units(overtimeUsed), p.state.Plant.Workstations[wsIndex].OvertimeCostPerCapacityUnit)
+		budgetUsed += lineSpend + overtimeSpend
 		p.stats.productionSpend += lineSpend
+		if overtimeUsed > 0 {
+			p.stats.overtimeUnits += domain.Units(overtimeUsed)
+			p.appendEvent(domain.EventOvertimeApplied, domain.ActorPlantSystem, fmt.Sprintf("Applied %d overtime unit(s) at %s", overtimeUsed, allocation.WorkstationID), map[string]any{
+				"workstation_id": string(allocation.WorkstationID),
+				"overtime_used":  int(overtimeUsed),
+			})
+		}
 
 		if wsIndex == len(p.state.Plant.Workstations)-1 {
 			route := p.productionRoute(ProductionRouteContext{
@@ -615,11 +640,11 @@ func (p *roundPhase) resolveProduction(action *domain.ActionSubmission) {
 		})
 	}
 
-	if spendUsed > 0 {
-		p.applyCashDelta(-spendUsed)
-		p.stats.cashDisbursements += spendUsed
+	if p.stats.productionSpend > 0 {
+		p.applyCashDelta(-p.stats.productionSpend)
+		p.stats.cashDisbursements += p.stats.productionSpend
 		p.appendEvent(domain.EventCashChanged, domain.ActorPlantSystem, "Production spending applied", map[string]any{
-			"delta": -int(spendUsed),
+			"delta": -int(p.stats.productionSpend),
 			"cash":  int(p.state.Plant.Cash),
 			"debt":  int(p.state.Plant.Debt),
 		})
@@ -722,6 +747,9 @@ func (p *roundPhase) finalizeRound(action *domain.ActionSubmission) {
 
 	p.collectReceivablesDue()
 	p.payPayablesDue()
+	laborCost, overtimeCost := p.applyLaborCosts()
+	p.stats.laborCost = laborCost
+	p.stats.overtimeCost = overtimeCost
 
 	holdingCost, debtCost := p.applyRoundOperatingCosts()
 	p.stats.holdingCost = holdingCost
@@ -769,6 +797,7 @@ func (p *roundPhase) computeMetrics() domain.PlantMetrics {
 	}
 
 	operatingExpense := p.stats.procurementSpend + p.stats.productionSpend + p.stats.payrollExpense + p.stats.holdingCost + p.stats.debtServiceCost
+	operatingExpense += p.stats.laborCost + p.stats.overtimeCost
 	netCashChange := p.state.Plant.Cash - p.beginningCash
 	demandUnits := p.stats.shippedUnits + backlogUnits + p.stats.lostSalesUnits
 	onTime := domain.Percentage(100)
@@ -782,6 +811,8 @@ func (p *roundPhase) computeMetrics() domain.PlantMetrics {
 		ProcurementSpend:      p.stats.procurementSpend,
 		ProductionSpend:       p.stats.productionSpend,
 		PayrollExpense:        p.stats.payrollExpense,
+		LaborCost:             p.stats.laborCost,
+		OvertimeCost:          p.stats.overtimeCost,
 		HoldingCost:           p.stats.holdingCost,
 		DebtServiceCost:       p.stats.debtServiceCost,
 		InventoryValue:        inventoryValue,
@@ -797,8 +828,45 @@ func (p *roundPhase) computeMetrics() domain.PlantMetrics {
 		FinishedGoodsUnits:    finishedUnits,
 		ProductionOutputUnits: p.stats.producedUnits,
 		CapacityLossUnits:     capacityLossUnits,
+		IdleLaborUnits:        p.stats.idleLaborUnits,
+		OvertimeUnits:         p.stats.overtimeUnits,
 		SupplierReliability:   averageSupplierReliability(p.state.Suppliers),
 	}
+}
+
+func (p *roundPhase) applyLaborCosts() (domain.Money, domain.Money) {
+	laborCost := domain.Money(0)
+	overtimeCost := domain.Money(0)
+	idleLabor := domain.Units(0)
+
+	for index := range p.state.Plant.Workstations {
+		workstation := &p.state.Plant.Workstations[index]
+		baseLaborCapacity := effectiveLaborCapacity(*workstation)
+		if baseLaborCapacity > workstation.LaborUsed {
+			idleLabor += domain.Units(baseLaborCapacity - workstation.LaborUsed)
+		}
+		if workstation.LaborCostPerCapacityUnit > 0 && baseLaborCapacity > 0 {
+			laborCost += domain.Money(baseLaborCapacity) * workstation.LaborCostPerCapacityUnit
+		}
+		if workstation.OvertimeCostPerCapacityUnit > 0 && workstation.OvertimeUsed > 0 {
+			overtimeCost += domain.Money(workstation.OvertimeUsed) * workstation.OvertimeCostPerCapacityUnit
+		}
+	}
+
+	p.stats.idleLaborUnits = idleLabor
+	total := laborCost + overtimeCost
+	if total > 0 {
+		p.applyCashDelta(-total)
+		p.appendEvent(domain.EventLaborCostApplied, domain.ActorPlantSystem, "Applied labor and overtime costs", map[string]any{
+			"labor_cost":       int(laborCost),
+			"overtime_cost":    int(overtimeCost),
+			"idle_labor_units": int(idleLabor),
+			"cash":             int(p.state.Plant.Cash),
+			"debt":             int(p.state.Plant.Debt),
+		})
+	}
+
+	return laborCost, overtimeCost
 }
 
 func (p *roundPhase) applyRoundOperatingCosts() (domain.Money, domain.Money) {
@@ -1173,6 +1241,14 @@ func validateProductionAction(state domain.MatchState, action domain.ActionSubmi
 		}
 		if workstationIndex(state.Plant.Workstations, allocation.WorkstationID) < 0 {
 			return fmt.Errorf("engine: action %q capacity allocation %d references unknown workstation %q", action.ActionID, index, allocation.WorkstationID)
+		}
+	}
+	for index, overtime := range action.Action.Production.Overtime {
+		if overtime.Capacity < 0 {
+			return fmt.Errorf("engine: action %q overtime allocation %d capacity must be non-negative", action.ActionID, index)
+		}
+		if workstationIndex(state.Plant.Workstations, overtime.WorkstationID) < 0 {
+			return fmt.Errorf("engine: action %q overtime allocation %d references unknown workstation %q", action.ActionID, index, overtime.WorkstationID)
 		}
 	}
 	return nil
@@ -1562,6 +1638,8 @@ func resetCapacityUsage(items []domain.WorkstationState) []domain.WorkstationSta
 		cloned[index].CapacityUsed = 0
 		cloned[index].EffectiveCapacityPerRound = cloned[index].CapacityPerRound
 		cloned[index].StressCapacityLoss = 0
+		cloned[index].LaborUsed = 0
+		cloned[index].OvertimeUsed = 0
 	}
 	return cloned
 }
@@ -1600,13 +1678,57 @@ func wipUnitsAtWorkstation(items []domain.WIPInventory, workstationID domain.Wor
 	return total
 }
 
-func findCustomer(customers []domain.CustomerState, customerID domain.CustomerID) *domain.CustomerState {
-	for index := range customers {
-		if customers[index].CustomerID == customerID {
-			return &customers[index]
-		}
+func effectiveLaborCapacity(workstation domain.WorkstationState) domain.CapacityUnits {
+	if workstation.LaborCapacityPerRound <= 0 {
+		return workstation.CapacityPerRound
 	}
-	return nil
+	return workstation.LaborCapacityPerRound
+}
+
+func availableLaborCapacity(workstation domain.WorkstationState, overtimeRequested domain.CapacityUnits) domain.CapacityUnits {
+	return availableBaseLaborCapacity(workstation) + max(overtimeRequested, 0)
+}
+
+func consumeLaborCapacity(workstation *domain.WorkstationState, quantity domain.CapacityUnits, overtimeRequested domain.CapacityUnits) domain.CapacityUnits {
+	baseRemaining := availableBaseLaborCapacity(*workstation)
+	baseUsed := min(baseRemaining, quantity)
+	workstation.LaborUsed += baseUsed
+
+	overtimeUsed := min(max(overtimeRequested, 0), quantity-baseUsed)
+	workstation.OvertimeUsed += overtimeUsed
+	return overtimeUsed
+}
+
+func availableBaseLaborCapacity(workstation domain.WorkstationState) domain.CapacityUnits {
+	baseRemaining := effectiveLaborCapacity(workstation) - workstation.LaborUsed
+	if baseRemaining < 0 {
+		return 0
+	}
+	return baseRemaining
+}
+
+func affordableProductionAdvance(maxAdvance, baseLaborRemaining, overtimeRequested domain.CapacityUnits, productionUnitCost, overtimeUnitCost, available domain.Money) domain.CapacityUnits {
+	if maxAdvance <= 0 || available <= 0 {
+		return 0
+	}
+
+	affordable := domain.CapacityUnits(0)
+	for quantity := domain.CapacityUnits(1); quantity <= maxAdvance; quantity++ {
+		overtimeUnits := projectedOvertimeUnits(quantity, baseLaborRemaining, overtimeRequested)
+		totalCost := spendForQuantity(domain.Units(quantity), productionUnitCost) + spendForQuantity(domain.Units(overtimeUnits), overtimeUnitCost)
+		if totalCost > available {
+			break
+		}
+		affordable = quantity
+	}
+	return affordable
+}
+
+func projectedOvertimeUnits(quantity, baseLaborRemaining, overtimeRequested domain.CapacityUnits) domain.CapacityUnits {
+	if quantity <= baseLaborRemaining {
+		return 0
+	}
+	return min(quantity-baseLaborRemaining, max(overtimeRequested, 0))
 }
 
 func findSupplier(suppliers []domain.SupplierState, supplierID domain.SupplierID) *domain.SupplierState {
@@ -1636,7 +1758,7 @@ func (p *roundPhase) recordSupplierReceipt(supplierID domain.SupplierID) {
 		return
 	}
 	supplier.ReliabilityScore = min(100, supplier.ReliabilityScore+2)
-	p.appendEvent(domain.EventSupplierScoreChanged, domain.ActorPlantSystem, fmt.Sprintf("Supplier %s score improved", supplierID), map[string]any{
+	p.appendEvent(domain.EventSupplierScoreChanged, domain.ActorPlantSystem, fmt.Sprintf("Supplier %s score recovered after an on-time receipt", supplierID), map[string]any{
 		"supplier_id":       string(supplierID),
 		"reliability_score": supplier.ReliabilityScore,
 	})
@@ -1693,6 +1815,15 @@ func averageSupplierReliability(suppliers []domain.SupplierState) domain.Percent
 		total += supplier.ReliabilityScore
 	}
 	return domain.Percentage(total / len(suppliers))
+}
+
+func findCustomer(customers []domain.CustomerState, customerID domain.CustomerID) *domain.CustomerState {
+	for index := range customers {
+		if customers[index].CustomerID == customerID {
+			return &customers[index]
+		}
+	}
+	return nil
 }
 
 func sortedRoleNames(items map[domain.RoleID]domain.ActionSubmission) []string {

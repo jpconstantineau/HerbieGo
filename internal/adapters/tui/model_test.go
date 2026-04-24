@@ -782,7 +782,7 @@ func TestModelRoundFeedShowsResolvedStarterHistory(t *testing.T) {
 	for _, want := range []string{
 		"Current phase: revealed round results",
 		"Recent resolved rounds (1 shown)",
-		"[R1] 21 events | 2 commentary",
+		"[R1] 22 events | 2 commentary",
 		"Sales Manager: Holding starter prices while we",
 		"clear inherited backlog.",
 		"Event: Shipped 2 pump to northbuild",

@@ -55,6 +55,12 @@ func TestStarterInitialStateProvidesKnownPlayableSetup(t *testing.T) {
 	if got := state.Plant.Workstations[1].StressBufferUnits; got != 1 {
 		t.Fatalf("assembly stress buffer = %d, want 1", got)
 	}
+	if got := state.Plant.Workstations[1].LaborCapacityPerRound; got != 3 {
+		t.Fatalf("assembly labor capacity = %d, want 3", got)
+	}
+	if got := state.Plant.Workstations[1].OvertimeCostPerCapacityUnit; got != 3 {
+		t.Fatalf("assembly overtime cost = %d, want 3", got)
+	}
 	if got := starter.ProductionModel.Bottleneck.WorkstationID; got != "assembly" {
 		t.Fatalf("ProductionModel.Bottleneck = %q, want assembly", got)
 	}

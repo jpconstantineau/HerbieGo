@@ -54,11 +54,15 @@ func buildDepartmentPerformanceReport(state domain.MatchState, viewerRoleID doma
 				{MetricID: "wip_units", Value: int(sumWIPUnits(state.Plant.WIPInventory)), DisplayUnit: "units"},
 				{MetricID: "output_units", Value: int(state.Metrics.ProductionOutputUnits), DisplayUnit: "units"},
 				{MetricID: "capacity_loss", Value: int(state.Metrics.CapacityLossUnits), DisplayUnit: "units"},
+				{MetricID: "idle_labor", Value: int(state.Metrics.IdleLaborUnits), DisplayUnit: "units"},
+				{MetricID: "overtime_units", Value: int(state.Metrics.OvertimeUnits), DisplayUnit: "units"},
 			},
 			DetailLines: []string{
 				fmt.Sprintf("Current WIP totals %d units across active workstations.", sumWIPUnits(state.Plant.WIPInventory)),
 				fmt.Sprintf("Finished goods on hand total %d units.", state.Metrics.FinishedGoodsUnits),
 				stressSummaryLine(state.Plant.Workstations),
+				fmt.Sprintf("Idle labor totaled %d unit(s) and overtime added %d unit(s) last round.", state.Metrics.IdleLaborUnits, state.Metrics.OvertimeUnits),
+				laborBottleneckLine(state.Plant.Workstations),
 			},
 			BonusSummary: bonusReminder(viewerRoleID),
 		}
@@ -84,6 +88,8 @@ func buildDepartmentPerformanceReport(state domain.MatchState, viewerRoleID doma
 				{MetricID: "cash_position", Value: int(state.Plant.Cash), DisplayUnit: "money"},
 				{MetricID: "cash_receipts", Value: int(state.Metrics.CashReceipts), DisplayUnit: "money"},
 				{MetricID: "cash_disbursements", Value: int(state.Metrics.CashDisbursements), DisplayUnit: "money"},
+				{MetricID: "labor_cost", Value: int(state.Metrics.LaborCost), DisplayUnit: "money"},
+				{MetricID: "overtime_cost", Value: int(state.Metrics.OvertimeCost), DisplayUnit: "money"},
 			},
 			DetailLines: []string{
 				fmt.Sprintf("Current cash is %d against debt ceiling %d.", state.Plant.Cash, state.Plant.DebtCeiling),
@@ -92,6 +98,7 @@ func buildDepartmentPerformanceReport(state domain.MatchState, viewerRoleID doma
 				fmt.Sprintf("Next-round maturities net to %d (%d receivable, %d payable).", nextRoundNetCash(state.Plant, state.CurrentRound), sumCommitmentsDue(state.Plant.Receivables, state.CurrentRound), sumCommitmentsDue(state.Plant.Payables, state.CurrentRound)),
 				fmt.Sprintf("Open receivables total %d, with %d due next round.", sumCommitmentAmount(state.Plant.Receivables), sumCommitmentsDue(state.Plant.Receivables, state.CurrentRound)),
 				fmt.Sprintf("Open payables total %d, with %d due next round.", sumCommitmentAmount(state.Plant.Payables), sumCommitmentsDue(state.Plant.Payables, state.CurrentRound)),
+				fmt.Sprintf("Labor cost ran %d with overtime cost at %d last round.", state.Metrics.LaborCost, state.Metrics.OvertimeCost),
 			},
 			BonusSummary: bonusReminder(viewerRoleID),
 		}
@@ -373,6 +380,35 @@ func supplierScorecardLine(suppliers []domain.SupplierState) string {
 		return fmt.Sprintf("%s is currently carrying a supplier score of %d.", best.SupplierID, best.ReliabilityScore)
 	}
 	return fmt.Sprintf("Supplier scorecard ranges from %s at %d to %s at %d.", worst.SupplierID, worst.ReliabilityScore, best.SupplierID, best.ReliabilityScore)
+}
+
+func laborBottleneckLine(items []domain.WorkstationState) string {
+	if len(items) == 0 {
+		return "No labor profile is currently configured."
+	}
+
+	mostConstrained := items[0]
+	bestRemaining := laborRemaining(items[0])
+	for _, item := range items[1:] {
+		if remaining := laborRemaining(item); remaining < bestRemaining {
+			bestRemaining = remaining
+			mostConstrained = item
+		}
+	}
+
+	return fmt.Sprintf("%s closed with %d labor unit(s) remaining and %d overtime unit(s) used.", mostConstrained.DisplayName, bestRemaining, mostConstrained.OvertimeUsed)
+}
+
+func laborRemaining(item domain.WorkstationState) domain.CapacityUnits {
+	base := item.LaborCapacityPerRound
+	if base <= 0 {
+		base = item.CapacityPerRound
+	}
+	remaining := base - item.LaborUsed
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
 }
 
 func inventoryBucketTotal(items []domain.PartInventory) domain.Money {
