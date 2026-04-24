@@ -130,7 +130,7 @@ func TestModelCyclesRoleSelectionAndPaneFocus(t *testing.T) {
 	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
 	shell := loaded.(Model)
 
-	shifted, _ := shell.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	shifted, _ := shell.Update(tea.KeyMsg{Type: tea.KeyDown})
 	shiftedShell := shifted.(Model)
 	if got := shiftedShell.roleTitle(); got != "Production Manager" {
 		t.Fatalf("roleTitle() = %q, want Production Manager", got)
@@ -142,7 +142,13 @@ func TestModelCyclesRoleSelectionAndPaneFocus(t *testing.T) {
 		t.Fatalf("focusedPane = %d, want %d", focusedShell.focusedPane, paneHistory)
 	}
 
-	switched, _ := focusedShell.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
+	unchanged, _ := focusedShell.Update(tea.KeyMsg{Type: tea.KeyDown})
+	unchangedShell := unchanged.(Model)
+	if got := unchangedShell.roleTitle(); got != "Production Manager" {
+		t.Fatalf("roleTitle() with history focus = %q, want Production Manager", got)
+	}
+
+	switched, _ := unchangedShell.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
 	switchedShell := switched.(Model)
 	if switchedShell.workspace != workspaceScenarioLookup {
 		t.Fatalf("workspace = %v, want %v", switchedShell.workspace, workspaceScenarioLookup)
@@ -188,6 +194,7 @@ func TestModelRendersScenarioLookupWorkspaceAndSupportsBrowsing(t *testing.T) {
 	shell := loaded.(Model)
 	shell.width = 120
 	shell.height = 32
+	shell.focusedPane = paneHistory
 
 	lookup, _ := shell.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
 	shell = lookup.(Model)
@@ -227,6 +234,7 @@ func TestModelSupportsHumanActionDraftReviewAndSubmit(t *testing.T) {
 
 	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
 	shell := loaded.(Model)
+	shell.focusedPane = paneHistory
 
 	for _, key := range []tea.KeyMsg{
 		{Type: tea.KeyEnter},
@@ -292,6 +300,7 @@ func TestModelSubmitForwardsLockedDraftToLiveHook(t *testing.T) {
 
 	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
 	shell := loaded.(Model)
+	shell.focusedPane = paneHistory
 
 	for _, key := range []tea.KeyMsg{
 		{Type: tea.KeyEnter},
@@ -332,6 +341,7 @@ func TestModelAdvancesAcrossHumanRolesAndHidesLockedDrafts(t *testing.T) {
 
 	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
 	shell := loaded.(Model)
+	shell.focusedPane = paneHistory
 
 	for _, key := range []tea.KeyMsg{
 		{Type: tea.KeyEnter},
@@ -401,6 +411,7 @@ func TestModelSwitchesToRoundFeedAfterFinalHumanSubmission(t *testing.T) {
 		},
 	}
 	shell.selectedRole = 2
+	shell.focusedPane = paneHistory
 
 	for _, key := range []tea.KeyMsg{
 		{Type: tea.KeyEnter},
@@ -594,6 +605,40 @@ func TestModelViewFitsWithinTerminalWidth(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCommandBarHintsFollowFocusedPane(t *testing.T) {
+	model := NewModel(scenario.Starter(), testStateSource{
+		snapshot: scenario.Starter().InitialState("starter-match", starterAssignments()),
+	})
+
+	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
+	shell := loaded.(Model)
+	shell.width = 120
+	shell.height = 32
+
+	departmentsView := shell.View()
+	if !strings.Contains(departmentsView, "departments: up/down") || !strings.Contains(departmentsView, "select role") {
+		t.Fatalf("departments hint missing\n%s", departmentsView)
+	}
+
+	shell.focusedPane = paneHistory
+	historyView := shell.View()
+	if !strings.Contains(historyView, "center workspace: up/down") || !strings.Contains(historyView, "move fields, enter edit/save, esc cancel, r review, s submit") {
+		t.Fatalf("history hint missing action-entry controls\n%s", historyView)
+	}
+
+	shell.workspace = workspaceScenarioLookup
+	lookupView := shell.View()
+	if !strings.Contains(lookupView, "center workspace: v/r/b/d") || !strings.Contains(lookupView, "switch lookup tabs, up/down browse entries") {
+		t.Fatalf("history hint missing lookup controls\n%s", lookupView)
+	}
+
+	shell.focusedPane = paneStats
+	statsView := shell.View()
+	if !strings.Contains(statsView, "plant stats: read-only") || !strings.Contains(statsView, "summary") {
+		t.Fatalf("stats hint missing\n%s", statsView)
 	}
 }
 

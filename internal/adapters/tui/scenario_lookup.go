@@ -27,7 +27,7 @@ type lookupBrowserState struct {
 }
 
 func (m *Model) handleScenarioLookupKey(msg tea.KeyMsg) bool {
-	if m.workspace != workspaceScenarioLookup {
+	if m.workspace != workspaceScenarioLookup || m.focusedPane != paneHistory {
 		return false
 	}
 
