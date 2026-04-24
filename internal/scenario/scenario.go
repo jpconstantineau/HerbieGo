@@ -87,10 +87,12 @@ type Part struct {
 }
 
 type Workstation struct {
-	ID               domain.WorkstationID
-	DisplayName      string
-	CapacityPerRound domain.CapacityUnits
-	CostPerUnit      domain.Money
+	ID                         domain.WorkstationID
+	DisplayName                string
+	CapacityPerRound           domain.CapacityUnits
+	CostPerUnit                domain.Money
+	StressBufferUnits          domain.CapacityUnits
+	StressPenaltyPerExcessUnit domain.CapacityUnits
 }
 
 type BottleneckAssumption struct {
@@ -245,9 +247,12 @@ func (d Definition) productionWorkstationState() []domain.WorkstationState {
 	items := make([]domain.WorkstationState, 0, len(d.ProductionModel.Workstations))
 	for _, workstation := range d.ProductionModel.Workstations {
 		items = append(items, domain.WorkstationState{
-			WorkstationID:    workstation.ID,
-			DisplayName:      workstation.DisplayName,
-			CapacityPerRound: workstation.CapacityPerRound,
+			WorkstationID:              workstation.ID,
+			DisplayName:                workstation.DisplayName,
+			CapacityPerRound:           workstation.CapacityPerRound,
+			EffectiveCapacityPerRound:  workstation.CapacityPerRound,
+			StressBufferUnits:          workstation.StressBufferUnits,
+			StressPenaltyPerExcessUnit: workstation.StressPenaltyPerExcessUnit,
 		})
 	}
 	return items

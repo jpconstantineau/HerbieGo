@@ -110,10 +110,14 @@ type SupplyLot struct {
 }
 
 type WorkstationState struct {
-	WorkstationID    WorkstationID
-	DisplayName      string
-	CapacityPerRound CapacityUnits
-	CapacityUsed     CapacityUnits
+	WorkstationID              WorkstationID
+	DisplayName                string
+	CapacityPerRound           CapacityUnits
+	EffectiveCapacityPerRound  CapacityUnits
+	StressCapacityLoss         CapacityUnits
+	StressBufferUnits          CapacityUnits
+	StressPenaltyPerExcessUnit CapacityUnits
+	CapacityUsed               CapacityUnits
 }
 
 type ProductDefinition struct {
@@ -166,6 +170,7 @@ type PlantMetrics struct {
 	PartsOnHandUnits      Units
 	FinishedGoodsUnits    Units
 	ProductionOutputUnits Units
+	CapacityLossUnits     Units
 }
 
 type MetricValue struct {
@@ -324,6 +329,7 @@ const (
 	EventPurchaseOrderPlaced    RoundEventType = "purchase_order_placed"
 	EventSupplyArrived          RoundEventType = "supply_arrived"
 	EventProductionReleased     RoundEventType = "production_released"
+	EventWorkstationStressed    RoundEventType = "workstation_stressed"
 	EventWorkAdvanced           RoundEventType = "work_advanced"
 	EventFinishedGoodsProduced  RoundEventType = "finished_goods_produced"
 	EventDemandRealized         RoundEventType = "demand_realized"

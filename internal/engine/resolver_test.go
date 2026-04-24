@@ -313,6 +313,60 @@ func TestResolverUsesScenarioProductionAndInventoryCostHooks(t *testing.T) {
 	}
 }
 
+func TestResolverReducesEffectiveCapacityUnderCongestion(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{
+		ProductionBOM: widgetBOM,
+	})
+	state := fixtureState()
+	state.Plant.Workstations = []domain.WorkstationState{
+		{
+			WorkstationID:              "fabrication",
+			DisplayName:                "Fabrication",
+			CapacityPerRound:           3,
+			EffectiveCapacityPerRound:  3,
+			StressBufferUnits:          0,
+			StressPenaltyPerExcessUnit: 1,
+		},
+		{
+			WorkstationID:              "assembly",
+			DisplayName:                "Assembly",
+			CapacityPerRound:           2,
+			EffectiveCapacityPerRound:  2,
+			StressBufferUnits:          0,
+			StressPenaltyPerExcessUnit: 0,
+		},
+	}
+	state.Plant.WIPInventory = []domain.WIPInventory{
+		{ProductID: "widget", WorkstationID: "fabrication", Quantity: 5, UnitCost: 1},
+	}
+	actions := fixtureActions()
+	actions[1].Action.Production.Releases = nil
+	actions[1].Action.Production.CapacityAllocation = []domain.CapacityAllocation{
+		{WorkstationID: "fabrication", ProductID: "widget", Capacity: 3},
+	}
+
+	result, err := resolver.ResolveRound(state, actions, seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() error = %v", err)
+	}
+
+	if got := result.NextState.Plant.Workstations[0].EffectiveCapacityPerRound; got != 1 {
+		t.Fatalf("fabrication effective capacity = %d, want 1", got)
+	}
+	if got := result.NextState.Plant.Workstations[0].StressCapacityLoss; got != 2 {
+		t.Fatalf("fabrication stress loss = %d, want 2", got)
+	}
+	if got := result.NextState.Plant.Workstations[0].CapacityUsed; got != 1 {
+		t.Fatalf("fabrication capacity used = %d, want 1", got)
+	}
+	if got := result.Round.Metrics.CapacityLossUnits; got != 2 {
+		t.Fatalf("CapacityLossUnits = %d, want 2", got)
+	}
+	if !containsEvent(result.Round.Events, domain.EventWorkstationStressed) {
+		t.Fatalf("Round.Events missing %q: %#v", domain.EventWorkstationStressed, result.Round.Events)
+	}
+}
+
 func TestResolverRequiresExplicitRolePayload(t *testing.T) {
 	resolver := engine.NewResolver(engine.Options{})
 	actions := fixtureActions()
@@ -774,6 +828,15 @@ func wipQty(items []domain.WIPInventory, productID domain.ProductID, workstation
 		}
 	}
 	return 0
+}
+
+func containsEvent(events []domain.RoundEvent, eventType domain.RoundEventType) bool {
+	for _, event := range events {
+		if event.Type == eventType {
+			return true
+		}
+	}
+	return false
 }
 
 func widgetBOM(ctx engine.ProductionBOMContext) engine.ProductionBOM {
