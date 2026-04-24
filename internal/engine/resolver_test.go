@@ -724,22 +724,61 @@ func TestResolverUsesSupplierLeadTimeAndReliabilityTerms(t *testing.T) {
 	})
 
 	state := fixtureState()
+	state.Suppliers = []domain.SupplierState{
+		{SupplierID: "slow", DisplayName: "Slow Supply", OnTimeDeliveryPct: 0, LateDeliveryRounds: 1, ReliabilityScore: 80},
+		{SupplierID: "fast", DisplayName: "Fast Supply", OnTimeDeliveryPct: 100, LateDeliveryRounds: 1, ReliabilityScore: 98},
+	}
 	actions := fixtureActions()
 	actions[0].Action.Procurement.Orders = []domain.PurchaseOrderIntent{
 		{PartID: "housing", SupplierID: "slow", Quantity: 1},
 		{PartID: "housing", SupplierID: "fast", Quantity: 1},
 	}
 
-	result, err := resolver.ResolveRound(state, actions, seeded.New(1))
+	first, err := resolver.ResolveRound(state, actions, seeded.New(1))
 	if err != nil {
 		t.Fatalf("ResolveRound() error = %v", err)
 	}
-
-	if got := result.NextState.Plant.InTransitSupply[0].ArrivalRound; got != 5 {
-		t.Fatalf("slow supplier arrival round = %d, want 5", got)
+	if got := first.NextState.Plant.InTransitSupply[0].PromisedRound; got != 4 {
+		t.Fatalf("slow supplier promised round = %d, want 4", got)
 	}
-	if got := result.NextState.Plant.InTransitSupply[1].ArrivalRound; got != 3 {
-		t.Fatalf("fast supplier arrival round = %d, want 3", got)
+	if got := first.NextState.Plant.InTransitSupply[0].ArrivalRound; got != 4 {
+		t.Fatalf("slow supplier initial arrival round = %d, want 4", got)
+	}
+
+	second, err := resolver.ResolveRound(first.NextState, nil, seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() second error = %v", err)
+	}
+	if got := len(second.NextState.Plant.InTransitSupply); got != 1 {
+		t.Fatalf("InTransitSupply after fast receipt = %d, want 1", got)
+	}
+	if got := second.NextState.Plant.InTransitSupply[0].SupplierID; got != "slow" {
+		t.Fatalf("remaining supplier = %q, want slow", got)
+	}
+
+	third, err := resolver.ResolveRound(second.NextState, nil, seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() third error = %v", err)
+	}
+	if got := third.NextState.Plant.InTransitSupply[0].ArrivalRound; got != 5 {
+		t.Fatalf("slow supplier delayed arrival round = %d, want 5", got)
+	}
+	if got := supplierScore(third.NextState.Suppliers, "slow"); got != 70 {
+		t.Fatalf("slow supplier score = %d, want 70", got)
+	}
+	if !containsEvent(third.Round.Events, domain.EventSupplyDelayed) {
+		t.Fatalf("Round.Events missing %q: %#v", domain.EventSupplyDelayed, third.Round.Events)
+	}
+
+	fourth, err := resolver.ResolveRound(third.NextState, nil, seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() fourth error = %v", err)
+	}
+	if got := len(fourth.NextState.Plant.InTransitSupply); got != 0 {
+		t.Fatalf("InTransitSupply after delayed receipt = %d, want 0", got)
+	}
+	if got := partQty(fourth.NextState.Plant.PartsInventory, "housing"); got != 6 {
+		t.Fatalf("PartsInventory(housing) = %d, want 6", got)
 	}
 }
 
@@ -827,6 +866,11 @@ func fixtureState() domain.MatchState {
 		Customers: []domain.CustomerState{
 			{CustomerID: "cust-1", DisplayName: "NorthBuild", Sentiment: 5},
 			{CustomerID: "cust-2", DisplayName: "PrairieFlow", Sentiment: 4},
+		},
+		Suppliers: []domain.SupplierState{
+			{SupplierID: "supplier-a", DisplayName: "Supplier A", OnTimeDeliveryPct: 90, LateDeliveryRounds: 1, ReliabilityScore: 90},
+			{SupplierID: "fast", DisplayName: "Fast Supply", OnTimeDeliveryPct: 100, LateDeliveryRounds: 1, ReliabilityScore: 98},
+			{SupplierID: "slow", DisplayName: "Slow Supply", OnTimeDeliveryPct: 0, LateDeliveryRounds: 1, ReliabilityScore: 80},
 		},
 	}
 }
@@ -935,6 +979,14 @@ func wipQty(items []domain.WIPInventory, productID domain.ProductID, workstation
 	return 0
 }
 
+func supplierScore(items []domain.SupplierState, supplierID domain.SupplierID) int {
+	for _, item := range items {
+		if item.SupplierID == supplierID {
+			return item.ReliabilityScore
+		}
+	}
+	return 0
+}
 func containsEvent(events []domain.RoundEvent, eventType domain.RoundEventType) bool {
 	for _, event := range events {
 		if event.Type == eventType {

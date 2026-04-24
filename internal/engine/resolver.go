@@ -348,13 +348,6 @@ func (p *roundPhase) resolveProcurement(action *domain.ActionSubmission) {
 		}
 
 		arrivalRound := p.currentRound + domain.RoundNumber(terms.LeadTimeRounds)
-		lateDelivery := false
-		if terms.OnTimeDeliveryPct < 100 && terms.LateDeliveryRounds > 0 && p.random != nil {
-			if p.random.IntN(100) >= terms.OnTimeDeliveryPct {
-				arrivalRound += domain.RoundNumber(terms.LateDeliveryRounds)
-				lateDelivery = true
-			}
-		}
 
 		lot := domain.SupplyLot{
 			PurchaseOrderID: fmt.Sprintf("%s-po-%02d", action.ActionID, index+1),
@@ -363,8 +356,10 @@ func (p *roundPhase) resolveProcurement(action *domain.ActionSubmission) {
 			Quantity:        allowed,
 			UnitCost:        terms.UnitCost,
 			OrderedRound:    p.currentRound,
+			PromisedRound:   p.currentRound + domain.RoundNumber(terms.LeadTimeRounds),
 			ArrivalRound:    arrivalRound,
 		}
+		p.recordSupplierOrder(order.SupplierID)
 		p.state.Plant.InTransitSupply = append(p.state.Plant.InTransitSupply, lot)
 		lineSpend := spendForQuantity(allowed, lot.UnitCost)
 		spendUsed += lineSpend
@@ -376,9 +371,8 @@ func (p *roundPhase) resolveProcurement(action *domain.ActionSubmission) {
 			"supplier_id":       string(order.SupplierID),
 			"quantity":          int(allowed),
 			"lead_time_rounds":  terms.LeadTimeRounds,
-			"on_time_pct":       terms.OnTimeDeliveryPct,
-			"late_delivery":     lateDelivery,
-			"arrival_round":     int(lot.ArrivalRound),
+			"promised_round":    int(lot.PromisedRound),
+			"reliability_score": supplierReliabilityScore(p.state.Suppliers, order.SupplierID),
 			"unit_cost":         int(lot.UnitCost),
 		})
 	}
@@ -396,7 +390,24 @@ func (p *roundPhase) receiveSupply() {
 	arrivals := make([]domain.SupplyLot, 0, len(p.state.Plant.InTransitSupply))
 	remaining := make([]domain.SupplyLot, 0, len(p.state.Plant.InTransitSupply))
 	for _, lot := range p.state.Plant.InTransitSupply {
-		if lot.ArrivalRound == p.currentRound {
+		if lot.PromisedRound > p.currentRound {
+			remaining = append(remaining, lot)
+			continue
+		}
+		if lot.ArrivalRound == lot.PromisedRound && lot.PromisedRound == p.currentRound && shouldDelayLot(lot, p.state.Suppliers, p.random) {
+			lot.ArrivalRound = lot.PromisedRound + supplierLateDelay(p.state.Suppliers, lot.SupplierID)
+			p.recordSupplierDelay(lot.SupplierID)
+			p.appendEvent(domain.EventSupplyDelayed, domain.ActorPlantSystem, fmt.Sprintf("Supplier %s slipped %s delivery", lot.SupplierID, lot.PartID), map[string]any{
+				"purchase_order_id": lot.PurchaseOrderID,
+				"supplier_id":       string(lot.SupplierID),
+				"part_id":           string(lot.PartID),
+				"promised_round":    int(lot.PromisedRound),
+				"arrival_round":     int(lot.ArrivalRound),
+			})
+			remaining = append(remaining, lot)
+			continue
+		}
+		if lot.ArrivalRound <= p.currentRound {
 			arrivals = append(arrivals, lot)
 			continue
 		}
@@ -406,11 +417,15 @@ func (p *roundPhase) receiveSupply() {
 	p.state.Plant.InTransitSupply = remaining
 	for _, lot := range arrivals {
 		addPartInventory(&p.state.Plant.PartsInventory, lot.PartID, lot.Quantity, lot.UnitCost)
+		p.recordSupplierReceipt(lot.SupplierID)
 		p.appendEvent(domain.EventSupplyArrived, domain.ActorPlantSystem, fmt.Sprintf("Received %d %s", lot.Quantity, lot.PartID), map[string]any{
 			"purchase_order_id": lot.PurchaseOrderID,
+			"supplier_id":       string(lot.SupplierID),
 			"part_id":           string(lot.PartID),
 			"quantity":          int(lot.Quantity),
 			"unit_cost":         int(lot.UnitCost),
+			"promised_round":    int(lot.PromisedRound),
+			"arrival_round":     int(lot.ArrivalRound),
 		})
 	}
 }
@@ -782,6 +797,7 @@ func (p *roundPhase) computeMetrics() domain.PlantMetrics {
 		FinishedGoodsUnits:    finishedUnits,
 		ProductionOutputUnits: p.stats.producedUnits,
 		CapacityLossUnits:     capacityLossUnits,
+		SupplierReliability:   averageSupplierReliability(p.state.Suppliers),
 	}
 }
 
@@ -1591,6 +1607,92 @@ func findCustomer(customers []domain.CustomerState, customerID domain.CustomerID
 		}
 	}
 	return nil
+}
+
+func findSupplier(suppliers []domain.SupplierState, supplierID domain.SupplierID) *domain.SupplierState {
+	for index := range suppliers {
+		if suppliers[index].SupplierID == supplierID {
+			return &suppliers[index]
+		}
+	}
+	return nil
+}
+
+func (p *roundPhase) recordSupplierOrder(supplierID domain.SupplierID) {
+	supplier := findSupplier(p.state.Suppliers, supplierID)
+	if supplier == nil {
+		return
+	}
+	supplier.OrdersPlaced++
+}
+
+func (p *roundPhase) recordSupplierReceipt(supplierID domain.SupplierID) {
+	supplier := findSupplier(p.state.Suppliers, supplierID)
+	if supplier == nil {
+		return
+	}
+	supplier.OrdersReceived++
+	if supplier.LateDeliveries == 0 || supplier.ReliabilityScore >= supplier.OnTimeDeliveryPct {
+		return
+	}
+	supplier.ReliabilityScore = min(100, supplier.ReliabilityScore+2)
+	p.appendEvent(domain.EventSupplierScoreChanged, domain.ActorPlantSystem, fmt.Sprintf("Supplier %s score improved", supplierID), map[string]any{
+		"supplier_id":       string(supplierID),
+		"reliability_score": supplier.ReliabilityScore,
+	})
+}
+
+func (p *roundPhase) recordSupplierDelay(supplierID domain.SupplierID) {
+	supplier := findSupplier(p.state.Suppliers, supplierID)
+	if supplier == nil {
+		return
+	}
+	supplier.LateDeliveries++
+	supplier.ReliabilityScore = max(0, supplier.ReliabilityScore-10)
+	p.appendEvent(domain.EventSupplierScoreChanged, domain.ActorPlantSystem, fmt.Sprintf("Supplier %s score dropped after a late promise", supplierID), map[string]any{
+		"supplier_id":       string(supplierID),
+		"reliability_score": supplier.ReliabilityScore,
+		"late_deliveries":   supplier.LateDeliveries,
+	})
+}
+
+func shouldDelayLot(lot domain.SupplyLot, suppliers []domain.SupplierState, random ports.RandomSource) bool {
+	if random == nil {
+		return false
+	}
+	supplier := findSupplier(suppliers, lot.SupplierID)
+	if supplier == nil || supplier.LateDeliveryRounds <= 0 || supplier.OnTimeDeliveryPct >= 100 {
+		return false
+	}
+	return random.IntN(100) >= supplier.OnTimeDeliveryPct
+}
+
+func supplierLateDelay(suppliers []domain.SupplierState, supplierID domain.SupplierID) domain.RoundNumber {
+	supplier := findSupplier(suppliers, supplierID)
+	if supplier == nil || supplier.LateDeliveryRounds <= 0 {
+		return 0
+	}
+	return domain.RoundNumber(supplier.LateDeliveryRounds)
+}
+
+func supplierReliabilityScore(suppliers []domain.SupplierState, supplierID domain.SupplierID) int {
+	supplier := findSupplier(suppliers, supplierID)
+	if supplier == nil {
+		return 0
+	}
+	return supplier.ReliabilityScore
+}
+
+func averageSupplierReliability(suppliers []domain.SupplierState) domain.Percentage {
+	if len(suppliers) == 0 {
+		return 0
+	}
+
+	total := 0
+	for _, supplier := range suppliers {
+		total += supplier.ReliabilityScore
+	}
+	return domain.Percentage(total / len(suppliers))
 }
 
 func sortedRoleNames(items map[domain.RoleID]domain.ActionSubmission) []string {

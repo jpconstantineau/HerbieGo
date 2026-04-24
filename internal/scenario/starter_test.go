@@ -43,6 +43,9 @@ func TestStarterInitialStateProvidesKnownPlayableSetup(t *testing.T) {
 	if got := state.Customers[1].PaymentDelayRounds; got != 1 {
 		t.Fatalf("PrairieFlow payment delay = %d, want 1", got)
 	}
+	if got := len(state.Suppliers); got != 4 {
+		t.Fatalf("Suppliers len = %d, want 4", got)
+	}
 	if got := len(state.Plant.Backlog); got != 2 {
 		t.Fatalf("Backlog len = %d, want 2", got)
 	}
@@ -195,6 +198,23 @@ func TestStarterAlternateSupplierChangesLeadTimeAndCost(t *testing.T) {
 	if got := lot.ArrivalRound; got != 2 {
 		t.Fatalf("ArrivalRound = %d, want 2", got)
 	}
+}
+
+func TestStarterSelectsSupplierBehaviorAtMatchCreation(t *testing.T) {
+	first := scenario.Starter().InitialState("match-20", nil)
+	second := scenario.Starter().InitialState("match-20", nil)
+	other := scenario.Starter().InitialState("match-21", nil)
+
+	if len(first.Suppliers) == 0 {
+		t.Fatal("starter state should seed supplier behavior")
+	}
+	if first.Suppliers[0].BehaviorID != second.Suppliers[0].BehaviorID {
+		t.Fatalf("same match should keep supplier behavior stable: %q vs %q", first.Suppliers[0].BehaviorID, second.Suppliers[0].BehaviorID)
+	}
+	if first.Suppliers[0].BehaviorID == "" {
+		t.Fatal("supplier behavior id should not be empty")
+	}
+	_ = other
 }
 
 func TestScenarioComponentsCanBeSelectedIndependently(t *testing.T) {

@@ -39,6 +39,7 @@ type MatchState struct {
 	RoundFlow     RoundFlowState
 	Plant         PlantState
 	Customers     []CustomerState
+	Suppliers     []SupplierState
 	ActiveTargets BudgetTargets
 	Metrics       PlantMetrics
 	History       RoundHistory
@@ -108,6 +109,7 @@ type SupplyLot struct {
 	Quantity        Units
 	UnitCost        Money
 	OrderedRound    RoundNumber
+	PromisedRound   RoundNumber
 	ArrivalRound    RoundNumber
 }
 
@@ -127,6 +129,18 @@ const (
 	CashCommitmentPayable    CashCommitmentKind = "payable"
 )
 
+type SupplierState struct {
+	SupplierID         SupplierID
+	DisplayName        string
+	BehaviorID         string
+	BehaviorDisplay    string
+	OnTimeDeliveryPct  int
+	LateDeliveryRounds int
+	ReliabilityScore   int
+	OrdersPlaced       int
+	OrdersReceived     int
+	LateDeliveries     int
+}
 type WorkstationState struct {
 	WorkstationID              WorkstationID
 	DisplayName                string
@@ -194,6 +208,7 @@ type PlantMetrics struct {
 	FinishedGoodsUnits    Units
 	ProductionOutputUnits Units
 	CapacityLossUnits     Units
+	SupplierReliability   Percentage
 }
 
 type MetricValue struct {
@@ -353,6 +368,8 @@ const (
 	EventPayableScheduled       RoundEventType = "payable_scheduled"
 	EventPayablePaid            RoundEventType = "payable_paid"
 	EventSupplyArrived          RoundEventType = "supply_arrived"
+	EventSupplyDelayed          RoundEventType = "supply_delayed"
+	EventSupplierScoreChanged   RoundEventType = "supplier_score_changed"
 	EventProductionReleased     RoundEventType = "production_released"
 	EventWorkstationStressed    RoundEventType = "workstation_stressed"
 	EventWorkAdvanced           RoundEventType = "work_advanced"
@@ -377,6 +394,7 @@ type RoundView struct {
 	RoundFlow        RoundFlowState
 	Plant            PlantState
 	Customers        []CustomerState
+	Suppliers        []SupplierState
 	ActiveTargets    BudgetTargets
 	Metrics          PlantMetrics
 	RecentRounds     []RoundHistoryEntry
@@ -409,6 +427,7 @@ func (s MatchState) Clone() MatchState {
 		RoundFlow:     s.RoundFlow.Clone(),
 		Plant:         s.Plant.Clone(),
 		Customers:     cloneSlice(s.Customers, CustomerState.Clone),
+		Suppliers:     slices.Clone(s.Suppliers),
 		ActiveTargets: s.ActiveTargets,
 		Metrics:       s.Metrics,
 		History:       s.History.Clone(),
@@ -614,6 +633,7 @@ func (v RoundView) Clone() RoundView {
 		RoundFlow:        v.RoundFlow.Clone(),
 		Plant:            v.Plant.Clone(),
 		Customers:        cloneSlice(v.Customers, CustomerState.Clone),
+		Suppliers:        slices.Clone(v.Suppliers),
 		ActiveTargets:    v.ActiveTargets,
 		Metrics:          v.Metrics,
 		RecentRounds:     cloneSlice(v.RecentRounds, RoundHistoryEntry.Clone),

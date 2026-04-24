@@ -23,6 +23,7 @@ func BuildRoundView(state domain.MatchState, viewerRoleID domain.RoleID) domain.
 		RoundFlow:        state.RoundFlow.Clone(),
 		Plant:            state.Plant.Clone(),
 		Customers:        cloneCustomers(state.Customers),
+		Suppliers:        cloneSuppliers(state.Suppliers),
 		ActiveTargets:    state.ActiveTargets,
 		Metrics:          state.Metrics,
 		RecentRounds:     recentRounds,
@@ -102,5 +103,15 @@ func cloneCustomers(customers []domain.CustomerState) []domain.CustomerState {
 		cloned[i] = customers[i].Clone()
 	}
 
+	return cloned
+}
+
+func cloneSuppliers(suppliers []domain.SupplierState) []domain.SupplierState {
+	if suppliers == nil {
+		return nil
+	}
+
+	cloned := make([]domain.SupplierState, len(suppliers))
+	copy(cloned, suppliers)
 	return cloned
 }
