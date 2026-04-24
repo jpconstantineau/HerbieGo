@@ -768,8 +768,8 @@ func TestModelDepartmentsPaneShowsBrailleSpinnerForProviderWaits(t *testing.T) {
 	}
 }
 
-func TestProviderSpinnerCompletesOneCyclePerSecond(t *testing.T) {
-	if got, want := providerSpinnerFrameInterval, 125*time.Millisecond; got != want {
+func TestProviderSpinnerCompletesOneCycleEveryTwoSeconds(t *testing.T) {
+	if got, want := providerSpinnerFrameInterval, 250*time.Millisecond; got != want {
 		t.Fatalf("providerSpinnerFrameInterval = %s, want %s", got, want)
 	}
 }
