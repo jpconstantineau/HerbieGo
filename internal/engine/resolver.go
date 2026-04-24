@@ -22,6 +22,7 @@ type Options struct {
 	InventoryCost         InventoryCarryingCostHook
 	ReceivableDelayRounds int
 	PayableDelayRounds    int
+	PayrollDelayRounds    int
 	WorldUpdate           WorldUpdateHook
 }
 
@@ -136,6 +137,7 @@ type Resolver struct {
 	inventoryCost         InventoryCarryingCostHook
 	receivableDelayRounds int
 	payableDelayRounds    int
+	payrollDelayRounds    int
 	worldUpdate           WorldUpdateHook
 }
 
@@ -150,6 +152,7 @@ func NewResolver(options Options) *Resolver {
 		inventoryCost:         options.InventoryCost,
 		receivableDelayRounds: normalizedDelayRounds(options.ReceivableDelayRounds),
 		payableDelayRounds:    normalizedDelayRounds(options.PayableDelayRounds),
+		payrollDelayRounds:    normalizedDelayRounds(options.PayrollDelayRounds),
 		worldUpdate:           options.WorldUpdate,
 	}
 }
@@ -190,6 +193,7 @@ func (r *Resolver) ResolveRound(state domain.MatchState, actions []domain.Action
 		inventoryCost:         r.inventoryCost,
 		receivableDelayRounds: r.receivableDelayRounds,
 		payableDelayRounds:    r.payableDelayRounds,
+		payrollDelayRounds:    r.payrollDelayRounds,
 		random:                random,
 		stressedStations:      map[domain.WorkstationID]bool{},
 	}
@@ -250,6 +254,7 @@ type roundPhase struct {
 	inventoryCost         InventoryCarryingCostHook
 	receivableDelayRounds int
 	payableDelayRounds    int
+	payrollDelayRounds    int
 	random                ports.RandomSource
 	eventSeq              int
 	stressedStations      map[domain.WorkstationID]bool
@@ -797,7 +802,6 @@ func (p *roundPhase) computeMetrics() domain.PlantMetrics {
 	}
 
 	operatingExpense := p.stats.procurementSpend + p.stats.productionSpend + p.stats.payrollExpense + p.stats.holdingCost + p.stats.debtServiceCost
-	operatingExpense += p.stats.laborCost + p.stats.overtimeCost
 	netCashChange := p.state.Plant.Cash - p.beginningCash
 	demandUnits := p.stats.shippedUnits + backlogUnits + p.stats.lostSalesUnits
 	onTime := domain.Percentage(100)
@@ -855,15 +859,23 @@ func (p *roundPhase) applyLaborCosts() (domain.Money, domain.Money) {
 
 	p.stats.idleLaborUnits = idleLabor
 	total := laborCost + overtimeCost
+	p.stats.payrollExpense = total
 	if total > 0 {
-		p.applyCashDelta(-total)
-		p.appendEvent(domain.EventLaborCostApplied, domain.ActorPlantSystem, "Applied labor and overtime costs", map[string]any{
+		payload := map[string]any{
 			"labor_cost":       int(laborCost),
 			"overtime_cost":    int(overtimeCost),
+			"payroll_expense":  int(total),
 			"idle_labor_units": int(idleLabor),
-			"cash":             int(p.state.Plant.Cash),
-			"debt":             int(p.state.Plant.Debt),
-		})
+		}
+		if dueRound, paidImmediately := p.schedulePayroll(total, fmt.Sprintf("payroll-r%d", p.currentRound)); paidImmediately {
+			payload["cash_applied"] = true
+			payload["cash"] = int(p.state.Plant.Cash)
+			payload["debt"] = int(p.state.Plant.Debt)
+		} else {
+			payload["cash_applied"] = false
+			payload["due_round"] = int(dueRound)
+		}
+		p.appendEvent(domain.EventLaborCostApplied, domain.ActorPlantSystem, "Applied labor and overtime costs", payload)
 	}
 
 	return laborCost, overtimeCost
@@ -977,17 +989,24 @@ func (p *roundPhase) payPayablesDue() {
 	disbursed := sumCommitments(due)
 	for _, item := range due {
 		p.applyCashDelta(-item.Amount)
-		p.appendEvent(domain.EventPayablePaid, domain.ActorPlantSystem, "Paid supplier payable", map[string]any{
+		eventType := domain.EventPayablePaid
+		summary := "Paid supplier payable"
+		if item.Kind == domain.CashCommitmentPayroll {
+			eventType = domain.EventPayrollPaid
+			summary = "Paid payroll commitment"
+		}
+		p.appendEvent(eventType, domain.ActorPlantSystem, summary, map[string]any{
 			"commitment_id": item.CommitmentID,
 			"amount":        int(item.Amount),
 			"due_round":     int(item.DueRound),
+			"kind":          string(item.Kind),
 			"cash":          int(p.state.Plant.Cash),
 			"debt":          int(p.state.Plant.Debt),
 		})
 	}
 	if disbursed > 0 {
 		p.stats.cashDisbursements += disbursed
-		p.appendEvent(domain.EventCashChanged, domain.ActorPlantSystem, "Supplier payments applied", map[string]any{
+		p.appendEvent(domain.EventCashChanged, domain.ActorPlantSystem, "Committed disbursements applied", map[string]any{
 			"delta": -int(disbursed),
 			"cash":  int(p.state.Plant.Cash),
 			"debt":  int(p.state.Plant.Debt),
@@ -1066,6 +1085,45 @@ func (p *roundPhase) schedulePayable(amount domain.Money, referenceID string) {
 		"due_round":     int(item.DueRound),
 		"reference_id":  item.ReferenceID,
 	})
+}
+
+func (p *roundPhase) schedulePayroll(amount domain.Money, referenceID string) (domain.RoundNumber, bool) {
+	if amount <= 0 {
+		return 0, false
+	}
+	if p.payrollDelayRounds == 0 {
+		p.applyCashDelta(-amount)
+		p.stats.cashDisbursements += amount
+		p.appendEvent(domain.EventPayrollPaid, domain.ActorPlantSystem, "Paid current-round payroll", map[string]any{
+			"amount":       int(amount),
+			"reference_id": referenceID,
+			"cash":         int(p.state.Plant.Cash),
+			"debt":         int(p.state.Plant.Debt),
+		})
+		p.appendEvent(domain.EventCashChanged, domain.ActorPlantSystem, "Payroll cash applied", map[string]any{
+			"delta": -int(amount),
+			"cash":  int(p.state.Plant.Cash),
+			"debt":  int(p.state.Plant.Debt),
+		})
+		return p.currentRound, true
+	}
+
+	item := domain.CashCommitment{
+		CommitmentID: fmt.Sprintf("payroll-r%d-%d", p.currentRound, len(p.state.Plant.Payables)+1),
+		Kind:         domain.CashCommitmentPayroll,
+		Amount:       amount,
+		DueRound:     p.currentRound + domain.RoundNumber(p.payrollDelayRounds),
+		CreatedRound: p.currentRound,
+		ReferenceID:  referenceID,
+	}
+	p.state.Plant.Payables = append(p.state.Plant.Payables, item)
+	p.appendEvent(domain.EventPayrollScheduled, domain.ActorPlantSystem, "Scheduled payroll commitment", map[string]any{
+		"commitment_id": item.CommitmentID,
+		"amount":        int(item.Amount),
+		"due_round":     int(item.DueRound),
+		"reference_id":  item.ReferenceID,
+	})
+	return item.DueRound, false
 }
 
 func (p *roundPhase) syncCustomerBacklog(backlog []domain.BacklogEntry) {

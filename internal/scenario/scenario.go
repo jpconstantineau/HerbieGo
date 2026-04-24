@@ -143,6 +143,7 @@ type FinanceModel struct {
 	Description           string
 	ReceivableDelayRounds int
 	PayableDelayRounds    int
+	PayrollDelayRounds    int
 }
 
 type DemandAssumptions struct {
@@ -258,6 +259,7 @@ func (d Definition) ResolverOptions() engine.Options {
 		},
 		ReceivableDelayRounds: d.FinanceModel.ReceivableDelayRounds,
 		PayableDelayRounds:    d.FinanceModel.PayableDelayRounds,
+		PayrollDelayRounds:    d.FinanceModel.PayrollDelayRounds,
 		WorldUpdate: func(ctx *engine.WorldUpdateContext) error {
 			return d.applyDemand(ctx)
 		},

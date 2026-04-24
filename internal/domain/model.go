@@ -127,6 +127,7 @@ type CashCommitmentKind string
 const (
 	CashCommitmentReceivable CashCommitmentKind = "receivable"
 	CashCommitmentPayable    CashCommitmentKind = "payable"
+	CashCommitmentPayroll    CashCommitmentKind = "payroll"
 )
 
 type SupplierState struct {
@@ -382,6 +383,7 @@ const (
 	EventPurchaseOrderPlaced    RoundEventType = "purchase_order_placed"
 	EventPayableScheduled       RoundEventType = "payable_scheduled"
 	EventPayablePaid            RoundEventType = "payable_paid"
+	EventPayrollScheduled       RoundEventType = "payroll_scheduled"
 	EventSupplyArrived          RoundEventType = "supply_arrived"
 	EventSupplyDelayed          RoundEventType = "supply_delayed"
 	EventSupplierScoreChanged   RoundEventType = "supplier_score_changed"

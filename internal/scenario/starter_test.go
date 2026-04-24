@@ -76,6 +76,9 @@ func TestStarterInitialStateProvidesKnownPlayableSetup(t *testing.T) {
 	if got := starter.FinanceModel.ID; got != "net30-lite-weekly" {
 		t.Fatalf("FinanceModel.ID = %q, want net30-lite-weekly", got)
 	}
+	if got := starter.FinanceModel.PayrollDelayRounds; got != 1 {
+		t.Fatalf("FinanceModel.PayrollDelayRounds = %d, want 1", got)
+	}
 }
 
 func TestStarterResolverOptionsApplyScenarioHooks(t *testing.T) {

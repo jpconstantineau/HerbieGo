@@ -829,6 +829,112 @@ func TestResolverSchedulesReceivablesPayablesAndUsesProjectedDebtCapacity(t *tes
 	}
 }
 
+func TestResolverSchedulesPayrollAsAccruedExpenseWhenDelayed(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{
+		PayrollDelayRounds: 1,
+	})
+
+	state := fixtureState()
+	state.Plant.PartsInventory = nil
+	state.Plant.WIPInventory = nil
+	state.Plant.FinishedInventory = nil
+	state.Plant.InTransitSupply = nil
+	state.Plant.Backlog = nil
+	state.Customers = nil
+	state.Plant.Workstations = []domain.WorkstationState{
+		{
+			WorkstationID:            "assembly",
+			DisplayName:              "Assembly",
+			CapacityPerRound:         2,
+			LaborCapacityPerRound:    2,
+			LaborCostPerCapacityUnit: 3,
+		},
+	}
+	actions := fixtureActions()
+	actions[0].Action.Procurement.Orders = nil
+	actions[1].Action.Production.Releases = nil
+	actions[1].Action.Production.CapacityAllocation = nil
+	actions[2].Action.Sales.ProductOffers = nil
+
+	result, err := resolver.ResolveRound(state, actions, seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() error = %v", err)
+	}
+
+	if got := result.Round.Metrics.PayrollExpense; got != 6 {
+		t.Fatalf("PayrollExpense = %d, want 6", got)
+	}
+	if got := result.Round.Metrics.LaborCost; got != 6 {
+		t.Fatalf("LaborCost = %d, want 6", got)
+	}
+	if got := result.Round.Metrics.CashDisbursements; got != 0 {
+		t.Fatalf("CashDisbursements = %d, want 0 before payroll is due", got)
+	}
+	if got := result.NextState.Plant.Cash; got != 10 {
+		t.Fatalf("Plant.Cash = %d, want 10 before delayed payroll payment", got)
+	}
+	if got := len(result.NextState.Plant.Payables); got != 1 {
+		t.Fatalf("Payables len = %d, want 1 payroll commitment", got)
+	}
+	if got := result.NextState.Plant.Payables[0].Kind; got != domain.CashCommitmentPayroll {
+		t.Fatalf("Payables[0].Kind = %q, want payroll", got)
+	}
+	if got := result.NextState.Plant.Payables[0].DueRound; got != 3 {
+		t.Fatalf("Payables[0].DueRound = %d, want 3", got)
+	}
+	if !containsEvent(result.Round.Events, domain.EventPayrollScheduled) {
+		t.Fatalf("Round.Events missing %q: %#v", domain.EventPayrollScheduled, result.Round.Events)
+	}
+}
+
+func TestResolverPaysDuePayrollCommitments(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{})
+
+	state := fixtureState()
+	state.Plant.PartsInventory = nil
+	state.Plant.WIPInventory = nil
+	state.Plant.FinishedInventory = nil
+	state.Plant.InTransitSupply = nil
+	state.Plant.Backlog = nil
+	state.Customers = nil
+	state.Plant.Workstations = []domain.WorkstationState{
+		{WorkstationID: "assembly", DisplayName: "Assembly", CapacityPerRound: 1},
+	}
+	state.Plant.Payables = []domain.CashCommitment{
+		{
+			CommitmentID: "payroll-r1-1",
+			Kind:         domain.CashCommitmentPayroll,
+			Amount:       4,
+			DueRound:     2,
+			CreatedRound: 1,
+			ReferenceID:  "payroll-r1",
+		},
+	}
+	actions := fixtureActions()
+	actions[0].Action.Procurement.Orders = nil
+	actions[1].Action.Production.Releases = nil
+	actions[1].Action.Production.CapacityAllocation = nil
+	actions[2].Action.Sales.ProductOffers = nil
+
+	result, err := resolver.ResolveRound(state, actions, seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() error = %v", err)
+	}
+
+	if got := result.NextState.Plant.Cash; got != 6 {
+		t.Fatalf("Plant.Cash = %d, want 6 after payroll payment", got)
+	}
+	if got := len(result.NextState.Plant.Payables); got != 0 {
+		t.Fatalf("Payables len = %d, want 0 after payroll payment", got)
+	}
+	if got := result.Round.Metrics.CashDisbursements; got != 4 {
+		t.Fatalf("CashDisbursements = %d, want 4", got)
+	}
+	if !containsEvent(result.Round.Events, domain.EventPayrollPaid) {
+		t.Fatalf("Round.Events missing %q: %#v", domain.EventPayrollPaid, result.Round.Events)
+	}
+}
+
 func TestResolverUsesSupplierLeadTimeAndReliabilityTerms(t *testing.T) {
 	resolver := engine.NewResolver(engine.Options{
 		ProcurementTerms: func(ctx engine.ProcurementTermsContext) engine.ProcurementTerms {
