@@ -37,9 +37,10 @@ type StartingConditions struct {
 }
 
 type CustomerSeed struct {
-	ID          domain.CustomerID
-	DisplayName string
-	Sentiment   int
+	ID                 domain.CustomerID
+	DisplayName        string
+	Sentiment          int
+	PaymentDelayRounds int
 }
 
 type MarketModel struct {
@@ -107,8 +108,6 @@ type FinanceModel struct {
 	Description           string
 	ReceivableDelayRounds int
 	PayableDelayRounds    int
-	PayrollCycleRounds    int
-	PayrollPerCycle       domain.Money
 }
 
 type DemandAssumptions struct {
@@ -136,10 +135,11 @@ func (d Definition) InitialState(matchID domain.MatchID, roles []domain.RoleAssi
 	customers := make([]domain.CustomerState, 0, len(d.StartingConditions.Customers))
 	for _, customer := range d.StartingConditions.Customers {
 		customers = append(customers, domain.CustomerState{
-			CustomerID:  customer.ID,
-			DisplayName: customer.DisplayName,
-			Sentiment:   customer.Sentiment,
-			Backlog:     customerBacklog(plant.Backlog, customer.ID),
+			CustomerID:         customer.ID,
+			DisplayName:        customer.DisplayName,
+			Sentiment:          customer.Sentiment,
+			PaymentDelayRounds: customer.PaymentDelayRounds,
+			Backlog:            customerBacklog(plant.Backlog, customer.ID),
 		})
 	}
 
@@ -207,8 +207,6 @@ func (d Definition) ResolverOptions() engine.Options {
 		},
 		ReceivableDelayRounds: d.FinanceModel.ReceivableDelayRounds,
 		PayableDelayRounds:    d.FinanceModel.PayableDelayRounds,
-		PayrollCycleRounds:    d.FinanceModel.PayrollCycleRounds,
-		PayrollPerCycle:       d.FinanceModel.PayrollPerCycle,
 		WorldUpdate: func(ctx *engine.WorldUpdateContext) error {
 			return d.applyDemand(ctx)
 		},

@@ -71,9 +71,9 @@ func StarterStartingConditions() StartingConditions {
 			},
 		},
 		Customers: []CustomerSeed{
-			{ID: "northbuild", DisplayName: "NorthBuild", Sentiment: 6},
-			{ID: "prairieflow", DisplayName: "PrairieFlow", Sentiment: 5},
-			{ID: "agriworks", DisplayName: "AgriWorks", Sentiment: 4},
+			{ID: "northbuild", DisplayName: "NorthBuild", Sentiment: 6, PaymentDelayRounds: 2},
+			{ID: "prairieflow", DisplayName: "PrairieFlow", Sentiment: 5, PaymentDelayRounds: 1},
+			{ID: "agriworks", DisplayName: "AgriWorks", Sentiment: 4, PaymentDelayRounds: 1},
 		},
 	}
 }
@@ -163,10 +163,8 @@ func StarterFinanceModel() FinanceModel {
 	return FinanceModel{
 		ID:                    "net30-lite-weekly",
 		DisplayName:           "Net-30 Lite Weekly Cash Timing",
-		Description:           "Customer receipts and supplier invoices settle one round later, while payroll hits every other round to keep near-term cash pressure visible.",
+		Description:           "Customer receipts settle on customer-specific terms, while supplier invoices settle one round later to keep near-term cash pressure visible.",
 		ReceivableDelayRounds: 1,
 		PayableDelayRounds:    1,
-		PayrollCycleRounds:    2,
-		PayrollPerCycle:       6,
 	}
 }

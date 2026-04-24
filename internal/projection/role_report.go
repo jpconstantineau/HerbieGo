@@ -73,6 +73,7 @@ func buildDepartmentPerformanceReport(state domain.MatchState, viewerRoleID doma
 			BonusSummary: bonusReminder(viewerRoleID),
 		}
 	case domain.RoleFinanceController:
+		projectedCash, projectedDebt := projectedPositionAfterCommitments(state.Plant)
 		return domain.DepartmentPerformanceReport{
 			RoleID: viewerRoleID,
 			KeyMetrics: []domain.MetricValue{
@@ -84,6 +85,8 @@ func buildDepartmentPerformanceReport(state domain.MatchState, viewerRoleID doma
 			DetailLines: []string{
 				fmt.Sprintf("Current cash is %d against debt ceiling %d.", state.Plant.Cash, state.Plant.DebtCeiling),
 				fmt.Sprintf("Round profit most recently closed at %d.", state.Metrics.RoundProfit),
+				fmt.Sprintf("Projected cash after all open commitments is %d with projected debt %d.", projectedCash, projectedDebt),
+				fmt.Sprintf("Next-round maturities net to %d (%d receivable, %d payable).", nextRoundNetCash(state.Plant, state.CurrentRound), sumCommitmentsDue(state.Plant.Receivables, state.CurrentRound), sumCommitmentsDue(state.Plant.Payables, state.CurrentRound)),
 				fmt.Sprintf("Open receivables total %d, with %d due next round.", sumCommitmentAmount(state.Plant.Receivables), sumCommitmentsDue(state.Plant.Receivables, state.CurrentRound)),
 				fmt.Sprintf("Open payables total %d, with %d due next round.", sumCommitmentAmount(state.Plant.Payables), sumCommitmentsDue(state.Plant.Payables, state.CurrentRound)),
 			},
@@ -289,6 +292,43 @@ func sumCommitmentsDue(items []domain.CashCommitment, round domain.RoundNumber) 
 	return total
 }
 
+func nextRoundNetCash(plant domain.PlantState, round domain.RoundNumber) domain.Money {
+	return sumCommitmentsDue(plant.Receivables, round) - sumCommitmentsDue(plant.Payables, round)
+}
+
+func projectedPositionAfterCommitments(plant domain.PlantState) (domain.Money, domain.Money) {
+	cash := plant.Cash
+	debt := plant.Debt
+
+	for _, item := range plant.Payables {
+		cash, debt = applyProjectedCashDelta(cash, debt, -item.Amount)
+	}
+	for _, item := range plant.Receivables {
+		cash, debt = applyProjectedCashDelta(cash, debt, item.Amount)
+	}
+
+	return cash, debt
+}
+
+func applyProjectedCashDelta(cash, debt, delta domain.Money) (domain.Money, domain.Money) {
+	if delta == 0 {
+		return cash, debt
+	}
+	if delta > 0 {
+		paydown := minMoney(delta, debt)
+		debt -= paydown
+		cash += delta - paydown
+		return cash, debt
+	}
+
+	spend := -delta
+	if cash >= spend {
+		return cash - spend, debt
+	}
+
+	return 0, debt + (spend - cash)
+}
+
 func inventoryBucketTotal(items []domain.PartInventory) domain.Money {
 	total := domain.Money(0)
 	for _, item := range items {
@@ -335,4 +375,11 @@ func financialValues(items map[domain.ProductID]domain.ProductFinancialSummary) 
 		values = append(values, item)
 	}
 	return values
+}
+
+func minMoney(left, right domain.Money) domain.Money {
+	if left < right {
+		return left
+	}
+	return right
 }

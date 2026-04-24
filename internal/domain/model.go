@@ -157,10 +157,11 @@ type PartDefinition struct {
 }
 
 type CustomerState struct {
-	CustomerID  CustomerID
-	DisplayName string
-	Sentiment   int
-	Backlog     []BacklogEntry
+	CustomerID         CustomerID
+	DisplayName        string
+	Sentiment          int
+	PaymentDelayRounds int
+	Backlog            []BacklogEntry
 }
 
 type BudgetTargets struct {
@@ -432,10 +433,11 @@ func (s PlantState) Clone() PlantState {
 
 func (s CustomerState) Clone() CustomerState {
 	return CustomerState{
-		CustomerID:  s.CustomerID,
-		DisplayName: s.DisplayName,
-		Sentiment:   s.Sentiment,
-		Backlog:     slices.Clone(s.Backlog),
+		CustomerID:         s.CustomerID,
+		DisplayName:        s.DisplayName,
+		Sentiment:          s.Sentiment,
+		PaymentDelayRounds: s.PaymentDelayRounds,
+		Backlog:            slices.Clone(s.Backlog),
 	}
 }
 

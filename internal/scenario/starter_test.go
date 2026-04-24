@@ -37,6 +37,12 @@ func TestStarterInitialStateProvidesKnownPlayableSetup(t *testing.T) {
 	if got := len(state.Customers); got != 3 {
 		t.Fatalf("Customers len = %d, want 3", got)
 	}
+	if got := state.Customers[0].PaymentDelayRounds; got != 2 {
+		t.Fatalf("NorthBuild payment delay = %d, want 2", got)
+	}
+	if got := state.Customers[1].PaymentDelayRounds; got != 1 {
+		t.Fatalf("PrairieFlow payment delay = %d, want 1", got)
+	}
 	if got := len(state.Plant.Backlog); got != 2 {
 		t.Fatalf("Backlog len = %d, want 2", got)
 	}
