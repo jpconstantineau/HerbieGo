@@ -65,7 +65,7 @@ type fieldSpec struct {
 }
 
 func (m *Model) handleActionEntryKey(msg tea.KeyMsg) bool {
-	if m.workspace != workspaceActionEntry {
+	if m.workspace != workspaceActionEntry || m.focusedPane != paneHistory {
 		return false
 	}
 

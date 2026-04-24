@@ -478,6 +478,7 @@ func expectPublishedView(t *testing.T, source *liveTestSource, model Model, want
 
 func submitProcurementTurn(t *testing.T, model Model, orders string, commentary string) Model {
 	t.Helper()
+	model.focusedPane = paneHistory
 
 	for _, key := range []tea.KeyMsg{
 		{Type: tea.KeyRunes, Runes: []rune{'1'}},

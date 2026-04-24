@@ -137,10 +137,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setWorkspace(workspaceRoundFeed)
 		case "5":
 			m.setWorkspace(workspaceHistoryArchive)
-		case "left", "h", "p":
-			m.moveRole(-1)
-		case "right", "l", "n":
-			m.moveRole(1)
+		case "up", "k":
+			if m.focusedPane == paneDepartments {
+				m.moveRole(-1)
+			}
+		case "down", "j":
+			if m.focusedPane == paneDepartments {
+				m.moveRole(1)
+			}
 		}
 		return m, nil
 	case tea.MouseMsg:
@@ -479,7 +483,7 @@ func (m Model) renderCommandBar(width, height int) string {
 	}
 
 	lines := []string{
-		workspaceCommandHints(m.workspace),
+		focusedPaneCommandHints(m.focusedPane, m.workspace),
 		wrapLine(status, paneTextWidth(width)),
 	}
 	return renderPane("Command Bar", lines, width, height, m.focusedPane == paneCommandBar)
@@ -890,20 +894,35 @@ func workspaceNavigationLine(active workspaceMode) string {
 	return "Navigate: " + strings.Join(labels, " | ") + " | [/] cycle"
 }
 
-func workspaceCommandHints(active workspaceMode) string {
-	base := "Inspect mode | tab/shift+tab focus panes | left/right cycle roles | 1/2/3/4/5 switch workspace | [/] cycle | q quit"
+func focusedPaneCommandHints(focusedPane int, active workspaceMode) string {
+	base := "Inspect mode | tab/shift+tab focus panes | 1/2/3/4/5 switch workspace | [/] cycle | q quit"
 
+	switch focusedPane {
+	case paneDepartments:
+		return base + " | departments: up/down select role"
+	case paneHistory:
+		return base + " | center workspace: " + workspaceInteractionHint(active)
+	case paneStats:
+		return base + " | plant stats: read-only summary"
+	case paneCommandBar:
+		return base + " | command bar: status and focused-pane shortcuts"
+	default:
+		return base
+	}
+}
+
+func workspaceInteractionHint(active workspaceMode) string {
 	switch active {
 	case workspaceActionEntry:
-		return base + " | action entry uses up/down to move fields, enter to edit, r review, s submit"
+		return "up/down move fields, enter edit/save, esc cancel, r review, s submit"
 	case workspaceScenarioLookup:
-		return base + " | lookup uses v/r/b/d tabs and up/down to browse scenario data"
+		return "v/r/b/d switch lookup tabs, up/down browse entries"
 	case workspaceRoleReport:
-		return base + " | report shows briefing, company snapshot, and role metrics"
+		return "role report is read-only"
 	case workspaceHistoryArchive:
-		return base + " | up/down/pgup/pgdn/home/end scroll history | archive shows retained round summaries and older history"
+		return "up/down/pgup/pgdn/home/end scroll archive history"
 	default:
-		return base + " | up/down/pgup/pgdn/home/end scroll history | round feed shows current phase plus the most recent resolved rounds"
+		return "up/down/pgup/pgdn/home/end scroll round feed history"
 	}
 }
 
