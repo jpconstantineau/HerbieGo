@@ -1332,6 +1332,8 @@ func stressedCapacity(workstation domain.WorkstationState, wipUnits domain.Units
 		return nominal, 0
 	}
 
+	// Start with a linear congestion penalty so players can see the effect of excess WIP
+	// before later mechanics add harsher stoppage, quality, or maintenance interactions.
 	excess := domain.CapacityUnits(wipUnits - threshold)
 	loss := excess * workstation.StressPenaltyPerExcessUnit
 	if loss > nominal {
