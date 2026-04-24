@@ -142,14 +142,19 @@ type SupplierState struct {
 	LateDeliveries     int
 }
 type WorkstationState struct {
-	WorkstationID              WorkstationID
-	DisplayName                string
-	CapacityPerRound           CapacityUnits
-	EffectiveCapacityPerRound  CapacityUnits
-	StressCapacityLoss         CapacityUnits
-	StressBufferUnits          CapacityUnits
-	StressPenaltyPerExcessUnit CapacityUnits
-	CapacityUsed               CapacityUnits
+	WorkstationID               WorkstationID
+	DisplayName                 string
+	CapacityPerRound            CapacityUnits
+	EffectiveCapacityPerRound   CapacityUnits
+	StressCapacityLoss          CapacityUnits
+	StressBufferUnits           CapacityUnits
+	StressPenaltyPerExcessUnit  CapacityUnits
+	LaborCapacityPerRound       CapacityUnits
+	LaborUsed                   CapacityUnits
+	LaborCostPerCapacityUnit    Money
+	OvertimeUsed                CapacityUnits
+	OvertimeCostPerCapacityUnit Money
+	CapacityUsed                CapacityUnits
 }
 
 type ProductDefinition struct {
@@ -193,6 +198,8 @@ type PlantMetrics struct {
 	ProcurementSpend      Money
 	ProductionSpend       Money
 	PayrollExpense        Money
+	LaborCost             Money
+	OvertimeCost          Money
 	HoldingCost           Money
 	DebtServiceCost       Money
 	InventoryValue        Money
@@ -208,6 +215,8 @@ type PlantMetrics struct {
 	FinishedGoodsUnits    Units
 	ProductionOutputUnits Units
 	CapacityLossUnits     Units
+	IdleLaborUnits        Units
+	OvertimeUnits         Units
 	SupplierReliability   Percentage
 }
 
@@ -247,6 +256,7 @@ type PurchaseOrderIntent struct {
 type ProductionAction struct {
 	Releases           []ProductionRelease  `json:"releases"`
 	CapacityAllocation []CapacityAllocation `json:"capacity_allocation"`
+	Overtime           []OvertimeAllocation `json:"overtime"`
 }
 
 type ProductionRelease struct {
@@ -257,6 +267,11 @@ type ProductionRelease struct {
 type CapacityAllocation struct {
 	WorkstationID WorkstationID `json:"workstation_id"`
 	ProductID     ProductID     `json:"product_id"`
+	Capacity      CapacityUnits `json:"capacity"`
+}
+
+type OvertimeAllocation struct {
+	WorkstationID WorkstationID `json:"workstation_id"`
 	Capacity      CapacityUnits `json:"capacity"`
 }
 
@@ -373,6 +388,8 @@ const (
 	EventProductionReleased     RoundEventType = "production_released"
 	EventWorkstationStressed    RoundEventType = "workstation_stressed"
 	EventWorkAdvanced           RoundEventType = "work_advanced"
+	EventOvertimeApplied        RoundEventType = "overtime_applied"
+	EventLaborCostApplied       RoundEventType = "labor_cost_applied"
 	EventFinishedGoodsProduced  RoundEventType = "finished_goods_produced"
 	EventDemandRealized         RoundEventType = "demand_realized"
 	EventShipmentCompleted      RoundEventType = "shipment_completed"
@@ -578,6 +595,7 @@ func (a ProductionAction) Clone() ProductionAction {
 	return ProductionAction{
 		Releases:           slices.Clone(a.Releases),
 		CapacityAllocation: slices.Clone(a.CapacityAllocation),
+		Overtime:           slices.Clone(a.Overtime),
 	}
 }
 

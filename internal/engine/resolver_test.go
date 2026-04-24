@@ -314,6 +314,79 @@ func TestResolverUsesScenarioProductionAndInventoryCostHooks(t *testing.T) {
 	}
 }
 
+func TestResolverUsesLaborCapacityAndOvertime(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{
+		ProductionBOM: widgetBOM,
+	})
+	state := fixtureState()
+	state.Plant.Workstations = []domain.WorkstationState{
+		{
+			WorkstationID:               "fabrication",
+			DisplayName:                 "Fabrication",
+			CapacityPerRound:            3,
+			EffectiveCapacityPerRound:   3,
+			StressBufferUnits:           0,
+			StressPenaltyPerExcessUnit:  1,
+			LaborCapacityPerRound:       1,
+			LaborCostPerCapacityUnit:    1,
+			OvertimeCostPerCapacityUnit: 2,
+		},
+		{
+			WorkstationID:               "assembly",
+			DisplayName:                 "Assembly",
+			CapacityPerRound:            2,
+			EffectiveCapacityPerRound:   2,
+			StressBufferUnits:           0,
+			StressPenaltyPerExcessUnit:  0,
+			LaborCapacityPerRound:       2,
+			LaborCostPerCapacityUnit:    1,
+			OvertimeCostPerCapacityUnit: 0,
+		},
+	}
+	state.Plant.WIPInventory = []domain.WIPInventory{
+		{ProductID: "widget", WorkstationID: "fabrication", Quantity: 5, UnitCost: 1},
+	}
+	actions := fixtureActions()
+	actions[1].Action.Production.Releases = []domain.ProductionRelease{{ProductID: "widget", Quantity: 2}}
+	actions[1].Action.Production.CapacityAllocation = []domain.CapacityAllocation{
+		{WorkstationID: "fabrication", ProductID: "widget", Capacity: 2},
+	}
+
+	noOvertime, err := resolver.ResolveRound(state, actions, seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() no overtime error = %v", err)
+	}
+	if got := wipQty(noOvertime.NextState.Plant.WIPInventory, "widget", "assembly"); got != 2 {
+		t.Fatalf("WIP(widget/assembly) without overtime = %d, want 2", got)
+	}
+	if got := noOvertime.Round.Metrics.OvertimeUnits; got != 0 {
+		t.Fatalf("OvertimeUnits without overtime = %d, want 0", got)
+	}
+	if got := noOvertime.Round.Metrics.LaborCost; got != 3 {
+		t.Fatalf("LaborCost without overtime = %d, want 3", got)
+	}
+
+	actions[1].Action.Production.Overtime = []domain.OvertimeAllocation{
+		{WorkstationID: "fabrication", Capacity: 1},
+	}
+	withOvertime, err := resolver.ResolveRound(state, actions, seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() with overtime error = %v", err)
+	}
+	if got := wipQty(withOvertime.NextState.Plant.WIPInventory, "widget", "assembly"); got != 3 {
+		t.Fatalf("WIP(widget/assembly) with overtime = %d, want 3", got)
+	}
+	if got := withOvertime.Round.Metrics.OvertimeUnits; got != 1 {
+		t.Fatalf("OvertimeUnits with overtime = %d, want 1", got)
+	}
+	if got := withOvertime.Round.Metrics.OvertimeCost; got != 2 {
+		t.Fatalf("OvertimeCost with overtime = %d, want 2", got)
+	}
+	if !containsEvent(withOvertime.Round.Events, domain.EventOvertimeApplied) {
+		t.Fatalf("Round.Events missing %q: %#v", domain.EventOvertimeApplied, withOvertime.Round.Events)
+	}
+}
+
 func TestResolverReducesEffectiveCapacityUnderCongestion(t *testing.T) {
 	resolver := engine.NewResolver(engine.Options{
 		ProductionBOM: widgetBOM,

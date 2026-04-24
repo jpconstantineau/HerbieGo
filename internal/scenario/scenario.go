@@ -121,12 +121,15 @@ type SupplierBehavior struct {
 }
 
 type Workstation struct {
-	ID                         domain.WorkstationID
-	DisplayName                string
-	CapacityPerRound           domain.CapacityUnits
-	CostPerUnit                domain.Money
-	StressBufferUnits          domain.CapacityUnits
-	StressPenaltyPerExcessUnit domain.CapacityUnits
+	ID                          domain.WorkstationID
+	DisplayName                 string
+	CapacityPerRound            domain.CapacityUnits
+	CostPerUnit                 domain.Money
+	StressBufferUnits           domain.CapacityUnits
+	StressPenaltyPerExcessUnit  domain.CapacityUnits
+	LaborCapacityPerRound       domain.CapacityUnits
+	LaborCostPerCapacityUnit    domain.Money
+	OvertimeCostPerCapacityUnit domain.Money
 }
 
 type BottleneckAssumption struct {
@@ -310,12 +313,15 @@ func (d Definition) productionWorkstationState() []domain.WorkstationState {
 	items := make([]domain.WorkstationState, 0, len(d.ProductionModel.Workstations))
 	for _, workstation := range d.ProductionModel.Workstations {
 		items = append(items, domain.WorkstationState{
-			WorkstationID:              workstation.ID,
-			DisplayName:                workstation.DisplayName,
-			CapacityPerRound:           workstation.CapacityPerRound,
-			EffectiveCapacityPerRound:  workstation.CapacityPerRound,
-			StressBufferUnits:          workstation.StressBufferUnits,
-			StressPenaltyPerExcessUnit: workstation.StressPenaltyPerExcessUnit,
+			WorkstationID:               workstation.ID,
+			DisplayName:                 workstation.DisplayName,
+			CapacityPerRound:            workstation.CapacityPerRound,
+			EffectiveCapacityPerRound:   workstation.CapacityPerRound,
+			StressBufferUnits:           workstation.StressBufferUnits,
+			StressPenaltyPerExcessUnit:  workstation.StressPenaltyPerExcessUnit,
+			LaborCapacityPerRound:       workstation.LaborCapacityPerRound,
+			LaborCostPerCapacityUnit:    workstation.LaborCostPerCapacityUnit,
+			OvertimeCostPerCapacityUnit: workstation.OvertimeCostPerCapacityUnit,
 		})
 	}
 	return items
