@@ -266,8 +266,9 @@ func StarterFinanceModel() FinanceModel {
 	return FinanceModel{
 		ID:                    "net30-lite-weekly",
 		DisplayName:           "Net-30 Lite Weekly Cash Timing",
-		Description:           "Customer receipts settle on customer-specific terms, while supplier invoices settle one round later to keep near-term cash pressure visible.",
+		Description:           "Customer receipts settle on customer-specific terms, while supplier invoices and payroll settle one round later to keep near-term cash pressure visible.",
 		ReceivableDelayRounds: 1,
 		PayableDelayRounds:    1,
+		PayrollDelayRounds:    1,
 	}
 }
