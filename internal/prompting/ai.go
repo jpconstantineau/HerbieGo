@@ -123,6 +123,10 @@ func BuildUserPrompt(request ports.AIDecisionRequest, retry *ports.RetryFeedback
 		}))
 	}
 
+	if request.PriorAIResponse != "" {
+		sections = append(sections, "## Prior Tool Call\n"+request.PriorAIResponse)
+	}
+
 	if len(request.ToolResults) > 0 {
 		sections = append(sections, "## Tool Results\n"+mustJSON(request.ToolResults))
 	}

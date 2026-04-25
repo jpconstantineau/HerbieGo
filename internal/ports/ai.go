@@ -33,6 +33,7 @@ type AIDecisionRequest struct {
 	AllowedActions  AllowedActionSchema
 	Tools           []LookupToolSpec
 	ToolResults     []LookupToolResult
+	PriorAIResponse string
 	ResponseSpec    ResponseFormatSpec
 	RetryContext    *RetryFeedback
 	PreviousAction  *domain.ActionSubmission
@@ -147,6 +148,7 @@ type AICallRecord struct {
 	SystemPrompt string
 	UserPrompt   string
 	RawResponse  string
+	IsToolCall   bool
 	Valid        bool
 	ErrorMessage string
 }

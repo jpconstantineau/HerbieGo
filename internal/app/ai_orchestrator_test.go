@@ -273,14 +273,17 @@ func buildAIReport(roleID domain.RoleID) domain.RoleRoundReport {
 	}
 }
 func TestAIOrchestratorExecutesLookupToolCallsBeforeFinalDecision(t *testing.T) {
+	toolCallResponse := `{"tool_call":{"tool_name":"show_product_route","arguments":{"product_id":"pump"}}}`
 	client := &stubDecisionClient{
 		responses: []ports.ProviderDecisionResult{
-			{RawResponse: `{"tool_call":{"tool_name":"show_product_route","arguments":{"product_id":"pump"}}}`},
+			{RawResponse: toolCallResponse},
 			{RawResponse: `{"contract_version":"herbiego.ai.v1","match_id":"match-17","round":2,"role_id":"production_manager","action":{"production":{"releases":[{"product_id":"pump","quantity":1}],"capacity_allocation":[{"workstation_id":"fabrication","product_id":"pump","capacity":1}]}},"commentary":{"public_summary":"Using the route lookup to release only work that fits the line.","focus_tags":["throughput"]}}`},
 		},
 	}
 
 	orchestrator := app.NewAIOrchestrator(scenario.Starter(), client)
+	debugLog := app.NewDebugLog(10)
+	orchestrator.DebugLog = debugLog
 	request := aiRoundRequest(domain.RoleProductionManager)
 
 	submission, audit, err := orchestrator.Decide(context.Background(), orchestrator.BuildRequest(request))
@@ -297,7 +300,27 @@ func TestAIOrchestratorExecutesLookupToolCallsBeforeFinalDecision(t *testing.T) 
 	if !strings.Contains(client.requests[1].UserPrompt, "## Tool Results") {
 		t.Fatalf("second UserPrompt = %q, want tool results section", client.requests[1].UserPrompt)
 	}
+	if !strings.Contains(client.requests[1].UserPrompt, "## Prior Tool Call") {
+		t.Fatalf("second UserPrompt = %q, want prior tool call section", client.requests[1].UserPrompt)
+	}
+	if !strings.Contains(client.requests[1].UserPrompt, toolCallResponse) {
+		t.Fatalf("second UserPrompt = %q, want prior tool call response verbatim", client.requests[1].UserPrompt)
+	}
 	if got := submission.Commentary.Body; got != "Using the route lookup to release only work that fits the line." {
 		t.Fatalf("Commentary.Body = %q, want final commentary", got)
+	}
+
+	records := debugLog.Records()
+	if got := len(records); got != 2 {
+		t.Fatalf("debug log records = %d, want 2", got)
+	}
+	if !records[0].IsToolCall {
+		t.Fatal("records[0].IsToolCall = false, want true for tool call round")
+	}
+	if records[1].IsToolCall {
+		t.Fatal("records[1].IsToolCall = true, want false for final decision round")
+	}
+	if !records[1].Valid {
+		t.Fatal("records[1].Valid = false, want true for successful final decision")
 	}
 }
