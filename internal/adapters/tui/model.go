@@ -34,6 +34,7 @@ const (
 	workspaceRoleReport
 	workspaceRoundFeed
 	workspaceHistoryArchive
+	workspaceDebug
 )
 
 type workspaceMode int
@@ -59,6 +60,7 @@ type SubmitFunc func(domain.ActionSubmission) error
 type Model struct {
 	scenario      scenario.Definition
 	source        StateSource
+	debugLog      DebugSource
 	updates       <-chan domain.MatchState
 	submit        SubmitFunc
 	state         domain.MatchState
@@ -141,6 +143,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setWorkspace(workspaceRoundFeed)
 		case "5":
 			m.setWorkspace(workspaceHistoryArchive)
+		case "d", "D":
+			m.setWorkspace(workspaceDebug)
 		case "up", "k":
 			if m.focusedPane == paneDepartments {
 				m.moveRole(-1)
@@ -276,7 +280,7 @@ func (m *Model) moveRole(delta int) {
 }
 
 func (m *Model) moveWorkspace(delta int) {
-	modeCount := int(workspaceHistoryArchive) + 1
+	modeCount := int(workspaceDebug) + 1
 	m.workspace = workspaceMode((int(m.workspace) + delta + modeCount) % modeCount)
 	m.historyScroll = 0
 	m.status = fmt.Sprintf("Workspace switched to %s", m.workspace.label())
@@ -380,6 +384,8 @@ func (m Model) renderHistoryWorkspaceLines(width int) []string {
 		lines = append(lines, m.renderActionEntryWorkspace(width)...)
 	case workspaceHistoryArchive:
 		lines = append(lines, m.renderHistoryArchiveWorkspace(width)...)
+	case workspaceDebug:
+		lines = append(lines, m.renderDebugWorkspace(width)...)
 	default:
 		lines = append(lines, m.renderRoundFeedWorkspace(width)...)
 	}
@@ -462,6 +468,75 @@ func (m Model) renderHistoryArchiveWorkspace(width int) []string {
 		lines = append(lines, wrapLine(entry, paneTextWidth(width)))
 	}
 	return lines
+}
+
+func (m Model) renderDebugWorkspace(width int) []string {
+	lines := []string{
+		"AI API call log",
+		"View: LLM provider requests and raw responses for all AI players",
+		"",
+	}
+
+	if m.debugLog == nil {
+		lines = append(lines, "Debug log not available. AI logging requires a live game with AI players.")
+		return lines
+	}
+
+	records := m.debugLog.Records()
+	if len(records) == 0 {
+		lines = append(lines, "No AI API calls recorded yet.")
+		return lines
+	}
+
+	textWidth := paneTextWidth(width)
+	for i, rec := range records {
+		status := "INVALID"
+		if rec.Valid {
+			status = "OK"
+		}
+		header := fmt.Sprintf("[%d] Round %d | %s | %s/%s | attempt %d | %s",
+			i+1, rec.Round, rec.RoleID, rec.Provider, rec.Model, rec.Attempt, status)
+		lines = append(lines, header)
+		if rec.ErrorMessage != "" {
+			for _, l := range wrapLines("  Error: "+rec.ErrorMessage, textWidth) {
+				lines = append(lines, l)
+			}
+		}
+		if rec.SystemPrompt != "" {
+			preview := truncateDebugText(rec.SystemPrompt, 200)
+			for _, l := range wrapLines("  System: "+preview, textWidth) {
+				lines = append(lines, l)
+			}
+		}
+		if rec.UserPrompt != "" {
+			preview := truncateDebugText(rec.UserPrompt, 200)
+			for _, l := range wrapLines("  User: "+preview, textWidth) {
+				lines = append(lines, l)
+			}
+		}
+		if rec.RawResponse != "" {
+			preview := truncateDebugText(rec.RawResponse, 400)
+			for _, l := range wrapLines("  Response: "+preview, textWidth) {
+				lines = append(lines, l)
+			}
+		}
+		lines = append(lines, "")
+	}
+
+	return lines
+}
+
+func truncateDebugText(s string, maxLen int) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\t", " ")
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "…"
+}
+
+func wrapLines(text string, width int) []string {
+	return strings.Split(wrapLine(text, width), "\n")
 }
 
 func (m Model) renderStatsPane(width, height int) string {
@@ -898,6 +973,8 @@ func (mode workspaceMode) label() string {
 		return "role report"
 	case workspaceHistoryArchive:
 		return "history archive"
+	case workspaceDebug:
+		return "debug (AI API calls)"
 	default:
 		return "round feed"
 	}
@@ -913,7 +990,11 @@ func workspaceNavigationLine(active workspaceMode) string {
 		}
 		labels = append(labels, label)
 	}
-	return "Navigate: " + strings.Join(labels, " | ") + " | [/] cycle"
+	debugLabel := "d debug"
+	if active == workspaceDebug {
+		debugLabel = "[d debug]"
+	}
+	return "Navigate: " + strings.Join(labels, " | ") + " | [/] cycle | " + debugLabel
 }
 
 func focusedPaneCommandHints(focusedPane int, active workspaceMode) string {
@@ -943,13 +1024,15 @@ func workspaceInteractionHint(active workspaceMode) string {
 		return "role report is read-only"
 	case workspaceHistoryArchive:
 		return "up/down/pgup/pgdn/home/end scroll archive history"
+	case workspaceDebug:
+		return "up/down/pgup/pgdn/home/end scroll AI API call log"
 	default:
 		return "up/down/pgup/pgdn/home/end scroll round feed history"
 	}
 }
 
 func (m Model) historyWorkspaceSupportsScroll() bool {
-	return m.workspace == workspaceRoundFeed || m.workspace == workspaceHistoryArchive
+	return m.workspace == workspaceRoundFeed || m.workspace == workspaceHistoryArchive || m.workspace == workspaceDebug
 }
 
 func (m *Model) handleHistoryScrollKey(msg tea.KeyMsg) bool {

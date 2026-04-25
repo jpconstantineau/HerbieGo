@@ -282,7 +282,7 @@ type PurchaseOrderIntent struct {
 type ProductionAction struct {
 	Releases           []ProductionRelease  `json:"releases"`
 	CapacityAllocation []CapacityAllocation `json:"capacity_allocation"`
-	Overtime           []OvertimeAllocation `json:"overtime"`
+	Overtime           []OvertimeAllocation `json:"overtime,omitempty"`
 }
 
 type ProductionRelease struct {

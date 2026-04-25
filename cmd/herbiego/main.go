@@ -46,7 +46,7 @@ func main() {
 
 func runLiveGameplay(ctx context.Context, runtime app.Runtime, rounds int) error {
 	controller := newLiveGameplayController(runtime.InitialMatch)
-	players, err := buildPlayersWithHumanSubmit(runtime, controller.SubmitRound)
+	players, debugLog, err := buildPlayersWithHumanSubmit(runtime, controller.SubmitRound)
 	if err != nil {
 		return fmt.Errorf("player setup: %w", err)
 	}
@@ -65,6 +65,7 @@ func runLiveGameplay(ctx context.Context, runtime app.Runtime, rounds int) error
 		runtime.Scenario,
 		controller,
 		controller.Submit,
+		debugLog,
 		tea.WithAltScreen(),
 		tea.WithContext(ctx),
 	)
