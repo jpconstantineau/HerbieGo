@@ -19,9 +19,11 @@ type Options struct {
 	ProductionBOM         ProductionBOMHook
 	ProductionRoute       ProductionRouteHook
 	ProductionCost        ProductionCostHook
+	QualityProfile        QualityProfileHook
 	InventoryCost         InventoryCarryingCostHook
 	ReceivableDelayRounds int
 	PayableDelayRounds    int
+	PayrollDelayRounds    int
 	WorldUpdate           WorldUpdateHook
 }
 
@@ -91,6 +93,38 @@ type ProductionCost struct {
 	CostPerCapacityUnit domain.Money
 }
 
+// QualityProfileHook lets scenario data define product quality risks for final production
+// output and shipped units. The default implementation emits no quality losses.
+type QualityProfileHook func(QualityProfileContext) QualityProfile
+
+type QualityProfileContext struct {
+	State         domain.MatchState
+	CurrentRound  domain.RoundNumber
+	Phase         QualityPhase
+	ProductID     domain.ProductID
+	WorkstationID domain.WorkstationID
+	CustomerID    domain.CustomerID
+	Quantity      domain.Units
+	Stressed      bool
+	OvertimeUsed  bool
+}
+
+type QualityPhase string
+
+const (
+	QualityPhaseProductionFinal QualityPhase = "production_final"
+	QualityPhaseShipment        QualityPhase = "shipment"
+)
+
+type QualityProfile struct {
+	ScrapRatePct          int
+	ReworkRatePct         int
+	InspectionHoldRatePct int
+	CustomerReturnRatePct int
+	InspectionHoldRounds  int
+	ReturnDelayRounds     int
+}
+
 // InventoryCarryingCostHook lets scenario data define carrying cost by inventory class.
 // The default implementation charges a flat 10% round-end carrying cost with a minimum of 1.
 type InventoryCarryingCostHook func(InventoryCarryingCostContext) domain.Money
@@ -133,9 +167,11 @@ type Resolver struct {
 	productionBOM         ProductionBOMHook
 	productionRoute       ProductionRouteHook
 	productionCost        ProductionCostHook
+	qualityProfile        QualityProfileHook
 	inventoryCost         InventoryCarryingCostHook
 	receivableDelayRounds int
 	payableDelayRounds    int
+	payrollDelayRounds    int
 	worldUpdate           WorldUpdateHook
 }
 
@@ -147,9 +183,11 @@ func NewResolver(options Options) *Resolver {
 		productionBOM:         defaultProductionBOM(options.ProductionBOM),
 		productionRoute:       defaultProductionRoute(options.ProductionRoute),
 		productionCost:        defaultProductionCost(options.ProductionCost),
+		qualityProfile:        defaultQualityProfile(options.QualityProfile),
 		inventoryCost:         options.InventoryCost,
 		receivableDelayRounds: normalizedDelayRounds(options.ReceivableDelayRounds),
 		payableDelayRounds:    normalizedDelayRounds(options.PayableDelayRounds),
+		payrollDelayRounds:    normalizedDelayRounds(options.PayrollDelayRounds),
 		worldUpdate:           options.WorldUpdate,
 	}
 }
@@ -187,9 +225,11 @@ func (r *Resolver) ResolveRound(state domain.MatchState, actions []domain.Action
 		productionBOM:         r.productionBOM,
 		productionRoute:       r.productionRoute,
 		productionCost:        r.productionCost,
+		qualityProfile:        r.qualityProfile,
 		inventoryCost:         r.inventoryCost,
 		receivableDelayRounds: r.receivableDelayRounds,
 		payableDelayRounds:    r.payableDelayRounds,
+		payrollDelayRounds:    r.payrollDelayRounds,
 		random:                random,
 		stressedStations:      map[domain.WorkstationID]bool{},
 	}
@@ -207,6 +247,8 @@ func (r *Resolver) ResolveRound(state domain.MatchState, actions []domain.Action
 
 	phase.resolveProcurement(actionForRole(orderedActions, domain.RoleProcurementManager))
 	phase.receiveSupply()
+	phase.releaseInspectionHolds()
+	phase.processCustomerReturns()
 	phase.resolveProduction(actionForRole(orderedActions, domain.RoleProductionManager))
 	phase.resolveSales(actionForRole(orderedActions, domain.RoleSalesManager))
 
@@ -247,30 +289,35 @@ type roundPhase struct {
 	productionBOM         ProductionBOMHook
 	productionRoute       ProductionRouteHook
 	productionCost        ProductionCostHook
+	qualityProfile        QualityProfileHook
 	inventoryCost         InventoryCarryingCostHook
 	receivableDelayRounds int
 	payableDelayRounds    int
+	payrollDelayRounds    int
 	random                ports.RandomSource
 	eventSeq              int
 	stressedStations      map[domain.WorkstationID]bool
 }
 
 type resolutionStats struct {
-	revenue           domain.Money
-	procurementSpend  domain.Money
-	productionSpend   domain.Money
-	payrollExpense    domain.Money
-	laborCost         domain.Money
-	overtimeCost      domain.Money
-	holdingCost       domain.Money
-	debtServiceCost   domain.Money
-	shippedUnits      domain.Units
-	producedUnits     domain.Units
-	lostSalesUnits    domain.Units
-	cashReceipts      domain.Money
-	cashDisbursements domain.Money
-	idleLaborUnits    domain.Units
-	overtimeUnits     domain.Units
+	revenue             domain.Money
+	procurementSpend    domain.Money
+	productionSpend     domain.Money
+	payrollExpense      domain.Money
+	laborCost           domain.Money
+	overtimeCost        domain.Money
+	holdingCost         domain.Money
+	debtServiceCost     domain.Money
+	shippedUnits        domain.Units
+	producedUnits       domain.Units
+	lostSalesUnits      domain.Units
+	cashReceipts        domain.Money
+	cashDisbursements   domain.Money
+	idleLaborUnits      domain.Units
+	overtimeUnits       domain.Units
+	scrapUnits          domain.Units
+	reworkUnits         domain.Units
+	customerReturnUnits domain.Units
 }
 
 func (p *roundPhase) resolveProcurement(action *domain.ActionSubmission) {
@@ -434,6 +481,180 @@ func (p *roundPhase) receiveSupply() {
 	}
 }
 
+func (p *roundPhase) releaseInspectionHolds() {
+	if len(p.state.Plant.InspectionHolds) == 0 {
+		return
+	}
+
+	remaining := make([]domain.InspectionHoldInventory, 0, len(p.state.Plant.InspectionHolds))
+	for _, item := range p.state.Plant.InspectionHolds {
+		if item.ReleaseRound > p.currentRound {
+			remaining = append(remaining, item)
+			continue
+		}
+		addFinishedInventory(&p.state.Plant.FinishedInventory, item.ProductID, item.Quantity, item.UnitCost)
+		p.appendEvent(domain.EventInspectionHoldReleased, domain.ActorPlantSystem, fmt.Sprintf("Released %d %s from inspection hold", item.Quantity, item.ProductID), map[string]any{
+			"product_id":    string(item.ProductID),
+			"quantity":      int(item.Quantity),
+			"reason":        item.Reason,
+			"release_round": int(item.ReleaseRound),
+		})
+	}
+	p.state.Plant.InspectionHolds = remaining
+}
+
+func (p *roundPhase) processCustomerReturns() {
+	if len(p.state.Plant.PendingReturns) == 0 {
+		return
+	}
+
+	due := make([]domain.CustomerReturnCommitment, 0, len(p.state.Plant.PendingReturns))
+	remaining := make([]domain.CustomerReturnCommitment, 0, len(p.state.Plant.PendingReturns))
+	for _, item := range p.state.Plant.PendingReturns {
+		if item.DueRound <= p.currentRound {
+			due = append(due, item)
+			continue
+		}
+		remaining = append(remaining, item)
+	}
+	p.state.Plant.PendingReturns = remaining
+
+	for _, item := range due {
+		p.stats.customerReturnUnits += item.Quantity
+		addInspectionHoldInventory(&p.state.Plant.InspectionHolds, item.ProductID, item.Quantity, item.UnitCost, p.currentRound, p.currentRound+1, "customer_return")
+		p.appendEvent(domain.EventInspectionHoldPlaced, domain.ActorPlantSystem, fmt.Sprintf("Placed %d returned %s on inspection hold", item.Quantity, item.ProductID), map[string]any{
+			"product_id":    string(item.ProductID),
+			"quantity":      int(item.Quantity),
+			"reason":        "customer_return",
+			"release_round": int(p.currentRound + 1),
+		})
+		p.state.Plant.Backlog = append(p.state.Plant.Backlog, domain.BacklogEntry{
+			CustomerID:  item.CustomerID,
+			ProductID:   item.ProductID,
+			Quantity:    item.Quantity,
+			OriginRound: p.currentRound,
+		})
+		if customer := findCustomer(p.state.Customers, item.CustomerID); customer != nil {
+			customer.Sentiment--
+			p.appendEvent(domain.EventCustomerSentimentMoved, domain.ActorPlantSystem, fmt.Sprintf("Customer %s sentiment decreased after return", item.CustomerID), map[string]any{
+				"customer_id": string(item.CustomerID),
+				"sentiment":   customer.Sentiment,
+			})
+		}
+		p.appendEvent(domain.EventCustomerReturnReceived, domain.ActorPlantSystem, fmt.Sprintf("Received %d returned %s from %s", item.Quantity, item.ProductID, item.CustomerID), map[string]any{
+			"return_id":     item.ReturnID,
+			"customer_id":   string(item.CustomerID),
+			"product_id":    string(item.ProductID),
+			"quantity":      int(item.Quantity),
+			"release_round": int(p.currentRound + 1),
+		})
+		p.appendEvent(domain.EventBacklogCreated, domain.ActorPlantSystem, fmt.Sprintf("Booked %d replacement units of %s backlog for %s", item.Quantity, item.ProductID, item.CustomerID), map[string]any{
+			"customer_id": string(item.CustomerID),
+			"product_id":  string(item.ProductID),
+			"quantity":    int(item.Quantity),
+			"reason":      "customer_return",
+		})
+	}
+	if len(due) > 0 {
+		p.syncCustomerBacklog(p.state.Plant.Backlog)
+	}
+}
+
+func (p *roundPhase) completeFinishedUnits(productID domain.ProductID, workstationID domain.WorkstationID, quantity domain.Units, unitCost domain.Money, overtimeUsed bool) {
+	if quantity <= 0 {
+		return
+	}
+
+	profile := normalizedQualityProfile(p.qualityProfile(QualityProfileContext{
+		State:         p.state.Clone(),
+		CurrentRound:  p.currentRound,
+		Phase:         QualityPhaseProductionFinal,
+		ProductID:     productID,
+		WorkstationID: workstationID,
+		Quantity:      quantity,
+		Stressed:      p.stressedStations[workstationID],
+		OvertimeUsed:  overtimeUsed,
+	}))
+	scrapQty, reworkQty, holdQty := resolveFinishedQuality(quantity, profile, p.random)
+	goodQty := max(quantity-scrapQty-reworkQty-holdQty, 0)
+
+	if scrapQty > 0 {
+		p.stats.scrapUnits += scrapQty
+		p.appendEvent(domain.EventQualityScrapped, domain.ActorPlantSystem, fmt.Sprintf("Scrapped %d %s during final inspection", scrapQty, productID), map[string]any{
+			"product_id":     string(productID),
+			"quantity":       int(scrapQty),
+			"workstation_id": string(workstationID),
+		})
+	}
+	if reworkQty > 0 {
+		p.stats.reworkUnits += reworkQty
+		addWIPInventory(&p.state.Plant.WIPInventory, productID, workstationID, reworkQty, unitCost)
+		p.appendEvent(domain.EventQualityReworkCreated, domain.ActorPlantSystem, fmt.Sprintf("Sent %d %s back for rework", reworkQty, productID), map[string]any{
+			"product_id":     string(productID),
+			"quantity":       int(reworkQty),
+			"workstation_id": string(workstationID),
+		})
+	}
+	if holdQty > 0 {
+		releaseRound := p.currentRound + domain.RoundNumber(max(profile.InspectionHoldRounds, 1))
+		addInspectionHoldInventory(&p.state.Plant.InspectionHolds, productID, holdQty, unitCost, p.currentRound, releaseRound, "production_quality")
+		p.appendEvent(domain.EventInspectionHoldPlaced, domain.ActorPlantSystem, fmt.Sprintf("Placed %d %s on inspection hold", holdQty, productID), map[string]any{
+			"product_id":     string(productID),
+			"quantity":       int(holdQty),
+			"workstation_id": string(workstationID),
+			"release_round":  int(releaseRound),
+		})
+	}
+	if goodQty > 0 {
+		addFinishedInventory(&p.state.Plant.FinishedInventory, productID, goodQty, unitCost)
+		p.stats.producedUnits += goodQty
+		p.appendEvent(domain.EventFinishedGoodsProduced, domain.ActorPlantSystem, fmt.Sprintf("Finished %d %s", goodQty, productID), map[string]any{
+			"product_id":     string(productID),
+			"quantity":       int(goodQty),
+			"workstation_id": string(workstationID),
+			"inventory_cost": int(inventoryCost(goodQty, unitCost)),
+		})
+	}
+}
+
+func (p *roundPhase) scheduleCustomerReturns(customerID domain.CustomerID, productID domain.ProductID, quantity domain.Units, unitCost domain.Money) {
+	if quantity <= 0 {
+		return
+	}
+
+	profile := normalizedQualityProfile(p.qualityProfile(QualityProfileContext{
+		State:        p.state.Clone(),
+		CurrentRound: p.currentRound,
+		Phase:        QualityPhaseShipment,
+		ProductID:    productID,
+		CustomerID:   customerID,
+		Quantity:     quantity,
+	}))
+	returnQty := resolveReturnQuantity(quantity, profile.CustomerReturnRatePct, p.random)
+	if returnQty <= 0 {
+		return
+	}
+
+	delayRounds := max(profile.ReturnDelayRounds, 1)
+	item := domain.CustomerReturnCommitment{
+		ReturnID:     fmt.Sprintf("return-r%d-%d", p.currentRound, len(p.state.Plant.PendingReturns)+1),
+		CustomerID:   customerID,
+		ProductID:    productID,
+		Quantity:     returnQty,
+		UnitCost:     unitCost,
+		DueRound:     p.currentRound + domain.RoundNumber(delayRounds),
+		CreatedRound: p.currentRound,
+	}
+	p.state.Plant.PendingReturns = append(p.state.Plant.PendingReturns, item)
+	p.appendEvent(domain.EventCustomerReturnScheduled, domain.ActorPlantSystem, fmt.Sprintf("Scheduled %d %s customer return(s) from %s", returnQty, productID, customerID), map[string]any{
+		"return_id":   item.ReturnID,
+		"customer_id": string(customerID),
+		"product_id":  string(productID),
+		"quantity":    int(returnQty),
+		"due_round":   int(item.DueRound),
+	})
+}
+
 func (p *roundPhase) resolveProduction(action *domain.ActionSubmission) {
 	if action == nil || action.Action.Production == nil {
 		return
@@ -591,14 +812,7 @@ func (p *roundPhase) resolveProduction(action *domain.ActionSubmission) {
 				CurrentStationID: allocation.WorkstationID,
 			})
 			if route.Finished {
-				addFinishedInventory(&p.state.Plant.FinishedInventory, allocation.ProductID, domain.Units(advance), perUnitCost(advancedCost, domain.Units(advance)))
-				p.stats.producedUnits += domain.Units(advance)
-				p.appendEvent(domain.EventFinishedGoodsProduced, domain.ActorPlantSystem, fmt.Sprintf("Finished %d %s", advance, allocation.ProductID), map[string]any{
-					"product_id":     string(allocation.ProductID),
-					"quantity":       int(advance),
-					"workstation_id": string(allocation.WorkstationID),
-					"inventory_cost": int(advancedCost),
-				})
+				p.completeFinishedUnits(allocation.ProductID, allocation.WorkstationID, domain.Units(advance), perUnitCost(advancedCost, domain.Units(advance)), overtimeUsed > 0)
 				continue
 			}
 		}
@@ -610,14 +824,7 @@ func (p *roundPhase) resolveProduction(action *domain.ActionSubmission) {
 			CurrentStationID: allocation.WorkstationID,
 		})
 		if route.Finished {
-			addFinishedInventory(&p.state.Plant.FinishedInventory, allocation.ProductID, domain.Units(advance), perUnitCost(advancedCost, domain.Units(advance)))
-			p.stats.producedUnits += domain.Units(advance)
-			p.appendEvent(domain.EventFinishedGoodsProduced, domain.ActorPlantSystem, fmt.Sprintf("Finished %d %s", advance, allocation.ProductID), map[string]any{
-				"product_id":     string(allocation.ProductID),
-				"quantity":       int(advance),
-				"workstation_id": string(allocation.WorkstationID),
-				"inventory_cost": int(advancedCost),
-			})
+			p.completeFinishedUnits(allocation.ProductID, allocation.WorkstationID, domain.Units(advance), perUnitCost(advancedCost, domain.Units(advance)), overtimeUsed > 0)
 			continue
 		}
 
@@ -682,6 +889,7 @@ func (p *roundPhase) resolveSales(action *domain.ActionSubmission) {
 		onHand := finishedQuantity(p.state.Plant.FinishedInventory, entry.ProductID)
 		shipped := minUnits(entry.Quantity, onHand)
 		if shipped > 0 {
+			unitCost := finishedUnitCost(p.state.Plant.FinishedInventory, entry.ProductID)
 			takeFinishedInventory(&p.state.Plant.FinishedInventory, entry.ProductID, shipped)
 			entry.Quantity -= shipped
 
@@ -700,6 +908,7 @@ func (p *roundPhase) resolveSales(action *domain.ActionSubmission) {
 				"quantity":    int(shipped),
 				"unit_price":  int(unitPrice),
 			})
+			p.scheduleCustomerReturns(entry.CustomerID, entry.ProductID, shipped, unitCost)
 		}
 
 		if entry.Quantity > 0 {
@@ -791,13 +1000,18 @@ func (p *roundPhase) computeMetrics() domain.PlantMetrics {
 		inventoryValue += inventoryCost(item.OnHandQty, item.UnitCost)
 	}
 
+	inspectionHoldUnits := domain.Units(0)
+	for _, item := range p.state.Plant.InspectionHolds {
+		inspectionHoldUnits += item.Quantity
+		inventoryValue += inventoryCost(item.Quantity, item.UnitCost)
+	}
+
 	capacityLossUnits := domain.Units(0)
 	for _, workstation := range p.state.Plant.Workstations {
 		capacityLossUnits += domain.Units(workstation.StressCapacityLoss)
 	}
 
 	operatingExpense := p.stats.procurementSpend + p.stats.productionSpend + p.stats.payrollExpense + p.stats.holdingCost + p.stats.debtServiceCost
-	operatingExpense += p.stats.laborCost + p.stats.overtimeCost
 	netCashChange := p.state.Plant.Cash - p.beginningCash
 	demandUnits := p.stats.shippedUnits + backlogUnits + p.stats.lostSalesUnits
 	onTime := domain.Percentage(100)
@@ -826,10 +1040,14 @@ func (p *roundPhase) computeMetrics() domain.PlantMetrics {
 		LostSalesUnits:        p.stats.lostSalesUnits,
 		PartsOnHandUnits:      partsUnits,
 		FinishedGoodsUnits:    finishedUnits,
+		InspectionHoldUnits:   inspectionHoldUnits,
 		ProductionOutputUnits: p.stats.producedUnits,
 		CapacityLossUnits:     capacityLossUnits,
 		IdleLaborUnits:        p.stats.idleLaborUnits,
 		OvertimeUnits:         p.stats.overtimeUnits,
+		ScrapUnits:            p.stats.scrapUnits,
+		ReworkUnits:           p.stats.reworkUnits,
+		CustomerReturnUnits:   p.stats.customerReturnUnits,
 		SupplierReliability:   averageSupplierReliability(p.state.Suppliers),
 	}
 }
@@ -855,15 +1073,23 @@ func (p *roundPhase) applyLaborCosts() (domain.Money, domain.Money) {
 
 	p.stats.idleLaborUnits = idleLabor
 	total := laborCost + overtimeCost
+	p.stats.payrollExpense = total
 	if total > 0 {
-		p.applyCashDelta(-total)
-		p.appendEvent(domain.EventLaborCostApplied, domain.ActorPlantSystem, "Applied labor and overtime costs", map[string]any{
+		payload := map[string]any{
 			"labor_cost":       int(laborCost),
 			"overtime_cost":    int(overtimeCost),
+			"payroll_expense":  int(total),
 			"idle_labor_units": int(idleLabor),
-			"cash":             int(p.state.Plant.Cash),
-			"debt":             int(p.state.Plant.Debt),
-		})
+		}
+		if dueRound, paidImmediately := p.schedulePayroll(total, fmt.Sprintf("payroll-r%d", p.currentRound)); paidImmediately {
+			payload["cash_applied"] = true
+			payload["cash"] = int(p.state.Plant.Cash)
+			payload["debt"] = int(p.state.Plant.Debt)
+		} else {
+			payload["cash_applied"] = false
+			payload["due_round"] = int(dueRound)
+		}
+		p.appendEvent(domain.EventLaborCostApplied, domain.ActorPlantSystem, "Applied labor and overtime costs", payload)
 	}
 
 	return laborCost, overtimeCost
@@ -977,17 +1203,24 @@ func (p *roundPhase) payPayablesDue() {
 	disbursed := sumCommitments(due)
 	for _, item := range due {
 		p.applyCashDelta(-item.Amount)
-		p.appendEvent(domain.EventPayablePaid, domain.ActorPlantSystem, "Paid supplier payable", map[string]any{
+		eventType := domain.EventPayablePaid
+		summary := "Paid supplier payable"
+		if item.Kind == domain.CashCommitmentPayroll {
+			eventType = domain.EventPayrollPaid
+			summary = "Paid payroll commitment"
+		}
+		p.appendEvent(eventType, domain.ActorPlantSystem, summary, map[string]any{
 			"commitment_id": item.CommitmentID,
 			"amount":        int(item.Amount),
 			"due_round":     int(item.DueRound),
+			"kind":          string(item.Kind),
 			"cash":          int(p.state.Plant.Cash),
 			"debt":          int(p.state.Plant.Debt),
 		})
 	}
 	if disbursed > 0 {
 		p.stats.cashDisbursements += disbursed
-		p.appendEvent(domain.EventCashChanged, domain.ActorPlantSystem, "Supplier payments applied", map[string]any{
+		p.appendEvent(domain.EventCashChanged, domain.ActorPlantSystem, "Committed disbursements applied", map[string]any{
 			"delta": -int(disbursed),
 			"cash":  int(p.state.Plant.Cash),
 			"debt":  int(p.state.Plant.Debt),
@@ -1066,6 +1299,45 @@ func (p *roundPhase) schedulePayable(amount domain.Money, referenceID string) {
 		"due_round":     int(item.DueRound),
 		"reference_id":  item.ReferenceID,
 	})
+}
+
+func (p *roundPhase) schedulePayroll(amount domain.Money, referenceID string) (domain.RoundNumber, bool) {
+	if amount <= 0 {
+		return 0, false
+	}
+	if p.payrollDelayRounds == 0 {
+		p.applyCashDelta(-amount)
+		p.stats.cashDisbursements += amount
+		p.appendEvent(domain.EventPayrollPaid, domain.ActorPlantSystem, "Paid current-round payroll", map[string]any{
+			"amount":       int(amount),
+			"reference_id": referenceID,
+			"cash":         int(p.state.Plant.Cash),
+			"debt":         int(p.state.Plant.Debt),
+		})
+		p.appendEvent(domain.EventCashChanged, domain.ActorPlantSystem, "Payroll cash applied", map[string]any{
+			"delta": -int(amount),
+			"cash":  int(p.state.Plant.Cash),
+			"debt":  int(p.state.Plant.Debt),
+		})
+		return p.currentRound, true
+	}
+
+	item := domain.CashCommitment{
+		CommitmentID: fmt.Sprintf("payroll-r%d-%d", p.currentRound, len(p.state.Plant.Payables)+1),
+		Kind:         domain.CashCommitmentPayroll,
+		Amount:       amount,
+		DueRound:     p.currentRound + domain.RoundNumber(p.payrollDelayRounds),
+		CreatedRound: p.currentRound,
+		ReferenceID:  referenceID,
+	}
+	p.state.Plant.Payables = append(p.state.Plant.Payables, item)
+	p.appendEvent(domain.EventPayrollScheduled, domain.ActorPlantSystem, "Scheduled payroll commitment", map[string]any{
+		"commitment_id": item.CommitmentID,
+		"amount":        int(item.Amount),
+		"due_round":     int(item.DueRound),
+		"reference_id":  item.ReferenceID,
+	})
+	return item.DueRound, false
 }
 
 func (p *roundPhase) syncCustomerBacklog(backlog []domain.BacklogEntry) {
@@ -1601,10 +1873,43 @@ func addFinishedInventory(items *[]domain.FinishedInventory, productID domain.Pr
 	*items = append(*items, domain.FinishedInventory{ProductID: productID, OnHandQty: quantity, UnitCost: unitCost})
 }
 
+func addInspectionHoldInventory(items *[]domain.InspectionHoldInventory, productID domain.ProductID, quantity domain.Units, unitCost domain.Money, holdRound, releaseRound domain.RoundNumber, reason string) {
+	if quantity <= 0 {
+		return
+	}
+
+	for index := range *items {
+		if (*items)[index].ProductID == productID && (*items)[index].ReleaseRound == releaseRound && (*items)[index].Reason == reason {
+			(*items)[index].Quantity += quantity
+			if (*items)[index].UnitCost <= 0 {
+				(*items)[index].UnitCost = unitCost
+			}
+			return
+		}
+	}
+	*items = append(*items, domain.InspectionHoldInventory{
+		ProductID:    productID,
+		Quantity:     quantity,
+		UnitCost:     unitCost,
+		HoldRound:    holdRound,
+		ReleaseRound: releaseRound,
+		Reason:       reason,
+	})
+}
+
 func finishedQuantity(items []domain.FinishedInventory, productID domain.ProductID) domain.Units {
 	for _, item := range items {
 		if item.ProductID == productID {
 			return item.OnHandQty
+		}
+	}
+	return 0
+}
+
+func finishedUnitCost(items []domain.FinishedInventory, productID domain.ProductID) domain.Money {
+	for _, item := range items {
+		if item.ProductID == productID {
+			return item.UnitCost
 		}
 	}
 	return 0
@@ -1934,6 +2239,16 @@ func defaultProductionCost(hook ProductionCostHook) ProductionCostHook {
 	}
 }
 
+func defaultQualityProfile(hook QualityProfileHook) QualityProfileHook {
+	if hook != nil {
+		return hook
+	}
+
+	return func(_ QualityProfileContext) QualityProfile {
+		return QualityProfile{}
+	}
+}
+
 func spendForQuantity(quantity domain.Units, unitCost domain.Money) domain.Money {
 	return domain.Money(quantity) * unitCost
 }
@@ -1961,6 +2276,80 @@ func carryingCost(amount domain.Money) domain.Money {
 		return 0
 	}
 	return max(1, (amount+9)/10)
+}
+
+func normalizedQualityProfile(profile QualityProfile) QualityProfile {
+	profile.ScrapRatePct = clampPct(profile.ScrapRatePct)
+	profile.ReworkRatePct = clampPct(profile.ReworkRatePct)
+	profile.InspectionHoldRatePct = clampPct(profile.InspectionHoldRatePct)
+	profile.CustomerReturnRatePct = clampPct(profile.CustomerReturnRatePct)
+	if total := profile.ScrapRatePct + profile.ReworkRatePct + profile.InspectionHoldRatePct; total > 100 {
+		profile.InspectionHoldRatePct = max(0, profile.InspectionHoldRatePct-(total-100))
+	}
+	if profile.InspectionHoldRounds < 0 {
+		profile.InspectionHoldRounds = 0
+	}
+	if profile.ReturnDelayRounds < 0 {
+		profile.ReturnDelayRounds = 0
+	}
+	return profile
+}
+
+func resolveFinishedQuality(quantity domain.Units, profile QualityProfile, random ports.RandomSource) (domain.Units, domain.Units, domain.Units) {
+	scrap := domain.Units(0)
+	rework := domain.Units(0)
+	hold := domain.Units(0)
+	for unit := domain.Units(0); unit < quantity; unit++ {
+		roll := qualityRoll(random)
+		switch {
+		case roll < profile.ScrapRatePct:
+			scrap++
+		case roll < profile.ScrapRatePct+profile.ReworkRatePct:
+			rework++
+		case roll < profile.ScrapRatePct+profile.ReworkRatePct+profile.InspectionHoldRatePct:
+			hold++
+		}
+	}
+	if random == nil {
+		scrap = countByPct(quantity, profile.ScrapRatePct)
+		rework = countByPct(max(quantity-scrap, 0), profile.ReworkRatePct)
+		hold = countByPct(max(quantity-scrap-rework, 0), profile.InspectionHoldRatePct)
+	}
+	return scrap, rework, hold
+}
+
+func resolveReturnQuantity(quantity domain.Units, pct int, random ports.RandomSource) domain.Units {
+	if pct <= 0 || quantity <= 0 {
+		return 0
+	}
+	if random == nil {
+		return countByPct(quantity, pct)
+	}
+	returned := domain.Units(0)
+	for unit := domain.Units(0); unit < quantity; unit++ {
+		if qualityRoll(random) < pct {
+			returned++
+		}
+	}
+	return returned
+}
+
+func qualityRoll(random ports.RandomSource) int {
+	if random == nil {
+		return 100
+	}
+	return random.IntN(100)
+}
+
+func countByPct(quantity domain.Units, pct int) domain.Units {
+	if quantity <= 0 || pct <= 0 {
+		return 0
+	}
+	return domain.Units((int(quantity) * pct) / 100)
+}
+
+func clampPct(pct int) int {
+	return min(100, max(0, pct))
 }
 
 func minCapacity(values ...domain.CapacityUnits) domain.CapacityUnits {

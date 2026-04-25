@@ -829,6 +829,112 @@ func TestResolverSchedulesReceivablesPayablesAndUsesProjectedDebtCapacity(t *tes
 	}
 }
 
+func TestResolverSchedulesPayrollAsAccruedExpenseWhenDelayed(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{
+		PayrollDelayRounds: 1,
+	})
+
+	state := fixtureState()
+	state.Plant.PartsInventory = nil
+	state.Plant.WIPInventory = nil
+	state.Plant.FinishedInventory = nil
+	state.Plant.InTransitSupply = nil
+	state.Plant.Backlog = nil
+	state.Customers = nil
+	state.Plant.Workstations = []domain.WorkstationState{
+		{
+			WorkstationID:            "assembly",
+			DisplayName:              "Assembly",
+			CapacityPerRound:         2,
+			LaborCapacityPerRound:    2,
+			LaborCostPerCapacityUnit: 3,
+		},
+	}
+	actions := fixtureActions()
+	actions[0].Action.Procurement.Orders = nil
+	actions[1].Action.Production.Releases = nil
+	actions[1].Action.Production.CapacityAllocation = nil
+	actions[2].Action.Sales.ProductOffers = nil
+
+	result, err := resolver.ResolveRound(state, actions, seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() error = %v", err)
+	}
+
+	if got := result.Round.Metrics.PayrollExpense; got != 6 {
+		t.Fatalf("PayrollExpense = %d, want 6", got)
+	}
+	if got := result.Round.Metrics.LaborCost; got != 6 {
+		t.Fatalf("LaborCost = %d, want 6", got)
+	}
+	if got := result.Round.Metrics.CashDisbursements; got != 0 {
+		t.Fatalf("CashDisbursements = %d, want 0 before payroll is due", got)
+	}
+	if got := result.NextState.Plant.Cash; got != 10 {
+		t.Fatalf("Plant.Cash = %d, want 10 before delayed payroll payment", got)
+	}
+	if got := len(result.NextState.Plant.Payables); got != 1 {
+		t.Fatalf("Payables len = %d, want 1 payroll commitment", got)
+	}
+	if got := result.NextState.Plant.Payables[0].Kind; got != domain.CashCommitmentPayroll {
+		t.Fatalf("Payables[0].Kind = %q, want payroll", got)
+	}
+	if got := result.NextState.Plant.Payables[0].DueRound; got != 3 {
+		t.Fatalf("Payables[0].DueRound = %d, want 3", got)
+	}
+	if !containsEvent(result.Round.Events, domain.EventPayrollScheduled) {
+		t.Fatalf("Round.Events missing %q: %#v", domain.EventPayrollScheduled, result.Round.Events)
+	}
+}
+
+func TestResolverPaysDuePayrollCommitments(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{})
+
+	state := fixtureState()
+	state.Plant.PartsInventory = nil
+	state.Plant.WIPInventory = nil
+	state.Plant.FinishedInventory = nil
+	state.Plant.InTransitSupply = nil
+	state.Plant.Backlog = nil
+	state.Customers = nil
+	state.Plant.Workstations = []domain.WorkstationState{
+		{WorkstationID: "assembly", DisplayName: "Assembly", CapacityPerRound: 1},
+	}
+	state.Plant.Payables = []domain.CashCommitment{
+		{
+			CommitmentID: "payroll-r1-1",
+			Kind:         domain.CashCommitmentPayroll,
+			Amount:       4,
+			DueRound:     2,
+			CreatedRound: 1,
+			ReferenceID:  "payroll-r1",
+		},
+	}
+	actions := fixtureActions()
+	actions[0].Action.Procurement.Orders = nil
+	actions[1].Action.Production.Releases = nil
+	actions[1].Action.Production.CapacityAllocation = nil
+	actions[2].Action.Sales.ProductOffers = nil
+
+	result, err := resolver.ResolveRound(state, actions, seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() error = %v", err)
+	}
+
+	if got := result.NextState.Plant.Cash; got != 6 {
+		t.Fatalf("Plant.Cash = %d, want 6 after payroll payment", got)
+	}
+	if got := len(result.NextState.Plant.Payables); got != 0 {
+		t.Fatalf("Payables len = %d, want 0 after payroll payment", got)
+	}
+	if got := result.Round.Metrics.CashDisbursements; got != 4 {
+		t.Fatalf("CashDisbursements = %d, want 4", got)
+	}
+	if !containsEvent(result.Round.Events, domain.EventPayrollPaid) {
+		t.Fatalf("Round.Events missing %q: %#v", domain.EventPayrollPaid, result.Round.Events)
+	}
+}
+
 func TestResolverUsesSupplierLeadTimeAndReliabilityTerms(t *testing.T) {
 	resolver := engine.NewResolver(engine.Options{
 		ProcurementTerms: func(ctx engine.ProcurementTermsContext) engine.ProcurementTerms {
@@ -906,6 +1012,162 @@ func TestResolverUsesSupplierLeadTimeAndReliabilityTerms(t *testing.T) {
 	}
 	if got := partQty(fourth.NextState.Plant.PartsInventory, "housing"); got != 6 {
 		t.Fatalf("PartsInventory(housing) = %d, want 6", got)
+	}
+}
+
+func TestResolverScrapsFinishedUnitsOnQualityFailure(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{
+		QualityProfile: func(ctx engine.QualityProfileContext) engine.QualityProfile {
+			if ctx.Phase == engine.QualityPhaseProductionFinal {
+				return engine.QualityProfile{ScrapRatePct: 100}
+			}
+			return engine.QualityProfile{}
+		},
+	})
+
+	state := qualityFixtureState()
+	actions := qualityFixtureActions()
+
+	result, err := resolver.ResolveRound(state, actions, seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() error = %v", err)
+	}
+
+	if got := finishedQty(result.NextState.Plant.FinishedInventory, "widget"); got != 0 {
+		t.Fatalf("FinishedInventory(widget) = %d, want 0", got)
+	}
+	if got := result.Round.Metrics.ScrapUnits; got != 1 {
+		t.Fatalf("ScrapUnits = %d, want 1", got)
+	}
+	if !containsEvent(result.Round.Events, domain.EventQualityScrapped) {
+		t.Fatalf("Round.Events missing %q: %#v", domain.EventQualityScrapped, result.Round.Events)
+	}
+}
+
+func TestResolverRoutesFinishedUnitsToRework(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{
+		QualityProfile: func(ctx engine.QualityProfileContext) engine.QualityProfile {
+			if ctx.Phase == engine.QualityPhaseProductionFinal {
+				return engine.QualityProfile{ReworkRatePct: 100}
+			}
+			return engine.QualityProfile{}
+		},
+	})
+
+	state := qualityFixtureState()
+	actions := qualityFixtureActions()
+
+	result, err := resolver.ResolveRound(state, actions, seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() error = %v", err)
+	}
+
+	if got := wipQty(result.NextState.Plant.WIPInventory, "widget", "assembly"); got != 1 {
+		t.Fatalf("WIP(widget/assembly) = %d, want 1 returned for rework", got)
+	}
+	if got := result.Round.Metrics.ReworkUnits; got != 1 {
+		t.Fatalf("ReworkUnits = %d, want 1", got)
+	}
+	if !containsEvent(result.Round.Events, domain.EventQualityReworkCreated) {
+		t.Fatalf("Round.Events missing %q: %#v", domain.EventQualityReworkCreated, result.Round.Events)
+	}
+}
+
+func TestResolverPlacesAndReleasesInspectionHolds(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{
+		QualityProfile: func(ctx engine.QualityProfileContext) engine.QualityProfile {
+			if ctx.Phase == engine.QualityPhaseProductionFinal {
+				return engine.QualityProfile{InspectionHoldRatePct: 100, InspectionHoldRounds: 1}
+			}
+			return engine.QualityProfile{}
+		},
+	})
+
+	state := qualityFixtureState()
+	actions := qualityFixtureActions()
+
+	first, err := resolver.ResolveRound(state, actions, seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() first error = %v", err)
+	}
+	if got := len(first.NextState.Plant.InspectionHolds); got != 1 {
+		t.Fatalf("InspectionHolds len = %d, want 1", got)
+	}
+	if got := first.Round.Metrics.InspectionHoldUnits; got != 1 {
+		t.Fatalf("InspectionHoldUnits = %d, want 1", got)
+	}
+	if !containsEvent(first.Round.Events, domain.EventInspectionHoldPlaced) {
+		t.Fatalf("Round.Events missing %q: %#v", domain.EventInspectionHoldPlaced, first.Round.Events)
+	}
+
+	second, err := resolver.ResolveRound(first.NextState, nil, seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() second error = %v", err)
+	}
+	if got := finishedQty(second.NextState.Plant.FinishedInventory, "widget"); got != 1 {
+		t.Fatalf("FinishedInventory(widget) after release = %d, want 1", got)
+	}
+	if !containsEvent(second.Round.Events, domain.EventInspectionHoldReleased) {
+		t.Fatalf("Round.Events missing %q: %#v", domain.EventInspectionHoldReleased, second.Round.Events)
+	}
+}
+
+func TestResolverSchedulesAndProcessesCustomerReturns(t *testing.T) {
+	resolver := engine.NewResolver(engine.Options{
+		QualityProfile: func(ctx engine.QualityProfileContext) engine.QualityProfile {
+			if ctx.Phase == engine.QualityPhaseShipment {
+				return engine.QualityProfile{CustomerReturnRatePct: 100, ReturnDelayRounds: 1}
+			}
+			return engine.QualityProfile{}
+		},
+	})
+
+	state := fixtureState()
+	state.Plant.PartsInventory = nil
+	state.Plant.WIPInventory = nil
+	state.Plant.FinishedInventory = []domain.FinishedInventory{{ProductID: "widget", OnHandQty: 1, UnitCost: 2}}
+	state.Plant.InTransitSupply = nil
+	state.Plant.Backlog = []domain.BacklogEntry{{CustomerID: "cust-1", ProductID: "widget", Quantity: 1, OriginRound: 1}}
+	for index := range state.Customers {
+		state.Customers[index].Backlog = nil
+	}
+	actions := fixtureActions()
+	actions[0].Action.Procurement.Orders = nil
+	actions[1].Action.Production.Releases = nil
+	actions[1].Action.Production.CapacityAllocation = nil
+
+	first, err := resolver.ResolveRound(state, actions, seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() first error = %v", err)
+	}
+	if got := len(first.NextState.Plant.PendingReturns); got != 1 {
+		t.Fatalf("PendingReturns len = %d, want 1", got)
+	}
+	if !containsEvent(first.Round.Events, domain.EventCustomerReturnScheduled) {
+		t.Fatalf("Round.Events missing %q: %#v", domain.EventCustomerReturnScheduled, first.Round.Events)
+	}
+
+	second, err := resolver.ResolveRound(first.NextState, nil, seeded.New(1))
+	if err != nil {
+		t.Fatalf("ResolveRound() second error = %v", err)
+	}
+	if got := len(second.NextState.Plant.PendingReturns); got != 0 {
+		t.Fatalf("PendingReturns len after receipt = %d, want 0", got)
+	}
+	if got := len(second.NextState.Plant.InspectionHolds); got != 1 {
+		t.Fatalf("InspectionHolds len after return = %d, want 1", got)
+	}
+	if got := backlogQty(second.NextState.Plant.Backlog, "cust-1", "widget"); got != 1 {
+		t.Fatalf("Backlog(cust-1/widget) after return = %d, want 1", got)
+	}
+	if got := second.NextState.Customers[0].Sentiment; got != 4 {
+		t.Fatalf("Customer sentiment after return = %d, want 4", got)
+	}
+	if got := second.Round.Metrics.CustomerReturnUnits; got != 1 {
+		t.Fatalf("CustomerReturnUnits = %d, want 1", got)
+	}
+	if !containsEvent(second.Round.Events, domain.EventCustomerReturnReceived) {
+		t.Fatalf("Round.Events missing %q: %#v", domain.EventCustomerReturnReceived, second.Round.Events)
 	}
 }
 
@@ -1104,6 +1366,33 @@ func wipQty(items []domain.WIPInventory, productID domain.ProductID, workstation
 		}
 	}
 	return 0
+}
+
+func qualityFixtureState() domain.MatchState {
+	state := fixtureState()
+	state.Plant.PartsInventory = nil
+	state.Plant.WIPInventory = []domain.WIPInventory{
+		{ProductID: "widget", WorkstationID: "assembly", Quantity: 1, UnitCost: 2},
+	}
+	state.Plant.FinishedInventory = nil
+	state.Plant.InTransitSupply = nil
+	state.Plant.Backlog = nil
+	state.Customers = nil
+	state.Plant.Workstations = []domain.WorkstationState{
+		{WorkstationID: "assembly", DisplayName: "Assembly", CapacityPerRound: 1, EffectiveCapacityPerRound: 1},
+	}
+	return state
+}
+
+func qualityFixtureActions() []domain.ActionSubmission {
+	actions := fixtureActions()
+	actions[0].Action.Procurement.Orders = nil
+	actions[1].Action.Production.Releases = nil
+	actions[1].Action.Production.CapacityAllocation = []domain.CapacityAllocation{
+		{WorkstationID: "assembly", ProductID: "widget", Capacity: 1},
+	}
+	actions[2].Action.Sales.ProductOffers = nil
+	return actions
 }
 
 func supplierScore(items []domain.SupplierState, supplierID domain.SupplierID) int {
