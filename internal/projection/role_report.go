@@ -22,6 +22,7 @@ func buildCompanywidePerformanceReport(state domain.MatchState) domain.Companywi
 	backlogAtRisk := sumBacklogUnitsAtRisk(state.Plant.Backlog)
 	inventory := inventorySummary(state.Plant)
 	financials := financialSummary(latestRound, ok)
+	produced := producedSummary(latestRound, ok)
 
 	return domain.CompanywidePerformanceReport{
 		Sections: []domain.RoleReportSection{
@@ -87,6 +88,7 @@ func buildCompanywidePerformanceReport(state domain.MatchState) domain.Companywi
 					reportMetric("capacity_loss_units", "Capacity loss", int(state.Metrics.CapacityLossUnits), "units", "Capacity loss indicates congestion or stress penalties."),
 					reportMetric("overtime_units", "Overtime", int(state.Metrics.OvertimeUnits), "units", "Overtime can protect throughput but increases spend and stress."),
 				},
+				ProductUnits: produced,
 				Facts: []string{
 					stressSummaryLine(state.Plant.Workstations),
 					laborBottleneckLine(state.Plant.Workstations),
