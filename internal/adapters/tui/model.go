@@ -350,8 +350,11 @@ func (m Model) renderDepartmentsPane(width, height int) string {
 	if report.BonusReminder != "" {
 		lines = append(lines, "", wrapLine("Bonus: "+report.BonusReminder, paneTextWidth(width)))
 	}
-	for _, detail := range report.Department.DetailLines {
-		lines = append(lines, wrapLine("- "+detail, paneTextWidth(width)))
+	if report.Department.FocusQuestion != "" {
+		lines = append(lines, "", wrapLine("Focus: "+report.Department.FocusQuestion, paneTextWidth(width)))
+	}
+	for _, line := range departmentPaneLines(report.Department) {
+		lines = append(lines, wrapLine("- "+line, paneTextWidth(width)))
 	}
 
 	return renderPane("Departments", lines, width, height, m.focusedPane == paneDepartments)
@@ -414,28 +417,24 @@ func (m Model) renderRoleReportWorkspace(width int) []string {
 
 	lines := []string{
 		fmt.Sprintf("Role report for %s", m.roleTitle()),
-		"View: current briefing, company snapshot, and department metrics",
+		"View: current briefing, typed report sections, and decision prompts",
 	}
 	if report.BonusReminder != "" {
 		lines = append(lines, wrapLine("Bonus reminder: "+report.BonusReminder, paneTextWidth(width)))
 	}
-	company := companywideReportLines(report.Companywide)
-	if len(company) > 0 {
+	if report.Department.FocusQuestion != "" {
+		lines = append(lines, wrapLine("Core decision: "+report.Department.FocusQuestion, paneTextWidth(width)))
+	}
+	if len(report.Companywide.Sections) > 0 {
 		lines = append(lines, "", "Company snapshot")
-		for _, line := range company {
-			lines = append(lines, wrapLine("- "+line, paneTextWidth(width)))
+		for _, section := range report.Companywide.Sections {
+			lines = append(lines, renderReportSectionLines(section, width)...)
 		}
 	}
-	if len(report.Department.KeyMetrics) > 0 {
-		lines = append(lines, "", "Key metrics")
-		for _, metric := range report.Department.KeyMetrics {
-			lines = append(lines, fmt.Sprintf("- %s: %d %s", metric.MetricID, metric.Value, metric.DisplayUnit))
-		}
-	}
-	if len(report.Department.DetailLines) > 0 {
-		lines = append(lines, "", "Role notes")
-		for _, detail := range report.Department.DetailLines {
-			lines = append(lines, wrapLine("- "+detail, paneTextWidth(width)))
+	if len(report.Department.Sections) > 0 {
+		lines = append(lines, "", "Department view")
+		for _, section := range report.Department.Sections {
+			lines = append(lines, renderReportSectionLines(section, width)...)
 		}
 	}
 	if len(lines) == 2 {
@@ -486,10 +485,10 @@ func (m Model) renderStatsPane(width, height int) string {
 		fmt.Sprintf("Debt ceiling: %d", view.ActiveTargets.DebtCeilingTarget),
 	}
 
-	if len(report.Department.KeyMetrics) > 0 {
+	if metrics := departmentStatsMetrics(report.Department); len(metrics) > 0 {
 		lines = append(lines, "", "Role metrics")
-		for _, metric := range report.Department.KeyMetrics {
-			lines = append(lines, fmt.Sprintf("%s: %d %s", metric.MetricID, metric.Value, metric.DisplayUnit))
+		for _, metric := range metrics {
+			lines = append(lines, fmt.Sprintf("%s: %d %s", metric.Label, metric.Metric.Value, metric.Metric.DisplayUnit))
 		}
 	}
 
@@ -1183,47 +1182,114 @@ func timelinePhaseLabel(phase domain.RoundTimelinePhase) string {
 	}
 }
 
-func companywideReportLines(report domain.CompanywidePerformanceReport) []string {
-	lines := []string{
-		fmt.Sprintf("Inventory value: %d", report.CurrentInventoryLevels.TotalValue),
+func lastRoundEntries(rounds []domain.RoundHistoryEntry, limit int) []domain.RoundHistoryEntry {
+	if len(rounds) <= limit {
+		return rounds
+	}
+	return rounds[len(rounds)-limit:]
+}
+
+func departmentPaneLines(report domain.DepartmentPerformanceReport) []string {
+	section := findReportSection(report.Sections, domain.RoleReportSectionExecutiveSummary)
+	if section == nil {
+		return nil
 	}
 
-	lines = append(lines, companyMetricLine("New sales", report.NewSales))
-	lines = append(lines, companyMetricLine("Unshipped sales", report.UnshippedSales))
-	lines = append(lines, companyMetricLine("Sales at risk", report.SalesAtRisk))
-	lines = append(lines, companyUnitMetricLine("Products produced last week", report.ProductsProducedLastWeek))
-	lines = append(lines, fmt.Sprintf("Tracked product financial summaries: %d", len(report.Financials)))
-
+	lines := append([]string{}, section.Summary...)
+	for _, warning := range section.Warnings {
+		lines = append(lines, warning.Headline)
+	}
+	if operating := findReportSection(report.Sections, domain.RoleReportSectionOperatingPicture); operating != nil {
+		lines = append(lines, operating.Facts...)
+	}
 	return lines
 }
 
-func companyMetricLine(label string, items []domain.ProductValueSummary) string {
+func departmentStatsMetrics(report domain.DepartmentPerformanceReport) []domain.RoleReportMetric {
+	if operating := findReportSection(report.Sections, domain.RoleReportSectionOperatingPicture); operating != nil && len(operating.Metrics) > 0 {
+		return operating.Metrics
+	}
+	if executive := findReportSection(report.Sections, domain.RoleReportSectionExecutiveSummary); executive != nil {
+		return executive.Metrics
+	}
+	return nil
+}
+
+func findReportSection(sections []domain.RoleReportSection, kind domain.RoleReportSectionKind) *domain.RoleReportSection {
+	for i := range sections {
+		if sections[i].Kind == kind {
+			return &sections[i]
+		}
+	}
+	return nil
+}
+
+func renderReportSectionLines(section domain.RoleReportSection, width int) []string {
+	lines := []string{section.Title}
+	if section.DecisionFocus != "" {
+		lines = append(lines, wrapLine("Decision support: "+section.DecisionFocus, paneTextWidth(width)))
+	}
+	for _, summary := range section.Summary {
+		lines = append(lines, wrapLine("- "+summary, paneTextWidth(width)))
+	}
+	for _, metric := range section.Metrics {
+		line := fmt.Sprintf("- %s: %d %s", metric.Label, metric.Metric.Value, metric.Metric.DisplayUnit)
+		if metric.Interpretation != "" {
+			line += " | " + metric.Interpretation
+		}
+		lines = append(lines, wrapLine(line, paneTextWidth(width)))
+	}
+	for _, fact := range section.Facts {
+		lines = append(lines, wrapLine("- "+fact, paneTextWidth(width)))
+	}
+	if section.Inventory != nil {
+		lines = append(lines, wrapLine(fmt.Sprintf("- Inventory value: %d", section.Inventory.TotalValue), paneTextWidth(width)))
+		for _, bucket := range section.Inventory.Detail {
+			lines = append(lines, wrapLine(fmt.Sprintf("- %s: %d", bucket.Bucket, bucket.TotalValue), paneTextWidth(width)))
+		}
+	}
+	if len(section.ProductValues) > 0 {
+		lines = append(lines, wrapLine("- "+productValueSummaryLine(section.ProductValues), paneTextWidth(width)))
+	}
+	if len(section.ProductUnits) > 0 {
+		lines = append(lines, wrapLine("- "+productUnitSummaryLine(section.ProductUnits), paneTextWidth(width)))
+	}
+	if len(section.Financials) > 0 {
+		lines = append(lines, wrapLine(fmt.Sprintf("- Tracked product financial summaries: %d", len(section.Financials)), paneTextWidth(width)))
+	}
+	for _, warning := range section.Warnings {
+		lines = append(lines, wrapLine("- Warning: "+warning.Headline, paneTextWidth(width)))
+		lines = append(lines, wrapLine("  "+warning.Detail, paneTextWidth(width)))
+	}
+	for _, tradeoff := range section.Tradeoffs {
+		lines = append(lines, wrapLine("- Tradeoff: "+tradeoff.Focus+" | "+tradeoff.Tension, paneTextWidth(width)))
+		if tradeoff.Guidance != "" {
+			lines = append(lines, wrapLine("  "+tradeoff.Guidance, paneTextWidth(width)))
+		}
+	}
+	for _, prompt := range section.Prompts {
+		lines = append(lines, wrapLine("- Prompt: "+prompt.Question, paneTextWidth(width)))
+		if prompt.WhyItMatters != "" {
+			lines = append(lines, wrapLine("  "+prompt.WhyItMatters, paneTextWidth(width)))
+		}
+	}
+	return append(lines, "")
+}
+
+func productValueSummaryLine(items []domain.ProductValueSummary) string {
 	var units domain.Units
 	var totalValue domain.Money
 	for _, item := range items {
 		units += item.Count
 		totalValue += item.TotalValue
 	}
-	if len(items) == 0 {
-		return label + ": none recorded"
-	}
-	return fmt.Sprintf("%s: %d units across %d products worth %d", label, units, len(items), totalValue)
+	return fmt.Sprintf("Product value summary: %d units across %d products worth %d", units, len(items), totalValue)
 }
 
-func companyUnitMetricLine(label string, items []domain.ProductUnitSummary) string {
+func productUnitSummaryLine(items []domain.ProductUnitSummary) string {
 	var units domain.Units
 	for _, item := range items {
 		units += item.Count
 	}
-	if len(items) == 0 {
-		return label + ": none recorded"
-	}
-	return fmt.Sprintf("%s: %d units across %d products", label, units, len(items))
-}
-
-func lastRoundEntries(rounds []domain.RoundHistoryEntry, limit int) []domain.RoundHistoryEntry {
-	if len(rounds) <= limit {
-		return rounds
-	}
-	return rounds[len(rounds)-limit:]
+	return fmt.Sprintf("Product unit summary: %d units across %d products", units, len(items))
 }
