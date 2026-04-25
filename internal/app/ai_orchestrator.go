@@ -114,7 +114,8 @@ func (o AIOrchestrator) Decide(ctx context.Context, request ports.AIDecisionRequ
 		}
 
 		response, toolCall, validationErrors, parseErr := parseAndValidateDecision(result.RawResponse, request)
-		valid := parseErr == nil && toolCall == nil && len(validationErrors) == 0
+		isToolCall := parseErr == nil && toolCall != nil
+		valid := parseErr == nil && !isToolCall && len(validationErrors) == 0
 
 		o.appendDebugRecord(ports.AICallRecord{
 			RoleID:       request.RoleID,
@@ -125,6 +126,7 @@ func (o AIOrchestrator) Decide(ctx context.Context, request ports.AIDecisionRequ
 			SystemPrompt: providerRequest.SystemPrompt,
 			UserPrompt:   providerRequest.UserPrompt,
 			RawResponse:  result.RawResponse,
+			IsToolCall:   isToolCall,
 			Valid:         valid,
 			ErrorMessage: debugErrorMessage(parseErr, validationErrors),
 		})
@@ -140,6 +142,7 @@ func (o AIOrchestrator) Decide(ctx context.Context, request ports.AIDecisionRequ
 						validationErrors = []ports.ValidationError{{Path: "tool_call", Message: toolErr.Error()}}
 					} else {
 						request.ToolResults = append(request.ToolResults, toolResult)
+						request.PriorAIResponse = result.RawResponse
 						retryContext = nil
 						audit.ValidationErrors = nil
 						continue
