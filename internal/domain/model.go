@@ -76,7 +76,9 @@ type PlantState struct {
 	PartsInventory    []PartInventory
 	WIPInventory      []WIPInventory
 	FinishedInventory []FinishedInventory
+	InspectionHolds   []InspectionHoldInventory
 	InTransitSupply   []SupplyLot
+	PendingReturns    []CustomerReturnCommitment
 	Receivables       []CashCommitment
 	Payables          []CashCommitment
 	Workstations      []WorkstationState
@@ -100,6 +102,25 @@ type FinishedInventory struct {
 	ProductID ProductID
 	OnHandQty Units
 	UnitCost  Money
+}
+
+type InspectionHoldInventory struct {
+	ProductID    ProductID
+	Quantity     Units
+	UnitCost     Money
+	HoldRound    RoundNumber
+	ReleaseRound RoundNumber
+	Reason       string
+}
+
+type CustomerReturnCommitment struct {
+	ReturnID     string
+	CustomerID   CustomerID
+	ProductID    ProductID
+	Quantity     Units
+	UnitCost     Money
+	DueRound     RoundNumber
+	CreatedRound RoundNumber
 }
 
 type SupplyLot struct {
@@ -214,10 +235,14 @@ type PlantMetrics struct {
 	LostSalesUnits        Units
 	PartsOnHandUnits      Units
 	FinishedGoodsUnits    Units
+	InspectionHoldUnits   Units
 	ProductionOutputUnits Units
 	CapacityLossUnits     Units
 	IdleLaborUnits        Units
 	OvertimeUnits         Units
+	ScrapUnits            Units
+	ReworkUnits           Units
+	CustomerReturnUnits   Units
 	SupplierReliability   Percentage
 }
 
@@ -379,31 +404,37 @@ type RoundEvent struct {
 type RoundEventType string
 
 const (
-	EventBudgetActivated        RoundEventType = "budget_activated"
-	EventPurchaseOrderPlaced    RoundEventType = "purchase_order_placed"
-	EventPayableScheduled       RoundEventType = "payable_scheduled"
-	EventPayablePaid            RoundEventType = "payable_paid"
-	EventPayrollScheduled       RoundEventType = "payroll_scheduled"
-	EventSupplyArrived          RoundEventType = "supply_arrived"
-	EventSupplyDelayed          RoundEventType = "supply_delayed"
-	EventSupplierScoreChanged   RoundEventType = "supplier_score_changed"
-	EventProductionReleased     RoundEventType = "production_released"
-	EventWorkstationStressed    RoundEventType = "workstation_stressed"
-	EventWorkAdvanced           RoundEventType = "work_advanced"
-	EventOvertimeApplied        RoundEventType = "overtime_applied"
-	EventLaborCostApplied       RoundEventType = "labor_cost_applied"
-	EventFinishedGoodsProduced  RoundEventType = "finished_goods_produced"
-	EventDemandRealized         RoundEventType = "demand_realized"
-	EventShipmentCompleted      RoundEventType = "shipment_completed"
-	EventReceivableScheduled    RoundEventType = "receivable_scheduled"
-	EventReceivableCollected    RoundEventType = "receivable_collected"
-	EventBacklogCreated         RoundEventType = "backlog_created"
-	EventBacklogExpired         RoundEventType = "backlog_expired"
-	EventCustomerSentimentMoved RoundEventType = "customer_sentiment_moved"
-	EventCashChanged            RoundEventType = "cash_changed"
-	EventPayrollPaid            RoundEventType = "payroll_paid"
-	EventMetricSnapshot         RoundEventType = "metric_snapshot"
-	EventRuleAdjustment         RoundEventType = "rule_adjustment"
+	EventBudgetActivated         RoundEventType = "budget_activated"
+	EventPurchaseOrderPlaced     RoundEventType = "purchase_order_placed"
+	EventPayableScheduled        RoundEventType = "payable_scheduled"
+	EventPayablePaid             RoundEventType = "payable_paid"
+	EventPayrollScheduled        RoundEventType = "payroll_scheduled"
+	EventSupplyArrived           RoundEventType = "supply_arrived"
+	EventSupplyDelayed           RoundEventType = "supply_delayed"
+	EventSupplierScoreChanged    RoundEventType = "supplier_score_changed"
+	EventProductionReleased      RoundEventType = "production_released"
+	EventWorkstationStressed     RoundEventType = "workstation_stressed"
+	EventWorkAdvanced            RoundEventType = "work_advanced"
+	EventOvertimeApplied         RoundEventType = "overtime_applied"
+	EventLaborCostApplied        RoundEventType = "labor_cost_applied"
+	EventFinishedGoodsProduced   RoundEventType = "finished_goods_produced"
+	EventQualityScrapped         RoundEventType = "quality_scrapped"
+	EventQualityReworkCreated    RoundEventType = "quality_rework_created"
+	EventInspectionHoldPlaced    RoundEventType = "inspection_hold_placed"
+	EventInspectionHoldReleased  RoundEventType = "inspection_hold_released"
+	EventDemandRealized          RoundEventType = "demand_realized"
+	EventShipmentCompleted       RoundEventType = "shipment_completed"
+	EventCustomerReturnScheduled RoundEventType = "customer_return_scheduled"
+	EventCustomerReturnReceived  RoundEventType = "customer_return_received"
+	EventReceivableScheduled     RoundEventType = "receivable_scheduled"
+	EventReceivableCollected     RoundEventType = "receivable_collected"
+	EventBacklogCreated          RoundEventType = "backlog_created"
+	EventBacklogExpired          RoundEventType = "backlog_expired"
+	EventCustomerSentimentMoved  RoundEventType = "customer_sentiment_moved"
+	EventCashChanged             RoundEventType = "cash_changed"
+	EventPayrollPaid             RoundEventType = "payroll_paid"
+	EventMetricSnapshot          RoundEventType = "metric_snapshot"
+	EventRuleAdjustment          RoundEventType = "rule_adjustment"
 )
 
 type RoundView struct {
@@ -461,7 +492,9 @@ func (s PlantState) Clone() PlantState {
 		PartsInventory:    slices.Clone(s.PartsInventory),
 		WIPInventory:      slices.Clone(s.WIPInventory),
 		FinishedInventory: slices.Clone(s.FinishedInventory),
+		InspectionHolds:   slices.Clone(s.InspectionHolds),
 		InTransitSupply:   slices.Clone(s.InTransitSupply),
+		PendingReturns:    slices.Clone(s.PendingReturns),
 		Receivables:       slices.Clone(s.Receivables),
 		Payables:          slices.Clone(s.Payables),
 		Workstations:      slices.Clone(s.Workstations),

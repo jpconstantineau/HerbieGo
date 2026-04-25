@@ -76,11 +76,17 @@ type ProductionModel struct {
 }
 
 type Product struct {
-	ID           domain.ProductID
-	DisplayName  string
-	BOM          []domain.BOMLine
-	Route        []domain.WorkstationID
-	BaseUnitCost domain.Money
+	ID                        domain.ProductID
+	DisplayName               string
+	BOM                       []domain.BOMLine
+	Route                     []domain.WorkstationID
+	BaseUnitCost              domain.Money
+	ScrapRatePct              int
+	ReworkRatePct             int
+	InspectionHoldRatePct     int
+	CustomerReturnRatePct     int
+	InspectionHoldRounds      int
+	CustomerReturnDelayRounds int
 }
 
 type Part struct {
@@ -256,6 +262,30 @@ func (d Definition) ResolverOptions() engine.Options {
 				return engine.ProductionCost{CostPerCapacityUnit: 1}
 			}
 			return engine.ProductionCost{CostPerCapacityUnit: workstation.CostPerUnit}
+		},
+		QualityProfile: func(ctx engine.QualityProfileContext) engine.QualityProfile {
+			product, ok := productByID[ctx.ProductID]
+			if !ok {
+				return engine.QualityProfile{}
+			}
+			profile := engine.QualityProfile{
+				ScrapRatePct:          product.ScrapRatePct,
+				ReworkRatePct:         product.ReworkRatePct,
+				InspectionHoldRatePct: product.InspectionHoldRatePct,
+				CustomerReturnRatePct: product.CustomerReturnRatePct,
+				InspectionHoldRounds:  product.InspectionHoldRounds,
+				ReturnDelayRounds:     product.CustomerReturnDelayRounds,
+			}
+			if ctx.Phase == engine.QualityPhaseProductionFinal {
+				if ctx.Stressed {
+					profile.ScrapRatePct += 10
+					profile.ReworkRatePct += 10
+				}
+				if ctx.OvertimeUsed {
+					profile.InspectionHoldRatePct += 10
+				}
+			}
+			return profile
 		},
 		ReceivableDelayRounds: d.FinanceModel.ReceivableDelayRounds,
 		PayableDelayRounds:    d.FinanceModel.PayableDelayRounds,
