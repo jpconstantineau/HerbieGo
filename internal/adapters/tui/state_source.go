@@ -1,11 +1,19 @@
 package tui
 
-import "github.com/jpconstantineau/herbiego/internal/domain"
+import (
+	"github.com/jpconstantineau/herbiego/internal/domain"
+	"github.com/jpconstantineau/herbiego/internal/ports"
+)
 
 // StateSource exposes the current match snapshot plus future updates from the engine/store layer.
 type StateSource interface {
 	Snapshot() domain.MatchState
 	Updates() <-chan domain.MatchState
+}
+
+// DebugSource provides read access to recorded AI provider request/response exchanges.
+type DebugSource interface {
+	Records() []ports.AICallRecord
 }
 
 type staticStateSource struct {

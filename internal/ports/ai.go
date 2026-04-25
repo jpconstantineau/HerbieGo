@@ -137,6 +137,20 @@ type AIPlayerRunner interface {
 	Decide(ctx context.Context, request AIDecisionRequest) (domain.ActionSubmission, AIDecisionAudit, error)
 }
 
+// AICallRecord captures a single AI provider request/response exchange for debug inspection.
+type AICallRecord struct {
+	RoleID       domain.RoleID
+	Round        domain.RoundNumber
+	Attempt      int
+	Provider     string
+	Model        string
+	SystemPrompt string
+	UserPrompt   string
+	RawResponse  string
+	Valid        bool
+	ErrorMessage string
+}
+
 // AIDecisionAudit captures retry and fallback behavior for debugging.
 type AIDecisionAudit struct {
 	AttemptCount     int

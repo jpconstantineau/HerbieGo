@@ -34,7 +34,7 @@ func TestBuildPlayersCreatesMixedHumanAndAIPlayers(t *testing.T) {
 		},
 	}
 
-	players, err := buildPlayersWithHumanSubmit(runtime, func(context.Context, ports.RoundRequest) (domain.ActionSubmission, error) {
+	players, _, err := buildPlayersWithHumanSubmit(runtime, func(context.Context, ports.RoundRequest) (domain.ActionSubmission, error) {
 		return domain.ActionSubmission{}, nil
 	})
 	if err != nil {
@@ -64,7 +64,7 @@ func TestBuildPlayersRejectsUnsupportedAIProvider(t *testing.T) {
 		},
 	}
 
-	players, err := buildPlayersWithHumanSubmit(runtime, func(context.Context, ports.RoundRequest) (domain.ActionSubmission, error) {
+	players, _, err := buildPlayersWithHumanSubmit(runtime, func(context.Context, ports.RoundRequest) (domain.ActionSubmission, error) {
 		return domain.ActionSubmission{}, nil
 	})
 	if err != nil {

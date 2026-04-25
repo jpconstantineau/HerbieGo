@@ -28,6 +28,7 @@ type AIOrchestrator struct {
 	Scenario     scenario.Definition
 	MaxAttempts  int
 	MaxToolCalls int
+	DebugLog     *DebugLog
 }
 
 func NewAIOrchestrator(definition scenario.Definition, client ports.DecisionClient) AIOrchestrator {
@@ -99,11 +100,36 @@ func (o AIOrchestrator) Decide(ctx context.Context, request ports.AIDecisionRequ
 
 		result, err := o.Client.RequestDecision(ctx, providerRequest)
 		if err != nil {
+			o.appendDebugRecord(ports.AICallRecord{
+				RoleID:       request.RoleID,
+				Round:        request.Round,
+				Attempt:      attempt + 1,
+				Provider:     request.Provider,
+				Model:        request.Model,
+				SystemPrompt: providerRequest.SystemPrompt,
+				UserPrompt:   providerRequest.UserPrompt,
+				ErrorMessage: err.Error(),
+			})
 			return domain.ActionSubmission{}, audit, fmt.Errorf("app: ai decision runner: request decision: %w", err)
 		}
 
-		response, toolCall, validationErrors, err := parseAndValidateDecision(result.RawResponse, request)
-		if err == nil {
+		response, toolCall, validationErrors, parseErr := parseAndValidateDecision(result.RawResponse, request)
+		valid := parseErr == nil && toolCall == nil && len(validationErrors) == 0
+
+		o.appendDebugRecord(ports.AICallRecord{
+			RoleID:       request.RoleID,
+			Round:        request.Round,
+			Attempt:      attempt + 1,
+			Provider:     request.Provider,
+			Model:        request.Model,
+			SystemPrompt: providerRequest.SystemPrompt,
+			UserPrompt:   providerRequest.UserPrompt,
+			RawResponse:  result.RawResponse,
+			Valid:         valid,
+			ErrorMessage: debugErrorMessage(parseErr, validationErrors),
+		})
+
+		if parseErr == nil {
 			if toolCall != nil {
 				toolCalls++
 				if toolCalls > max(0, o.MaxToolCalls) && o.MaxToolCalls > 0 {
@@ -136,6 +162,26 @@ func (o AIOrchestrator) Decide(ctx context.Context, request ports.AIDecisionRequ
 	audit.UsedFallback = true
 	audit.FallbackReason = reason
 	return submission, audit, nil
+}
+
+func (o AIOrchestrator) appendDebugRecord(record ports.AICallRecord) {
+if o.DebugLog != nil {
+o.DebugLog.Append(record)
+}
+}
+
+func debugErrorMessage(parseErr error, validationErrors []ports.ValidationError) string {
+if parseErr != nil {
+return parseErr.Error()
+}
+if len(validationErrors) == 0 {
+return ""
+}
+msgs := make([]string, 0, len(validationErrors))
+for _, ve := range validationErrors {
+msgs = append(msgs, ve.Path+": "+ve.Message)
+}
+return strings.Join(msgs, "; ")
 }
 
 func validateDecisionRequest(request ports.AIDecisionRequest) error {
@@ -507,7 +553,7 @@ func roleBriefing(roleID domain.RoleID) ports.RoleBriefing {
 			PublicResponsibilities: []string{"Maximize production output.", "Keep machines and labor utilized.", "Manage work-in-progress through the shop floor.", "Meet production commitments."},
 			HiddenIncentives:       []string{"Keep resources busy and local output high even when WIP or bottlenecks worsen."},
 			DecisionPrinciples:     []string{"Favor plant throughput over local utilization theater.", "Release only work that can move through the route.", "Keep WIP under control at the bottleneck."},
-			AllowedActionSummary:   []string{"Return only production releases and capacity allocations.", "Each release needs product_id and quantity.", "Each capacity allocation needs workstation_id, product_id, and capacity."},
+			AllowedActionSummary:   []string{"Return production releases, capacity allocations, and optional overtime allocations.", "Each release needs product_id and quantity.", "Each capacity allocation needs workstation_id, product_id, and capacity.", "Each overtime allocation needs workstation_id and capacity; omit overtime entirely if not needed."},
 		}
 	case domain.RoleSalesManager:
 		return ports.RoleBriefing{
@@ -546,7 +592,7 @@ func allowedActionSchema(roleID domain.RoleID) ports.AllowedActionSchema {
 			RoleID:         roleID,
 			RequiredAction: "production",
 			JSONSchemaName: "ProductionAction",
-			Rules:          []string{"Populate only action.production.", "releases entries require product_id and quantity.", "capacity_allocation entries require workstation_id, product_id, and capacity.", "quantities and capacity must be non-negative."},
+			Rules:          []string{"Populate only action.production.", "releases entries require product_id and quantity.", "capacity_allocation entries require workstation_id, product_id, and capacity.", "overtime entries are optional; each requires workstation_id and capacity.", "quantities and capacity must be non-negative."},
 		}
 	case domain.RoleSalesManager:
 		return ports.AllowedActionSchema{
