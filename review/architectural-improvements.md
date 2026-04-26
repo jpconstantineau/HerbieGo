@@ -68,8 +68,6 @@ Introduce a `ScenarioRegistry` (or simply a `map[ScenarioID]Definition`) in the 
 `cmd/herbiego/players.go` contains a `switch roleCfg.APISDKType` that constructs concrete AI provider clients:
 ```go
 switch roleCfg.APISDKType {
-case app.APISDKTypeOllama:
-    // ollama.New(...)
 case app.APISDKTypeOpenAI:
     // openai.New(...)
 default:
@@ -79,7 +77,7 @@ default:
 
 ### Problem
 
-- Adding a new AI provider (e.g., Anthropic, Google Gemini, AWS Bedrock) requires editing `cmd/herbiego/players.go`, `app/config.go` (add new `APISDKType` constant), and the adapter test files.
+- Adding a new non-OpenAI-compatible provider (e.g., Anthropic, Google Gemini, AWS Bedrock) requires editing `cmd/herbiego/players.go`, `app/config.go` (add a new `APISDKType` constant), and the adapter test files.
 - The construction logic lives in `cmd`, not in the `adapters/ai` package where it belongs.
 
 ### Recommended Direction

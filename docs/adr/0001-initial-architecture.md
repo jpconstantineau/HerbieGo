@@ -182,7 +182,7 @@ Own concrete infrastructure:
 - `internal/adapters/tui`: Bubble Tea models, key handling, render layout
 - `internal/adapters/persistence/sqlite`: repositories and schema mapping
 - `internal/adapters/ai/openrouter`: OpenRouter client implementation
-- `internal/adapters/ai/ollama`: Ollama client implementation
+- `internal/adapters/ai/openai`: OpenAI-compatible client implementation used for OpenRouter, Ollama, and similar providers
 - `internal/adapters/player/human`: human input bridge
 - `internal/adapters/player/llm`: AI player action collection via prompt/response flow
 - `internal/adapters/random/seeded`: seeded PRNG implementation
@@ -338,7 +338,7 @@ Examples:
 - adding a new `CustomerSentimentMoved` field to a canonical event payload: `internal/domain`
 - adding a "supplier disruption" scenario pack: `internal/scenario`
 - adding a "finance dashboard" sidebar model: `internal/projection`
-- adding an Ollama streaming client: `internal/adapters/ai/ollama`
+- adding provider-specific streaming support on top of the OpenAI-compatible adapter layer
 - adding a "resume saved match" use case: `internal/app`
 
 ## Consequences

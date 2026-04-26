@@ -37,8 +37,8 @@ roles:
 models:
   - provider_name: ollama-localhost
     model_name: llama3.2:3b
-    url: http://localhost:11434/
-    api_sdk_type: ollama
+    url: http://localhost:11434/v1/
+    api_sdk_type: openai
     api_key: ""
   - provider_name: openrouter
     model_name: openai/gpt-5-mini
@@ -75,7 +75,7 @@ models:
 	if cfg.Roles[domain.RoleProcurementManager].Kind != PlayerKindAI {
 		t.Fatalf("procurement kind = %q, want %q", cfg.Roles[domain.RoleProcurementManager].Kind, PlayerKindAI)
 	}
-	if cfg.Roles[domain.RoleProcurementManager].URL != "http://localhost:11434/" {
+	if cfg.Roles[domain.RoleProcurementManager].URL != "http://localhost:11434/v1/" {
 		t.Fatalf("procurement url = %q, want localhost Ollama endpoint", cfg.Roles[domain.RoleProcurementManager].URL)
 	}
 	if cfg.Roles[domain.RoleSalesManager].APISDKType != APISDKTypeOpenAI {
@@ -105,8 +105,8 @@ roles:
 models:
   - provider_name: ollama-localhost
     model_name: llama3.2:3b
-    url: http://localhost:11434/
-    api_sdk_type: ollama
+    url: http://localhost:11434/v1/
+    api_sdk_type: openai
     api_key: ""
   - provider_name: openrouter
     model_name: openai/gpt-5-mini
@@ -175,13 +175,13 @@ func TestLoadLLMCatalogRejectsDuplicateProviderModelPairs(t *testing.T) {
 models:
   - provider_name: ollama-localhost
     model_name: gemma4:e4b
-    url: http://localhost:11434/
-    api_sdk_type: ollama
+    url: http://localhost:11434/v1/
+    api_sdk_type: openai
     api_key: ""
   - provider_name: ollama-localhost
     model_name: llama3.2:3b
-    url: https://ollama.com/
-    api_sdk_type: ollama
+    url: https://ollama.com/api/v1/
+    api_sdk_type: openai
     api_key: ""
 `)
 
@@ -203,7 +203,7 @@ func TestNewRuntimeRejectsRolesMissingCatalogEntries(t *testing.T) {
 		},
 		LLMCatalog: LLMCatalog{
 			Entries: []LLMCatalogEntry{
-				{Provider: "ollama-localhost", Model: "gemma4:e4b", URL: "http://localhost:11434/", APISDKType: APISDKTypeOllama},
+				{Provider: "ollama-localhost", Model: "gemma4:e4b", URL: "http://localhost:11434/v1/", APISDKType: APISDKTypeOpenAI},
 			},
 		},
 		RoleConfigs: []RoleConfigFile{

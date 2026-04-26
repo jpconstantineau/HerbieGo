@@ -14,7 +14,7 @@ func TestNewRuntimeSeedsDefaultStarterMatch(t *testing.T) {
 		},
 		LLMCatalog: LLMCatalog{
 			Entries: []LLMCatalogEntry{
-				{Provider: "ollama-localhost", Model: "gemma4:e4b", URL: "http://localhost:11434/", APISDKType: APISDKTypeOllama},
+				{Provider: "ollama-localhost", Model: "gemma4:e4b", URL: "http://localhost:11434/v1/", APISDKType: APISDKTypeOpenAI},
 				{Provider: "openrouter", Model: "openai/gpt-5-mini", URL: "https://openrouter.ai/api/v1/", APISDKType: APISDKTypeOpenAI},
 			},
 		},

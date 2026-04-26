@@ -92,7 +92,6 @@ type BootstrapOptions struct {
 type APISDKType string
 
 const (
-	APISDKTypeOllama APISDKType = "ollama"
 	APISDKTypeOpenAI APISDKType = "openai"
 )
 
@@ -370,11 +369,11 @@ func (c LLMCatalog) Validate() error {
 			errs = append(errs, fmt.Errorf("llm catalog entry %q/%q url must not be empty", entry.Provider, entry.Model))
 		}
 		switch entry.APISDKType {
-		case APISDKTypeOllama, APISDKTypeOpenAI:
+		case APISDKTypeOpenAI:
 		case "":
 			errs = append(errs, fmt.Errorf("llm catalog entry %q/%q api_sdk_type must not be empty", entry.Provider, entry.Model))
 		default:
-			errs = append(errs, fmt.Errorf("llm catalog entry %q/%q api_sdk_type must be %q or %q", entry.Provider, entry.Model, APISDKTypeOllama, APISDKTypeOpenAI))
+			errs = append(errs, fmt.Errorf("llm catalog entry %q/%q api_sdk_type must be %q", entry.Provider, entry.Model, APISDKTypeOpenAI))
 		}
 		if seen[key] {
 			errs = append(errs, fmt.Errorf("llm catalog provider_name %q must be unique", entry.Provider))

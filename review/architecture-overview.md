@@ -191,8 +191,7 @@ Infrastructure adapters. Each sub-package implements one or more port interfaces
 #### `adapters/ai`
 
 - `RoutingClient` — implements `ports.DecisionClient`; dispatches to the correct concrete provider client by normalized provider name
-- `adapters/ai/openai` — OpenAI-compatible `/chat/completions` client; supports API key and configurable base URL (works for OpenRouter, any OpenAI-compatible endpoint)
-- `adapters/ai/ollama` — Ollama `/api/generate` client
+- `adapters/ai/openai` — OpenAI-compatible `/chat/completions` client; supports API key and configurable base URL (works for OpenRouter, Ollama, and other OpenAI-compatible endpoints)
 - `adapters/ai/openrouter` — placeholder package (`doc.go` only; OpenRouter is reached via the OpenAI adapter)
 
 #### `adapters/player`
@@ -223,7 +222,7 @@ Implements `ports.RandomSource` using a deterministic PRNG seeded from `Config.R
 The **entry point and wiring layer**.
 
 - `main.go` — parses CLI flags, calls `app.Bootstrap`, builds players, creates `MatchRunner`, starts TUI program, and coordinates goroutine lifecycle
-- `players.go` — constructs `ports.Player` implementations per role: `human.Player` for human roles, `llm.Player` wrapping `AIOrchestrator.SubmitRound` for AI roles; builds concrete `DecisionClient` instances per SDK type
+- `players.go` — constructs `ports.Player` implementations per role: `human.Player` for human roles, `llm.Player` wrapping `AIOrchestrator.SubmitRound` for AI roles; builds concrete `DecisionClient` instances for configured OpenAI-compatible providers
 - `live_gameplay_controller.go` — the bidirectional bridge between the game loop goroutine and the TUI goroutine: implements `StateSource` (for TUI subscription), exposes `Publish` (for `MatchRunner.OnState`), and routes human action submissions through a channel
 
 ---
@@ -324,7 +323,7 @@ Two YAML files:
 - `roles[]` — list of `{role_id, provider, model}` entries
 
 **`llm.yaml`** — LLM catalog (connection metadata):
-- `models[]` — list of `{provider_name, model_name, url, api_sdk_type, api_key}` entries
+- `models[]` — list of `{provider_name, model_name, url, api_sdk_type, api_key}` entries, where `url` includes the provider-specific OpenAI-compatible base path
 
 Config normalization joins the role list with catalog entries, then overrides the `human_players` count of roles to `PlayerKindHuman` in `preferredHumanRoleOrder` order.
 

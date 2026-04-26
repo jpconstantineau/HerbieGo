@@ -1,13 +1,13 @@
 models:
   - provider_name: ollama-localhost
     model_name: gemma4:e4b
-    url: http://localhost:11434/
-    api_sdk_type: ollama
+    url: http://localhost:11434/v1/
+    api_sdk_type: openai
     api_key: ""
   - provider_name: ollama-cloud
     model_name: gemma4:e4b
-    url: https://ollama.com/api/
-    api_sdk_type: ollama
+    url: https://ollama.com/api/v1/
+    api_sdk_type: openai
     api_key: ""
   - provider_name: openrouter
     model_name: openai/gpt-5-mini
