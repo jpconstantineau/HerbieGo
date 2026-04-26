@@ -1,28 +1,29 @@
 package openai
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 
 	"github.com/jpconstantineau/herbiego/internal/ports"
+	instructorcore "github.com/jxnl/instructor-go/pkg/instructor/core"
+	instructoropenai "github.com/jxnl/instructor-go/pkg/instructor/providers/openai"
+	openaiSDK "github.com/sashabaranov/go-openai"
 )
 
 const defaultBaseURL = "https://api.openai.com/v1/"
 
 type Option func(*Client)
 
-// Client executes provider-neutral decision requests against an
-// OpenAI-compatible `/chat/completions` endpoint.
+// Client executes provider-neutral decision requests against an OpenAI-compatible
+// chat completions endpoint using instructor-go for structured extraction.
 type Client struct {
 	baseURL    *url.URL
 	httpClient *http.Client
 	apiKey     string
+	maxRetries int
 }
 
 func WithBaseURL(rawURL string) Option {
@@ -49,6 +50,14 @@ func WithAPIKey(apiKey string) Option {
 	}
 }
 
+func WithMaxRetries(maxRetries int) Option {
+	return func(client *Client) {
+		if client != nil {
+			client.maxRetries = maxRetries
+		}
+	}
+}
+
 func New(options ...Option) (*Client, error) {
 	baseURL, err := parseBaseURL(defaultBaseURL)
 	if err != nil {
@@ -58,6 +67,7 @@ func New(options ...Option) (*Client, error) {
 	client := &Client{
 		baseURL:    baseURL,
 		httpClient: http.DefaultClient,
+		maxRetries: instructorcore.DefaultMaxRetries,
 	}
 	for _, option := range options {
 		if option != nil {
@@ -75,62 +85,41 @@ func (c *Client) RequestDecision(ctx context.Context, request ports.ProviderDeci
 		return ports.ProviderDecisionResult{}, fmt.Errorf("openai client is not configured")
 	}
 
-	body := chatCompletionsRequest{
-		Model: request.Model,
-		Messages: []chatMessage{
-			{Role: "system", Content: request.SystemPrompt},
-			{Role: "user", Content: request.UserPrompt},
+	cfg := openaiSDK.DefaultConfig(c.apiKey)
+	cfg.BaseURL = strings.TrimSuffix(c.baseURL.String(), "/")
+	cfg.HTTPClient = c.httpClient
+
+	instructorClient := instructoropenai.FromOpenAI(
+		openaiSDK.NewClientWithConfig(cfg),
+		instructorcore.WithMode(instructorcore.ModeJSON),
+		instructorcore.WithMaxRetries(max(0, c.maxRetries)),
+	)
+
+	var envelope ports.AIDecisionEnvelope
+	response, err := instructorClient.CreateChatCompletion(
+		ctx,
+		openaiSDK.ChatCompletionRequest{
+			Model: request.Model,
+			Messages: []openaiSDK.ChatCompletionMessage{
+				{Role: openaiSDK.ChatMessageRoleSystem, Content: request.SystemPrompt},
+				{Role: openaiSDK.ChatMessageRoleUser, Content: request.UserPrompt},
+			},
 		},
-	}
-	if request.RequireJSONOnly {
-		body.ResponseFormat = &responseFormat{Type: "json_object"}
-	}
-
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return ports.ProviderDecisionResult{}, fmt.Errorf("marshal openai request: %w", err)
-	}
-
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpointURL("/chat/completions"), bytes.NewReader(payload))
-	if err != nil {
-		return ports.ProviderDecisionResult{}, fmt.Errorf("build openai request: %w", err)
-	}
-	httpRequest.Header.Set("Content-Type", "application/json")
-	httpRequest.Header.Set("Accept", "application/json")
-	if c.apiKey != "" {
-		httpRequest.Header.Set("Authorization", "Bearer "+c.apiKey)
-	}
-
-	response, err := c.httpClient.Do(httpRequest)
+		&envelope,
+	)
 	if err != nil {
 		return ports.ProviderDecisionResult{}, fmt.Errorf("call openai chat completions API: %w", err)
 	}
-	defer response.Body.Close()
 
-	data, err := io.ReadAll(response.Body)
-	if err != nil {
-		return ports.ProviderDecisionResult{}, fmt.Errorf("read openai response: %w", err)
-	}
-
-	if response.StatusCode != http.StatusOK {
-		return ports.ProviderDecisionResult{}, fmt.Errorf("openai chat completions API returned %s: %s", response.Status, strings.TrimSpace(string(data)))
-	}
-
-	var parsed chatCompletionsResponse
-	if err := json.Unmarshal(data, &parsed); err != nil {
-		return ports.ProviderDecisionResult{}, fmt.Errorf("decode openai response: %w", err)
-	}
-
-	content, err := parsed.firstChoiceContent()
+	content, err := firstChoiceContent(response)
 	if err != nil {
 		return ports.ProviderDecisionResult{}, err
 	}
 
-	return ports.ProviderDecisionResult{RawResponse: content}, nil
-}
-
-func (c *Client) endpointURL(path string) string {
-	return c.baseURL.ResolveReference(&url.URL{Path: path}).String()
+	return ports.ProviderDecisionResult{
+		RawResponse:        content,
+		StructuredResponse: &envelope,
+	}, nil
 }
 
 func parseBaseURL(rawURL string) (*url.URL, error) {
@@ -153,73 +142,14 @@ func parseBaseURL(rawURL string) (*url.URL, error) {
 	return parsed, nil
 }
 
-type chatCompletionsRequest struct {
-	Model          string          `json:"model"`
-	Messages       []chatMessage   `json:"messages"`
-	ResponseFormat *responseFormat `json:"response_format,omitempty"`
-}
-
-type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type responseFormat struct {
-	Type string `json:"type"`
-}
-
-type chatCompletionsResponse struct {
-	Choices []chatCompletionChoice `json:"choices"`
-}
-
-type chatCompletionChoice struct {
-	Message chatCompletionMessage `json:"message"`
-}
-
-type chatCompletionMessage struct {
-	Content json.RawMessage `json:"content"`
-}
-
-func (r chatCompletionsResponse) firstChoiceContent() (string, error) {
-	if len(r.Choices) == 0 {
+func firstChoiceContent(response openaiSDK.ChatCompletionResponse) (string, error) {
+	if len(response.Choices) == 0 {
 		return "", fmt.Errorf("openai response did not include any choices")
 	}
 
-	content, err := decodeContent(r.Choices[0].Message.Content)
-	if err != nil {
-		return "", fmt.Errorf("decode openai response content: %w", err)
-	}
-	if strings.TrimSpace(content) == "" {
+	content := strings.TrimSpace(response.Choices[0].Message.Content)
+	if content == "" {
 		return "", fmt.Errorf("openai response choice content was empty")
 	}
 	return content, nil
-}
-
-func decodeContent(raw json.RawMessage) (string, error) {
-	if len(raw) == 0 {
-		return "", fmt.Errorf("content was missing")
-	}
-
-	var text string
-	if err := json.Unmarshal(raw, &text); err == nil {
-		return text, nil
-	}
-
-	var parts []contentPart
-	if err := json.Unmarshal(raw, &parts); err != nil {
-		return "", err
-	}
-
-	var builder strings.Builder
-	for _, part := range parts {
-		if strings.TrimSpace(part.Text) == "" {
-			continue
-		}
-		builder.WriteString(part.Text)
-	}
-	return builder.String(), nil
-}
-
-type contentPart struct {
-	Text string `json:"text"`
 }

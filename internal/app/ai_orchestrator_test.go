@@ -324,3 +324,47 @@ func TestAIOrchestratorExecutesLookupToolCallsBeforeFinalDecision(t *testing.T) 
 		t.Fatal("records[1].Valid = false, want true for successful final decision")
 	}
 }
+
+func TestAIOrchestratorUsesStructuredProviderResponsesWhenAvailable(t *testing.T) {
+	client := &stubDecisionClient{
+		responses: []ports.ProviderDecisionResult{
+			{
+				RawResponse: `{"contract_version":"herbiego.ai.v1"}`,
+				StructuredResponse: &ports.AIDecisionEnvelope{
+					ContractVersion: "herbiego.ai.v1",
+					MatchID:         "match-17",
+					Round:           2,
+					RoleID:          domain.RoleSalesManager,
+					Action: domain.RoleAction{
+						Sales: &domain.SalesAction{
+							ProductOffers: []domain.ProductOffer{{ProductID: "pump", UnitPrice: 17}},
+						},
+					},
+					Commentary: ports.AICommentary{
+						PublicSummary: "Raise price to protect constrained throughput.",
+						FocusTags:     []string{"throughput", "pricing"},
+					},
+				},
+			},
+		},
+	}
+
+	orchestrator := app.NewAIOrchestrator(scenario.Starter(), client)
+
+	submission, audit, err := orchestrator.Decide(context.Background(), orchestrator.BuildRequest(aiRoundRequest(domain.RoleSalesManager)))
+	if err != nil {
+		t.Fatalf("Decide() error = %v", err)
+	}
+	if audit.AttemptCount != 1 {
+		t.Fatalf("audit.AttemptCount = %d, want 1", audit.AttemptCount)
+	}
+	if submission.Action.Sales == nil {
+		t.Fatal("submission.Action.Sales = nil, want structured sales payload")
+	}
+	if got := submission.Action.Sales.ProductOffers[0].UnitPrice; got != 17 {
+		t.Fatalf("UnitPrice = %d, want 17", got)
+	}
+	if got := submission.Commentary.Body; got != "Raise price to protect constrained throughput." {
+		t.Fatalf("Commentary.Body = %q, want structured commentary", got)
+	}
+}

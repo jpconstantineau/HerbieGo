@@ -113,7 +113,7 @@ func (o AIOrchestrator) Decide(ctx context.Context, request ports.AIDecisionRequ
 			return domain.ActionSubmission{}, audit, fmt.Errorf("app: ai decision runner: request decision: %w", err)
 		}
 
-		response, toolCall, validationErrors, parseErr := parseAndValidateDecision(result.RawResponse, request)
+		response, toolCall, validationErrors, parseErr := parseAndValidateDecision(result, request)
 		isToolCall := parseErr == nil && toolCall != nil
 		valid := parseErr == nil && !isToolCall && len(validationErrors) == 0
 
@@ -127,7 +127,7 @@ func (o AIOrchestrator) Decide(ctx context.Context, request ports.AIDecisionRequ
 			UserPrompt:   providerRequest.UserPrompt,
 			RawResponse:  result.RawResponse,
 			IsToolCall:   isToolCall,
-			Valid:         valid,
+			Valid:        valid,
 			ErrorMessage: debugErrorMessage(parseErr, validationErrors),
 		})
 
@@ -168,23 +168,23 @@ func (o AIOrchestrator) Decide(ctx context.Context, request ports.AIDecisionRequ
 }
 
 func (o AIOrchestrator) appendDebugRecord(record ports.AICallRecord) {
-if o.DebugLog != nil {
-o.DebugLog.Append(record)
-}
+	if o.DebugLog != nil {
+		o.DebugLog.Append(record)
+	}
 }
 
 func debugErrorMessage(parseErr error, validationErrors []ports.ValidationError) string {
-if parseErr != nil {
-return parseErr.Error()
-}
-if len(validationErrors) == 0 {
-return ""
-}
-msgs := make([]string, 0, len(validationErrors))
-for _, ve := range validationErrors {
-msgs = append(msgs, ve.Path+": "+ve.Message)
-}
-return strings.Join(msgs, "; ")
+	if parseErr != nil {
+		return parseErr.Error()
+	}
+	if len(validationErrors) == 0 {
+		return ""
+	}
+	msgs := make([]string, 0, len(validationErrors))
+	for _, ve := range validationErrors {
+		msgs = append(msgs, ve.Path+": "+ve.Message)
+	}
+	return strings.Join(msgs, "; ")
 }
 
 func validateDecisionRequest(request ports.AIDecisionRequest) error {
@@ -214,7 +214,12 @@ func validateDecisionRequest(request ports.AIDecisionRequest) error {
 	return errorsJoin(errs...)
 }
 
-func parseAndValidateDecision(raw string, request ports.AIDecisionRequest) (ports.AIDecisionResponse, *ports.LookupToolCall, []ports.ValidationError, error) {
+func parseAndValidateDecision(result ports.ProviderDecisionResult, request ports.AIDecisionRequest) (ports.AIDecisionResponse, *ports.LookupToolCall, []ports.ValidationError, error) {
+	if result.StructuredResponse != nil {
+		return validateStructuredDecision(*result.StructuredResponse, request)
+	}
+
+	raw := result.RawResponse
 	payload, err := extractJSONObject(raw)
 	if err != nil {
 		validationErrors := []ports.ValidationError{{Path: "$", Message: err.Error()}}
@@ -238,6 +243,24 @@ func parseAndValidateDecision(raw string, request ports.AIDecisionRequest) (port
 		return ports.AIDecisionResponse{}, nil, validationErrors, err
 	}
 
+	validationErrors := validateDecisionResponse(response, request)
+	if len(validationErrors) > 0 {
+		return ports.AIDecisionResponse{}, nil, validationErrors, fmt.Errorf("response failed validation")
+	}
+
+	return response, nil, nil, nil
+}
+
+func validateStructuredDecision(envelope ports.AIDecisionEnvelope, request ports.AIDecisionRequest) (ports.AIDecisionResponse, *ports.LookupToolCall, []ports.ValidationError, error) {
+	if envelope.ToolCall != nil {
+		validationErrors := validateToolCall(*envelope.ToolCall, request.Tools)
+		if len(validationErrors) > 0 {
+			return ports.AIDecisionResponse{}, nil, validationErrors, fmt.Errorf("tool call failed validation")
+		}
+		return ports.AIDecisionResponse{}, envelope.ToolCall, nil, nil
+	}
+
+	response := envelope.DecisionResponse()
 	validationErrors := validateDecisionResponse(response, request)
 	if len(validationErrors) > 0 {
 		return ports.AIDecisionResponse{}, nil, validationErrors, fmt.Errorf("response failed validation")

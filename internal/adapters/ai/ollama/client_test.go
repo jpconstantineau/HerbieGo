@@ -11,17 +11,20 @@ import (
 	"github.com/jpconstantineau/herbiego/internal/ports"
 )
 
-func TestClientRequestsNonStreamingJSONResponse(t *testing.T) {
-	var requestBody generateRequest
+func TestClientRequestsOpenAICompatibleStructuredResponse(t *testing.T) {
+	var requestBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/api/generate" {
-			t.Fatalf("request path = %q, want /api/generate", request.URL.Path)
+		if request.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("request path = %q, want /v1/chat/completions", request.URL.Path)
+		}
+		if got := request.Header.Get("Authorization"); got != "Bearer ollama" {
+			t.Fatalf("authorization header = %q, want Bearer ollama", got)
 		}
 		if err := json.NewDecoder(request.Body).Decode(&requestBody); err != nil {
 			t.Fatalf("Decode() error = %v", err)
 		}
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"response":"{\"contract_version\":\"herbiego.ai.v1\"}"}`))
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"{\"contract_version\":\"herbiego.ai.v1\",\"match_id\":\"match-17\",\"round\":2,\"role_id\":\"production_manager\",\"action\":{\"production\":{\"releases\":[{\"product_id\":\"pump\",\"quantity\":1}],\"capacity_allocation\":[{\"workstation_id\":\"fabrication\",\"product_id\":\"pump\",\"capacity\":1}]}},\"commentary\":{\"public_summary\":\"Release only what fabrication can move.\",\"focus_tags\":[\"throughput\"]}}"}}]}`))
 	}))
 	defer server.Close()
 
@@ -34,32 +37,25 @@ func TestClientRequestsNonStreamingJSONResponse(t *testing.T) {
 	}
 
 	result, err := client.RequestDecision(context.Background(), ports.ProviderDecisionRequest{
-		Model:           "gemma4:e4b",
-		SystemPrompt:    "system",
-		UserPrompt:      "user",
-		RequireJSONOnly: true,
+		Model:        "gemma4:e4b",
+		SystemPrompt: "system",
+		UserPrompt:   "user",
 	})
 	if err != nil {
 		t.Fatalf("RequestDecision() error = %v", err)
 	}
 
-	if requestBody.Model != "gemma4:e4b" {
-		t.Fatalf("request model = %q, want gemma4:e4b", requestBody.Model)
+	if got := requestBody["model"]; got != "gemma4:e4b" {
+		t.Fatalf("request model = %#v, want gemma4:e4b", got)
 	}
-	if requestBody.System != "system" {
-		t.Fatalf("request system = %q, want system", requestBody.System)
+	assertRequestContainsPrompt(t, requestBody, "system")
+	assertRequestContainsPrompt(t, requestBody, "user")
+	assertResponseFormatJSON(t, requestBody)
+	if result.StructuredResponse == nil {
+		t.Fatal("StructuredResponse = nil, want parsed instructor result")
 	}
-	if requestBody.Prompt != "user" {
-		t.Fatalf("request prompt = %q, want user", requestBody.Prompt)
-	}
-	if requestBody.Format != "json" {
-		t.Fatalf("request format = %v, want json", requestBody.Format)
-	}
-	if requestBody.Stream {
-		t.Fatal("request stream = true, want false")
-	}
-	if result.RawResponse != `{"contract_version":"herbiego.ai.v1"}` {
-		t.Fatalf("RawResponse = %q, want returned response text", result.RawResponse)
+	if got := result.StructuredResponse.Commentary.PublicSummary; got != "Release only what fabrication can move." {
+		t.Fatalf("PublicSummary = %q, want parsed commentary", got)
 	}
 }
 
@@ -94,7 +90,7 @@ func TestClientPreservesConfiguredAPIPrefix(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		requestPath = request.URL.Path
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"response":"{\"contract_version\":\"herbiego.ai.v1\"}"}`))
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"{\"contract_version\":\"herbiego.ai.v1\",\"match_id\":\"match-17\",\"round\":2,\"role_id\":\"sales_manager\",\"action\":{\"sales\":{\"product_offers\":[{\"product_id\":\"pump\",\"unit_price\":16}]}},\"commentary\":{\"public_summary\":\"Holding price to protect throughput.\",\"focus_tags\":[\"throughput\"]}}"}}]}`))
 	}))
 	defer server.Close()
 
@@ -111,7 +107,39 @@ func TestClientPreservesConfiguredAPIPrefix(t *testing.T) {
 		t.Fatalf("RequestDecision() error = %v", err)
 	}
 
-	if requestPath != "/api/generate" {
-		t.Fatalf("request path = %q, want /api/generate", requestPath)
+	if requestPath != "/api/v1/chat/completions" {
+		t.Fatalf("request path = %q, want /api/v1/chat/completions", requestPath)
+	}
+}
+
+func assertRequestContainsPrompt(t *testing.T, requestBody map[string]any, prompt string) {
+	t.Helper()
+
+	messages, ok := requestBody["messages"].([]any)
+	if !ok {
+		t.Fatalf("messages = %#v, want array", requestBody["messages"])
+	}
+	for _, raw := range messages {
+		message, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		content, _ := message["content"].(string)
+		if strings.Contains(content, prompt) {
+			return
+		}
+	}
+	t.Fatalf("messages = %#v, want prompt %q", requestBody["messages"], prompt)
+}
+
+func assertResponseFormatJSON(t *testing.T, requestBody map[string]any) {
+	t.Helper()
+
+	format, ok := requestBody["response_format"].(map[string]any)
+	if !ok {
+		t.Fatalf("response_format = %#v, want object", requestBody["response_format"])
+	}
+	if got := format["type"]; got != "json_object" {
+		t.Fatalf("response_format.type = %#v, want json_object", got)
 	}
 }

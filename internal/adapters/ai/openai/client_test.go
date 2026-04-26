@@ -11,8 +11,8 @@ import (
 	"github.com/jpconstantineau/herbiego/internal/ports"
 )
 
-func TestClientRequestsJSONChatCompletion(t *testing.T) {
-	var requestBody chatCompletionsRequest
+func TestClientRequestsStructuredChatCompletion(t *testing.T) {
+	var requestBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/chat/completions" {
 			t.Fatalf("request path = %q, want /chat/completions", request.URL.Path)
@@ -24,7 +24,7 @@ func TestClientRequestsJSONChatCompletion(t *testing.T) {
 			t.Fatalf("Decode() error = %v", err)
 		}
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"{\"contract_version\":\"herbiego.ai.v1\"}"}}]}`))
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"{\"contract_version\":\"herbiego.ai.v1\",\"match_id\":\"match-17\",\"round\":2,\"role_id\":\"sales_manager\",\"action\":{\"sales\":{\"product_offers\":[{\"product_id\":\"pump\",\"unit_price\":16}]}},\"commentary\":{\"public_summary\":\"Holding price to protect throughput.\",\"focus_tags\":[\"throughput\",\"pricing\"]}}"}}]}`))
 	}))
 	defer server.Close()
 
@@ -38,56 +38,28 @@ func TestClientRequestsJSONChatCompletion(t *testing.T) {
 	}
 
 	result, err := client.RequestDecision(context.Background(), ports.ProviderDecisionRequest{
-		Model:           "openai/gpt-5-mini",
-		SystemPrompt:    "system",
-		UserPrompt:      "user",
-		RequireJSONOnly: true,
+		Model:        "openai/gpt-5-mini",
+		SystemPrompt: "system",
+		UserPrompt:   "user",
 	})
 	if err != nil {
 		t.Fatalf("RequestDecision() error = %v", err)
 	}
 
-	if requestBody.Model != "openai/gpt-5-mini" {
-		t.Fatalf("request model = %q, want openai/gpt-5-mini", requestBody.Model)
+	if got := requestBody["model"]; got != "openai/gpt-5-mini" {
+		t.Fatalf("request model = %#v, want openai/gpt-5-mini", got)
 	}
-	if len(requestBody.Messages) != 2 {
-		t.Fatalf("messages len = %d, want 2", len(requestBody.Messages))
+	assertRequestContainsPrompt(t, requestBody, "system")
+	assertRequestContainsPrompt(t, requestBody, "user")
+	assertResponseFormatJSON(t, requestBody)
+	if result.StructuredResponse == nil {
+		t.Fatal("StructuredResponse = nil, want parsed instructor result")
 	}
-	if requestBody.Messages[0].Role != "system" || requestBody.Messages[0].Content != "system" {
-		t.Fatalf("system message = %#v, want system prompt", requestBody.Messages[0])
+	if got := result.StructuredResponse.Commentary.PublicSummary; got != "Holding price to protect throughput." {
+		t.Fatalf("PublicSummary = %q, want parsed commentary", got)
 	}
-	if requestBody.Messages[1].Role != "user" || requestBody.Messages[1].Content != "user" {
-		t.Fatalf("user message = %#v, want user prompt", requestBody.Messages[1])
-	}
-	if requestBody.ResponseFormat == nil || requestBody.ResponseFormat.Type != "json_object" {
-		t.Fatalf("response format = %#v, want json_object", requestBody.ResponseFormat)
-	}
-	if result.RawResponse != `{"contract_version":"herbiego.ai.v1"}` {
-		t.Fatalf("RawResponse = %q, want response body text", result.RawResponse)
-	}
-}
-
-func TestClientJoinsMultipartContentResponses(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":[{"type":"output_text","text":"{\"contract_version\":"},{"type":"output_text","text":"\"herbiego.ai.v1\"}"}]}}]}`))
-	}))
-	defer server.Close()
-
-	client, err := New(
-		WithBaseURL(server.URL),
-		WithHTTPClient(server.Client()),
-	)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	result, err := client.RequestDecision(context.Background(), ports.ProviderDecisionRequest{Model: "gpt-5-mini"})
-	if err != nil {
-		t.Fatalf("RequestDecision() error = %v", err)
-	}
-	if result.RawResponse != `{"contract_version":"herbiego.ai.v1"}` {
-		t.Fatalf("RawResponse = %q, want concatenated multipart content", result.RawResponse)
+	if result.RawResponse == "" {
+		t.Fatal("RawResponse = empty, want original model response")
 	}
 }
 
@@ -114,5 +86,37 @@ func TestClientReturnsHTTPFailures(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "bad api key") {
 		t.Fatalf("RequestDecision() error = %v, want response body", err)
+	}
+}
+
+func assertRequestContainsPrompt(t *testing.T, requestBody map[string]any, prompt string) {
+	t.Helper()
+
+	messages, ok := requestBody["messages"].([]any)
+	if !ok {
+		t.Fatalf("messages = %#v, want array", requestBody["messages"])
+	}
+	for _, raw := range messages {
+		message, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		content, _ := message["content"].(string)
+		if strings.Contains(content, prompt) {
+			return
+		}
+	}
+	t.Fatalf("messages = %#v, want prompt %q", requestBody["messages"], prompt)
+}
+
+func assertResponseFormatJSON(t *testing.T, requestBody map[string]any) {
+	t.Helper()
+
+	format, ok := requestBody["response_format"].(map[string]any)
+	if !ok {
+		t.Fatalf("response_format = %#v, want object", requestBody["response_format"])
+	}
+	if got := format["type"]; got != "json_object" {
+		t.Fatalf("response_format.type = %#v, want json_object", got)
 	}
 }

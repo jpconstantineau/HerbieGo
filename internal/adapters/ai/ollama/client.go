@@ -1,165 +1,112 @@
 package ollama
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 
+	openaiadapter "github.com/jpconstantineau/herbiego/internal/adapters/ai/openai"
 	"github.com/jpconstantineau/herbiego/internal/ports"
 )
 
-const defaultBaseURL = "http://localhost:11434/"
+const (
+	defaultBaseURL = "http://localhost:11434/"
+	defaultAPIKey  = "ollama"
+)
 
 type Option func(*Client)
 
-// Client executes provider-neutral decision requests against the Ollama
-// `/api/generate` endpoint.
+// Client executes provider-neutral decision requests against Ollama's
+// OpenAI-compatible chat completions endpoint.
 type Client struct {
-	baseURL    *url.URL
-	httpClient *http.Client
+	inner *openaiadapter.Client
 }
 
 func WithBaseURL(rawURL string) Option {
 	return func(client *Client) {
-		if client != nil {
-			client.baseURL, _ = parseBaseURL(rawURL)
+		if client != nil && client.inner != nil {
+			_ = applyOption(client.inner, openaiadapter.WithBaseURL(normalizeBaseURL(rawURL)))
 		}
 	}
 }
 
 func WithHTTPClient(httpClient *http.Client) Option {
 	return func(client *Client) {
-		if client != nil && httpClient != nil {
-			client.httpClient = httpClient
+		if client != nil && client.inner != nil && httpClient != nil {
+			_ = applyOption(client.inner, openaiadapter.WithHTTPClient(httpClient))
+		}
+	}
+}
+
+func WithAPIKey(apiKey string) Option {
+	return func(client *Client) {
+		if client != nil && client.inner != nil {
+			trimmed := strings.TrimSpace(apiKey)
+			if trimmed == "" {
+				trimmed = defaultAPIKey
+			}
+			_ = applyOption(client.inner, openaiadapter.WithAPIKey(trimmed))
 		}
 	}
 }
 
 func New(options ...Option) (*Client, error) {
-	baseURL, err := parseBaseURL(defaultBaseURL)
+	inner, err := openaiadapter.New(
+		openaiadapter.WithBaseURL(normalizeBaseURL(defaultBaseURL)),
+		openaiadapter.WithAPIKey(defaultAPIKey),
+	)
 	if err != nil {
 		return nil, err
 	}
 
-	client := &Client{
-		baseURL:    baseURL,
-		httpClient: http.DefaultClient,
-	}
+	client := &Client{inner: inner}
 	for _, option := range options {
 		if option != nil {
 			option(client)
 		}
 	}
-	if client.baseURL == nil {
-		return nil, fmt.Errorf("ollama client base URL is not configured")
+	if client.inner == nil {
+		return nil, fmt.Errorf("ollama client is not configured")
 	}
 	return client, nil
 }
 
 func (c *Client) RequestDecision(ctx context.Context, request ports.ProviderDecisionRequest) (ports.ProviderDecisionResult, error) {
-	if c == nil || c.baseURL == nil {
+	if c == nil || c.inner == nil {
 		return ports.ProviderDecisionResult{}, fmt.Errorf("ollama client is not configured")
 	}
-
-	body := generateRequest{
-		Model:  strings.TrimSpace(request.Model),
-		Prompt: request.UserPrompt,
-		System: request.SystemPrompt,
-		Stream: false,
-	}
-	if request.RequireJSONOnly {
-		body.Format = "json"
-	}
-
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return ports.ProviderDecisionResult{}, fmt.Errorf("marshal ollama request: %w", err)
-	}
-
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpointURL("/api/generate"), bytes.NewReader(payload))
-	if err != nil {
-		return ports.ProviderDecisionResult{}, fmt.Errorf("build ollama request: %w", err)
-	}
-	httpRequest.Header.Set("Content-Type", "application/json")
-	httpRequest.Header.Set("Accept", "application/json")
-
-	response, err := c.httpClient.Do(httpRequest)
-	if err != nil {
-		return ports.ProviderDecisionResult{}, fmt.Errorf("call ollama generate API: %w", err)
-	}
-	defer response.Body.Close()
-
-	data, err := io.ReadAll(response.Body)
-	if err != nil {
-		return ports.ProviderDecisionResult{}, fmt.Errorf("read ollama response: %w", err)
-	}
-
-	if response.StatusCode != http.StatusOK {
-		return ports.ProviderDecisionResult{}, fmt.Errorf("ollama generate API returned %s: %s", response.Status, strings.TrimSpace(string(data)))
-	}
-
-	var parsed generateResponse
-	if err := json.Unmarshal(data, &parsed); err != nil {
-		return ports.ProviderDecisionResult{}, fmt.Errorf("decode ollama response: %w", err)
-	}
-
-	return ports.ProviderDecisionResult{
-		RawResponse: parsed.Response,
-	}, nil
+	return c.inner.RequestDecision(ctx, request)
 }
 
-func (c *Client) endpointURL(path string) string {
-	endpoint := *c.baseURL
-	basePath := strings.TrimSuffix(endpoint.Path, "/")
-	cleanPath := strings.TrimLeft(path, "/")
-	if trimmedBase := strings.TrimLeft(basePath, "/"); trimmedBase != "" {
-		prefix := trimmedBase + "/"
-		cleanPath = strings.TrimPrefix(cleanPath, prefix)
-	}
-	switch {
-	case basePath == "":
-		endpoint.Path = "/" + cleanPath
-	case cleanPath == "":
-		endpoint.Path = basePath
-	default:
-		endpoint.Path = basePath + "/" + cleanPath
-	}
-	return endpoint.String()
-}
-
-func parseBaseURL(rawURL string) (*url.URL, error) {
+func normalizeBaseURL(rawURL string) string {
 	trimmed := strings.TrimSpace(rawURL)
 	if trimmed == "" {
-		return nil, fmt.Errorf("ollama base URL must not be empty")
+		return defaultBaseURL + "v1/"
 	}
 
 	parsed, err := url.Parse(trimmed)
 	if err != nil {
-		return nil, fmt.Errorf("parse ollama base URL %q: %w", rawURL, err)
-	}
-	if parsed.Scheme == "" || parsed.Host == "" {
-		return nil, fmt.Errorf("ollama base URL %q must include scheme and host", rawURL)
-	}
-	if !strings.HasSuffix(parsed.Path, "/") {
-		parsed.Path += "/"
+		return trimmed
 	}
 
-	return parsed, nil
+	cleanPath := strings.TrimSuffix(parsed.Path, "/")
+	if !strings.HasSuffix(cleanPath, "/v1") {
+		if cleanPath == "" {
+			cleanPath = "/v1"
+		} else {
+			cleanPath += "/v1"
+		}
+	}
+	parsed.Path = cleanPath + "/"
+	return parsed.String()
 }
 
-type generateRequest struct {
-	Model  string `json:"model"`
-	Prompt string `json:"prompt"`
-	System string `json:"system,omitempty"`
-	Format any    `json:"format,omitempty"`
-	Stream bool   `json:"stream"`
-}
-
-type generateResponse struct {
-	Response string `json:"response"`
+func applyOption(client *openaiadapter.Client, option openaiadapter.Option) error {
+	if client == nil || option == nil {
+		return nil
+	}
+	option(client)
+	return nil
 }
