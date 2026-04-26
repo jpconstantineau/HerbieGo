@@ -149,7 +149,7 @@ func (o AIOrchestrator) Decide(ctx context.Context, request ports.AIDecisionRequ
 					}
 				}
 			} else {
-				return responseToSubmission(response), audit, nil
+				return responseToSubmission(response, request), audit, nil
 			}
 		}
 
@@ -329,19 +329,6 @@ func extractJSONObject(raw string) (string, error) {
 func validateDecisionResponse(response ports.AIDecisionResponse, request ports.AIDecisionRequest) []ports.ValidationError {
 	var errs []ports.ValidationError
 
-	if response.ContractVersion != request.ContractVersion {
-		errs = append(errs, ports.ValidationError{Path: "contract_version", Message: fmt.Sprintf("must equal %q", request.ContractVersion)})
-	}
-	if response.MatchID != request.MatchID {
-		errs = append(errs, ports.ValidationError{Path: "match_id", Message: fmt.Sprintf("must equal %q", request.MatchID)})
-	}
-	if response.Round != request.Round {
-		errs = append(errs, ports.ValidationError{Path: "round", Message: fmt.Sprintf("must equal %d", request.Round)})
-	}
-	if response.RoleID != request.RoleID {
-		errs = append(errs, ports.ValidationError{Path: "role_id", Message: fmt.Sprintf("must equal %q", request.RoleID)})
-	}
-
 	payloadCount := 0
 	if response.Action.Procurement != nil {
 		payloadCount++
@@ -498,14 +485,14 @@ func validateSalesAction(action *domain.SalesAction, view domain.RoundView) []po
 	return errs
 }
 
-func responseToSubmission(response ports.AIDecisionResponse) domain.ActionSubmission {
+func responseToSubmission(response ports.AIDecisionResponse, request ports.AIDecisionRequest) domain.ActionSubmission {
 	return domain.ActionSubmission{
-		MatchID: response.MatchID,
-		Round:   response.Round,
-		RoleID:  response.RoleID,
+		MatchID: request.MatchID,
+		Round:   request.Round,
+		RoleID:  request.RoleID,
 		Action:  response.Action.Clone(),
 		Commentary: domain.CommentaryRecord{
-			RoleID:     response.RoleID,
+			RoleID:     request.RoleID,
 			Visibility: domain.CommentaryPublic,
 			Body:       strings.TrimSpace(response.Commentary.PublicSummary),
 		},

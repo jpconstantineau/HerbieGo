@@ -17,10 +17,6 @@ func TestAIOrchestratorBuildsPromptAndParsesValidDecision(t *testing.T) {
 	client := &stubDecisionClient{
 		responses: []ports.ProviderDecisionResult{
 			{RawResponse: `{
-				"contract_version":"herbiego.ai.v1",
-				"match_id":"match-17",
-				"round":2,
-				"role_id":"sales_manager",
 				"action":{"sales":{"product_offers":[{"product_id":"pump","unit_price":16}]}},
 				"commentary":{"public_summary":"Holding price to protect throughput.","focus_tags":["throughput","pricing"]}
 			}`},
@@ -76,8 +72,8 @@ func TestAIOrchestratorBuildsPromptAndParsesValidDecision(t *testing.T) {
 func TestAIOrchestratorRetriesWithValidationFeedback(t *testing.T) {
 	client := &stubDecisionClient{
 		responses: []ports.ProviderDecisionResult{
-			{RawResponse: `{"contract_version":"herbiego.ai.v1","match_id":"match-17","round":2,"role_id":"sales_manager","action":{"sales":{"product_offers":[{"product_id":"pump","unit_price":16}]}},"commentary":{"public_summary":"","focus_tags":[]}}`},
-			{RawResponse: "```json\n{\"contract_version\":\"herbiego.ai.v1\",\"match_id\":\"match-17\",\"round\":2,\"role_id\":\"sales_manager\",\"action\":{\"sales\":{\"product_offers\":[{\"product_id\":\"pump\",\"unit_price\":15}]}},\"commentary\":{\"public_summary\":\"Reducing price slightly to protect revenue without outrunning flow.\",\"focus_tags\":[\"revenue\",\"flow\"]}}\n```"},
+			{RawResponse: `{"action":{"sales":{"product_offers":[{"product_id":"pump","unit_price":16}]}},"commentary":{"public_summary":"","focus_tags":[]}}`},
+			{RawResponse: "```json\n{\"action\":{\"sales\":{\"product_offers\":[{\"product_id\":\"pump\",\"unit_price\":15}]}},\"commentary\":{\"public_summary\":\"Reducing price slightly to protect revenue without outrunning flow.\",\"focus_tags\":[\"revenue\",\"flow\"]}}\n```"},
 		},
 	}
 
@@ -110,8 +106,8 @@ func TestAIOrchestratorFallsBackAfterInvalidResponses(t *testing.T) {
 	client := &stubDecisionClient{
 		responses: []ports.ProviderDecisionResult{
 			{RawResponse: "not json"},
-			{RawResponse: `{"contract_version":"herbiego.ai.v1","match_id":"match-17","round":2,"role_id":"sales_manager","action":{"sales":{"product_offers":[{"product_id":"","unit_price":-1}]}},"commentary":{"public_summary":"","focus_tags":[]}}`},
-			{RawResponse: `{"contract_version":"herbiego.ai.v1","match_id":"match-17","round":2,"role_id":"sales_manager","action":{},"commentary":{"public_summary":"","focus_tags":[]}}`},
+			{RawResponse: `{"action":{"sales":{"product_offers":[{"product_id":"","unit_price":-1}]}},"commentary":{"public_summary":"","focus_tags":[]}}`},
+			{RawResponse: `{"action":{},"commentary":{"public_summary":"","focus_tags":[]}}`},
 		},
 	}
 
@@ -147,7 +143,7 @@ func TestAIOrchestratorFallsBackAfterInvalidResponses(t *testing.T) {
 func TestRoundCollectorUsesAIOrchestratorThroughLLMPlayer(t *testing.T) {
 	client := &stubDecisionClient{
 		responses: []ports.ProviderDecisionResult{
-			{RawResponse: `{"contract_version":"herbiego.ai.v1","match_id":"match-17","round":2,"role_id":"production_manager","action":{"production":{"releases":[{"product_id":"pump","quantity":1}],"capacity_allocation":[{"workstation_id":"fabrication","product_id":"pump","capacity":1}]}},"commentary":{"public_summary":"Releasing only what fabrication can move this round.","focus_tags":["throughput"]}}`},
+			{RawResponse: `{"action":{"production":{"releases":[{"product_id":"pump","quantity":1}],"capacity_allocation":[{"workstation_id":"fabrication","product_id":"pump","capacity":1}]}},"commentary":{"public_summary":"Releasing only what fabrication can move this round.","focus_tags":["throughput"]}}`},
 		},
 	}
 
@@ -277,7 +273,7 @@ func TestAIOrchestratorExecutesLookupToolCallsBeforeFinalDecision(t *testing.T) 
 	client := &stubDecisionClient{
 		responses: []ports.ProviderDecisionResult{
 			{RawResponse: toolCallResponse},
-			{RawResponse: `{"contract_version":"herbiego.ai.v1","match_id":"match-17","round":2,"role_id":"production_manager","action":{"production":{"releases":[{"product_id":"pump","quantity":1}],"capacity_allocation":[{"workstation_id":"fabrication","product_id":"pump","capacity":1}]}},"commentary":{"public_summary":"Using the route lookup to release only work that fits the line.","focus_tags":["throughput"]}}`},
+			{RawResponse: `{"action":{"production":{"releases":[{"product_id":"pump","quantity":1}],"capacity_allocation":[{"workstation_id":"fabrication","product_id":"pump","capacity":1}]}},"commentary":{"public_summary":"Using the route lookup to release only work that fits the line.","focus_tags":["throughput"]}}`},
 		},
 	}
 
@@ -329,12 +325,8 @@ func TestAIOrchestratorUsesStructuredProviderResponsesWhenAvailable(t *testing.T
 	client := &stubDecisionClient{
 		responses: []ports.ProviderDecisionResult{
 			{
-				RawResponse: `{"contract_version":"herbiego.ai.v1"}`,
+				RawResponse: `{}`,
 				StructuredResponse: &ports.AIDecisionEnvelope{
-					ContractVersion: "herbiego.ai.v1",
-					MatchID:         "match-17",
-					Round:           2,
-					RoleID:          domain.RoleSalesManager,
 					Action: domain.RoleAction{
 						Sales: &domain.SalesAction{
 							ProductOffers: []domain.ProductOffer{{ProductID: "pump", UnitPrice: 17}},

@@ -97,13 +97,11 @@ type LookupToolResult struct {
 }
 
 // AIDecisionResponse is the strict JSON contract returned by the model.
+// Connection-managed fields (contract_version, match_id, round, role_id) are
+// intentionally omitted: the orchestrator fills them from the request.
 type AIDecisionResponse struct {
-	ContractVersion string             `json:"contract_version"`
-	MatchID         domain.MatchID     `json:"match_id"`
-	Round           domain.RoundNumber `json:"round"`
-	RoleID          domain.RoleID      `json:"role_id"`
-	Action          domain.RoleAction  `json:"action"`
-	Commentary      AICommentary       `json:"commentary"`
+	Action     domain.RoleAction `json:"action"`
+	Commentary AICommentary      `json:"commentary"`
 }
 
 // AICommentary is the public explanation returned by an AI role.
@@ -115,24 +113,18 @@ type AICommentary struct {
 // AIDecisionEnvelope is the structured provider response shape used by
 // instructor-go. Providers may return either a tool lookup request or a final
 // decision payload in the same top-level object.
+// Connection-managed fields (contract_version, match_id, round, role_id) are
+// omitted so the LLM only needs to populate the decision-relevant fields.
 type AIDecisionEnvelope struct {
-	ContractVersion string             `json:"contract_version,omitempty" jsonschema:"description=Must match the active HerbieGo AI contract version when returning a final decision."`
-	MatchID         domain.MatchID     `json:"match_id,omitempty" jsonschema:"description=Must match the active match identifier when returning a final decision."`
-	Round           domain.RoundNumber `json:"round,omitempty" jsonschema:"description=Must match the active round number when returning a final decision."`
-	RoleID          domain.RoleID      `json:"role_id,omitempty" jsonschema:"description=Must match the requesting role identifier when returning a final decision."`
-	Action          domain.RoleAction  `json:"action,omitempty" jsonschema:"description=The role action payload to submit for the current round."`
-	Commentary      AICommentary       `json:"commentary,omitempty" jsonschema:"description=Public commentary that explains the decision to the rest of the team."`
-	ToolCall        *LookupToolCall    `json:"tool_call,omitempty" jsonschema:"description=Optional lookup request to gather scenario information before returning the final decision."`
+	Action     domain.RoleAction `json:"action,omitempty" jsonschema:"description=The role action payload to submit for the current round."`
+	Commentary AICommentary      `json:"commentary,omitempty" jsonschema:"description=Public commentary that explains the decision to the rest of the team."`
+	ToolCall   *LookupToolCall   `json:"tool_call,omitempty" jsonschema:"description=Optional lookup request to gather scenario information before returning the final decision."`
 }
 
 func (e AIDecisionEnvelope) DecisionResponse() AIDecisionResponse {
 	return AIDecisionResponse{
-		ContractVersion: e.ContractVersion,
-		MatchID:         e.MatchID,
-		Round:           e.Round,
-		RoleID:          e.RoleID,
-		Action:          e.Action,
-		Commentary:      e.Commentary,
+		Action:     e.Action,
+		Commentary: e.Commentary,
 	}
 }
 
