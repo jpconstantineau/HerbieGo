@@ -5,7 +5,7 @@ This guide covers the current MVP runtime path for HerbieGo: a Bubble Tea shell 
 ## Files
 
 - `herbiego.yaml`: runtime settings for environment, seed, human player count, UI timing, and role-to-provider mapping
-- `llm.yaml`: provider catalog that maps provider names to model names, URLs, API protocol families, and optional API keys
+- `llm.yaml`: provider catalog that maps provider names to model names, OpenAI-compatible base URLs, and optional API keys
 
 ## Configure
 
@@ -43,20 +43,28 @@ Default `llm.yaml` provider catalog:
 models:
   - provider_name: ollama-localhost
     model_name: gemma4:e4b
-    url: http://localhost:11434/
-    api_sdk_type: ollama
+    url: http://localhost:11434/v1/
+    api_sdk_type: openai
     api_key: ""
   - provider_name: ollama-cloud
     model_name: gemma4:e4b
-    url: https://ollama.com/api/
-    api_sdk_type: ollama
-    api_key: ""
+    url: https://ollama.com/api/v1/
+    api_sdk_type: openai
+    api_key: "set-this-to-your-ollama-cloud-api-key"
   - provider_name: openrouter
     model_name: openai/gpt-5-mini
     url: https://openrouter.ai/api/v1/
     api_sdk_type: openai
     api_key: ""
 ```
+
+Notes:
+
+- every provider entry is treated as an OpenAI-compatible chat-completions endpoint
+- the configured `url` must include the correct provider-specific path prefix such as `/v1/` or `/api/v1/`
+- local Ollama usually works with an empty `api_key`
+- Ollama Cloud requires an API key in the matching `llm.yaml` entry
+- OpenRouter and other OpenAI-compatible providers should also be configured through `llm.yaml`
 
 If you want a different local profile:
 

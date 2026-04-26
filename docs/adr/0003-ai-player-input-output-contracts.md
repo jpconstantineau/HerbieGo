@@ -16,7 +16,7 @@ The project already defines:
 - [ADR 0001: Initial Architecture And Package Boundaries](0001-initial-architecture.md)
 - [ADR 0002: Simultaneous Action Collection And Resolution Flow](0002-simultaneous-action-collection-and-resolution.md)
 
-Those documents define the canonical round view, the shared action envelope, and the timing rules for hidden simultaneous turns. What remains is the provider-neutral contract that the AI orchestration layer can hand to either OpenRouter or Ollama without changing game semantics.
+Those documents define the canonical round view, the shared action envelope, and the timing rules for hidden simultaneous turns. What remains is the provider-neutral contract that the AI orchestration layer can hand to OpenAI-compatible providers such as OpenRouter or Ollama without changing game semantics.
 
 This ADR defines that contract.
 
@@ -36,7 +36,7 @@ Key decisions:
 - Commentary is structured as concise public explanation text plus machine-readable focus tags.
 - Invalid model output triggers a fixed retry path with explicit validation feedback before any fallback is applied.
 - Fallback behavior is deterministic: reuse the previous accepted action when available, otherwise submit a role-specific safe no-op.
-- Token and window management is projection-driven, ordered, and truncation-safe so OpenRouter and Ollama can both receive materially equivalent context.
+- Token and window management is projection-driven, ordered, and truncation-safe so OpenRouter, Ollama, and other OpenAI-compatible providers can all receive materially equivalent context.
 - AI and human-facing round context should preserve enough recent history and actual performance data to support four-round monthly reporting.
 
 ## Shared Contract Objects
@@ -191,7 +191,7 @@ The application should assemble the request in fixed sections before handing it 
 5. response-format instruction with JSON example
 6. retry feedback, only when retrying
 
-Provider adapters for OpenRouter and Ollama may translate this into their preferred message transport, but they must not change the meaning of the contract.
+Provider adapters for OpenAI-compatible backends such as OpenRouter and Ollama may translate this into their preferred message transport, but they must not change the meaning of the contract.
 
 Adapter rules:
 
@@ -354,7 +354,7 @@ Contributors implementing AI play should treat the following as the minimum cont
 - `internal/projection` produces the bounded `RoundView` and any history summaries
 - `internal/app` assembles `AIDecisionRequest`, runs retry orchestration, and applies fallback
 - `internal/ports` defines provider-neutral decision interfaces
-- `internal/adapters/ai/openrouter` and `internal/adapters/ai/ollama` translate the shared request into provider API calls
+- `internal/adapters/ai/openai` translates the shared request into OpenAI-compatible provider API calls
 - adapters return raw model text or parsed JSON, but application code owns validation and conversion into domain actions
 
 Suggested port shape:
@@ -384,7 +384,7 @@ type AIDecisionAudit struct {
 
 Positive:
 
-- OpenRouter and Ollama integrations can share one decision contract instead of duplicating game semantics
+- OpenRouter, Ollama, and other OpenAI-compatible integrations can share one decision contract instead of duplicating game semantics
 - human role briefings and AI role instructions come from the same source material
 - invalid model output has a deterministic recovery path instead of ad hoc parser behavior
 - prompt assembly remains aligned with canonical domain projections and round timing

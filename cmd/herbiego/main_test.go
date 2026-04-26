@@ -17,10 +17,10 @@ func TestBuildPlayersCreatesMixedHumanAndAIPlayers(t *testing.T) {
 		Config: app.Config{
 			HumanPlayers: 1,
 			Roles: map[domain.RoleID]app.RoleConfig{
-				domain.RoleProductionManager:  {Kind: app.PlayerKindHuman, Provider: "ollama-localhost", Model: "gemma4:e4b", URL: "http://localhost:11434/", APISDKType: app.APISDKTypeOllama},
-				domain.RoleProcurementManager: {Kind: app.PlayerKindAI, Provider: "ollama-localhost", Model: "gemma4:e4b", URL: "http://localhost:11434/", APISDKType: app.APISDKTypeOllama},
-				domain.RoleSalesManager:       {Kind: app.PlayerKindAI, Provider: "ollama-cloud", Model: "gemma4:e4b", URL: "https://ollama.com/api/", APISDKType: app.APISDKTypeOllama},
-				domain.RoleFinanceController:  {Kind: app.PlayerKindAI, Provider: "ollama-localhost", Model: "gemma4:e4b", URL: "http://localhost:11434/", APISDKType: app.APISDKTypeOllama},
+				domain.RoleProductionManager:  {Kind: app.PlayerKindHuman, Provider: "ollama-localhost", Model: "gemma4:e4b", URL: "http://localhost:11434/v1/", APISDKType: app.APISDKTypeOpenAI},
+				domain.RoleProcurementManager: {Kind: app.PlayerKindAI, Provider: "ollama-localhost", Model: "gemma4:e4b", URL: "http://localhost:11434/v1/", APISDKType: app.APISDKTypeOpenAI},
+				domain.RoleSalesManager:       {Kind: app.PlayerKindAI, Provider: "ollama-cloud", Model: "gemma4:e4b", URL: "https://ollama.com/api/v1/", APISDKType: app.APISDKTypeOpenAI, APIKey: "test-ollama-cloud-key"},
+				domain.RoleFinanceController:  {Kind: app.PlayerKindAI, Provider: "ollama-localhost", Model: "gemma4:e4b", URL: "http://localhost:11434/v1/", APISDKType: app.APISDKTypeOpenAI},
 			},
 		},
 		Scenario: scenario.Starter(),

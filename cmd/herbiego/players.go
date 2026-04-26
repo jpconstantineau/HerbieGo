@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/jpconstantineau/herbiego/internal/adapters/ai"
-	"github.com/jpconstantineau/herbiego/internal/adapters/ai/ollama"
 	"github.com/jpconstantineau/herbiego/internal/adapters/ai/openai"
 	"github.com/jpconstantineau/herbiego/internal/adapters/player/human"
 	"github.com/jpconstantineau/herbiego/internal/adapters/player/llm"
@@ -49,12 +48,6 @@ func buildDecisionClients(cfg app.Config) (map[string]ports.DecisionClient, erro
 		}
 
 		switch roleCfg.APISDKType {
-		case app.APISDKTypeOllama:
-			client, err := ollama.New(ollama.WithBaseURL(roleCfg.URL))
-			if err != nil {
-				return nil, fmt.Errorf("configure provider %q: %w", roleCfg.Provider, err)
-			}
-			clients[providerName] = client
 		case app.APISDKTypeOpenAI:
 			client, err := openai.New(
 				openai.WithBaseURL(roleCfg.URL),

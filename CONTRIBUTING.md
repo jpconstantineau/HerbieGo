@@ -99,8 +99,8 @@ Each entry under `models` in `llm.yaml` defines:
 
 - `provider_name`: the named provider referenced by `herbiego.yaml`
 - `model_name`: the concrete model identifier
-- `url`: the provider base URL
-- `api_sdk_type`: the transport family, currently `ollama` or `openai`
+- `url`: the full OpenAI-compatible base URL, including the provider-specific path prefix such as `/v1/` or `/api/v1/`
+- `api_sdk_type`: the transport family, currently `openai`
 - `api_key`: the configured API key value, if any
 
 Example:
@@ -116,4 +116,4 @@ models:
 
 `human_players` determines which roles stay human-controlled during startup. The application assigns human control in a fixed order and keeps the provider label on every role so contributors can switch to AI-only runs with a CLI override instead of rewriting config.
 
-Today, the Ollama API is implemented. Providers cataloged with the `openai` SDK type are still validated and surfaced in config, but startup fails fast if their concrete adapter has not landed yet.
+All configured providers currently flow through the shared OpenAI-compatible chat-completions adapter. Local Ollama usually works with an empty `api_key`, while Ollama Cloud requires one in the corresponding `llm.yaml` entry.

@@ -308,7 +308,7 @@ The UI should be treated as a subscription to state, regardless of visual style.
 - `Game Engine`: owns rules, phases, turn resolution, and world updates
 - `State Store`: owns canonical game state and history
 - `Player Gateway`: handles human and AI player input uniformly
-- `LLM Connectors`: provider adapters for OpenRouter and Ollama
+- `LLM Connectors`: OpenAI-compatible provider adapters for OpenRouter, Ollama, and similar endpoints
 - `Prompt/Decision Layer`: builds per-role context windows and parses AI decisions
 - `UI Layer`: TUI for play and secondary tools for debugging
 - `Persistence Layer`: saves games, event history, prompts, and outcomes when needed
@@ -337,6 +337,8 @@ The game should support both OpenRouter and Ollama as LLM backends.
 - Both providers may be active in the same match
 - Each AI-controlled role may be assigned its own model and provider
 
+Providers are configured as OpenAI-compatible chat-completions endpoints in `llm.yaml`, including the full base-path prefix needed by each service. Local Ollama can usually run without an API key, while Ollama Cloud requires one.
+
 The provider layer should be isolated so the rest of the game only depends on a stable decision-making interface.
 
 ### TUI Technology
@@ -362,7 +364,7 @@ An early playable version could focus on:
 - One plant scenario
 - Human and AI mixed play
 - A simple turn log with player commentary
-- OpenRouter and Ollama integration behind one common interface
+- OpenRouter and Ollama integration behind one shared OpenAI-compatible interface
 - A Bubble Tea TUI with the core four-pane layout
 
 This would create a foundation that can later expand into longer time horizons, richer roles, and more sophisticated management mechanics.
