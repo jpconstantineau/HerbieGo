@@ -498,27 +498,19 @@ func (m Model) renderDebugWorkspace(width int) []string {
 			i+1, rec.Round, rec.RoleID, rec.Provider, rec.Model, rec.Attempt, status)
 		lines = append(lines, header)
 		if rec.ErrorMessage != "" {
-			for _, l := range wrapLines("  Error: "+rec.ErrorMessage, textWidth) {
-				lines = append(lines, l)
-			}
+			lines = append(lines, wrapLines("  Error: "+rec.ErrorMessage, textWidth)...)
 		}
 		if rec.SystemPrompt != "" {
-			preview := truncateDebugText(rec.SystemPrompt, 200)
-			for _, l := range wrapLines("  System: "+preview, textWidth) {
-				lines = append(lines, l)
-			}
+			preview := truncateDebugText(rec.SystemPrompt, 2000)
+			lines = append(lines, wrapLines("  System: "+preview, textWidth)...)
 		}
 		if rec.UserPrompt != "" {
-			preview := truncateDebugText(rec.UserPrompt, 200)
-			for _, l := range wrapLines("  User: "+preview, textWidth) {
-				lines = append(lines, l)
-			}
+			preview := truncateDebugText(rec.UserPrompt, 2000)
+			lines = append(lines, wrapLines("  User: "+preview, textWidth)...)
 		}
 		if rec.RawResponse != "" {
-			preview := truncateDebugText(rec.RawResponse, 400)
-			for _, l := range wrapLines("  Response: "+preview, textWidth) {
-				lines = append(lines, l)
-			}
+			preview := truncateDebugText(rec.RawResponse, 4000)
+			lines = append(lines, wrapLines("  Response: "+preview, textWidth)...)
 		}
 		lines = append(lines, "")
 	}
