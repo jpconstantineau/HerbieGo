@@ -54,11 +54,7 @@ func BuildSystemPrompt(request ports.AIDecisionRequest) string {
 	lines = append(lines, "Once you have your decision, communicate it to the rest of the team in JSON format according to the example below.")
 	lines = append(lines, "")
 	lines = append(lines, mustJSON(map[string]any{
-		"contract_version": request.ContractVersion,
-		"match_id":         request.MatchID,
-		"round":            request.Round,
-		"role_id":          request.RoleID,
-		"action":           exampleAction(request.RoleID, request.RoundView.ActiveTargets),
+		"action": exampleAction(request.RoleID, request.RoundView.ActiveTargets),
 		"commentary": map[string]any{
 			"public_summary": "Explain the decision in one short player-facing sentence.",
 			"focus_tags":     []string{"throughput"},
@@ -67,7 +63,7 @@ func BuildSystemPrompt(request ports.AIDecisionRequest) string {
 	lines = append(lines, "")
 	lines = append(lines, fmt.Sprintf("You have the following options for actions to take: %s.", strings.Join(briefing.AllowedActionSummary, "; ")))
 	lines = append(lines, "")
-	lines = append(lines, fmt.Sprintf("Return either one lookup tool request or one final JSON decision for contract version %s.", request.ContractVersion))
+	lines = append(lines, "Return either one lookup tool request or one final JSON decision.")
 	return strings.Join(lines, "\n")
 }
 
@@ -76,12 +72,8 @@ func BuildUserPrompt(request ports.AIDecisionRequest, retry *ports.RetryFeedback
 	var sections []string
 
 	sections = append(sections, "## Contract Header\n"+mustJSON(map[string]any{
-		"contract_version": request.ContractVersion,
-		"match_id":         request.MatchID,
-		"round":            request.Round,
-		"role_id":          request.RoleID,
-		"provider":         request.Provider,
-		"model":            request.Model,
+		"provider": request.Provider,
+		"model":    request.Model,
 	}))
 
 	sections = append(sections, "## Role Briefing\n"+mustJSON(request.Briefing))
@@ -94,11 +86,7 @@ func BuildUserPrompt(request ports.AIDecisionRequest, retry *ports.RetryFeedback
 	sections = append(sections, "## Response Format\n"+mustJSON(map[string]any{
 		"response_spec": request.ResponseSpec,
 		"decision_example": map[string]any{
-			"contract_version": request.ContractVersion,
-			"match_id":         request.MatchID,
-			"round":            request.Round,
-			"role_id":          request.RoleID,
-			"action":           exampleAction(request.RoleID, request.RoundView.ActiveTargets),
+			"action": exampleAction(request.RoleID, request.RoundView.ActiveTargets),
 			"commentary": map[string]any{
 				"public_summary": "Explain the decision in one short player-facing sentence.",
 				"focus_tags":     []string{"throughput"},
