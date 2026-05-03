@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/jpconstantineau/herbiego/internal/adapters/player/human"
@@ -34,9 +35,9 @@ func TestBuildPlayersCreatesMixedHumanAndAIPlayers(t *testing.T) {
 		},
 	}
 
-	players, _, err := buildPlayersWithHumanSubmit(runtime, runtime.InitialMatch, func(context.Context, ports.RoundRequest) (domain.ActionSubmission, error) {
+	players, _, err := buildPlayersWithHumanSubmit(runtime.Config, runtime.Scenario, runtime.InitialMatch, func(context.Context, ports.RoundRequest) (domain.ActionSubmission, error) {
 		return domain.ActionSubmission{}, nil
-	})
+	}, runtime.Logger)
 	if err != nil {
 		t.Fatalf("buildPlayersWithHumanSubmit() error = %v, want nil", err)
 	}
@@ -64,13 +65,81 @@ func TestBuildPlayersRejectsUnsupportedAIProvider(t *testing.T) {
 		},
 	}
 
-	players, _, err := buildPlayersWithHumanSubmit(runtime, runtime.InitialMatch, func(context.Context, ports.RoundRequest) (domain.ActionSubmission, error) {
+	players, _, err := buildPlayersWithHumanSubmit(runtime.Config, runtime.Scenario, runtime.InitialMatch, func(context.Context, ports.RoundRequest) (domain.ActionSubmission, error) {
 		return domain.ActionSubmission{}, nil
-	})
+	}, runtime.Logger)
 	if err != nil {
 		t.Fatalf("buildPlayersWithHumanSubmit() error = %v, want nil", err)
 	}
 	if _, ok := players[domain.RoleProductionManager].(*llm.Player); !ok {
 		t.Fatalf("production player type = %T, want *llm.Player", players[domain.RoleProductionManager])
+	}
+}
+
+func TestResolveScenarioForMatchUsesMatchScenarioID(t *testing.T) {
+	definition := scenario.NewDefinition(
+		"cmd-runtime-test-scenario",
+		"Command Runtime Test Scenario",
+		"Ensures match execution resolves the scenario from the match record.",
+		scenario.MatchSetup{
+			ID:          "single-role",
+			DisplayName: "Single Role",
+			RoleRoster:  []domain.RoleID{domain.RoleSalesManager},
+		},
+		scenario.StartingConditions{
+			ID:          "start",
+			DisplayName: "Start",
+			StartingTargets: domain.BudgetTargets{
+				EffectiveRound:        1,
+				RevenueTarget:         20,
+				ProcurementBudget:     1,
+				ProductionSpendBudget: 1,
+				CashFloorTarget:       1,
+				DebtCeilingTarget:     1,
+			},
+		},
+		scenario.MarketModel{
+			ID:                "market",
+			DisplayName:       "Market",
+			DemandAssumptions: scenario.DemandAssumptions{BacklogExpiryRounds: 1},
+		},
+		scenario.ProductionModel{
+			ID:          "production",
+			DisplayName: "Production",
+		},
+		scenario.FinanceModel{
+			ID:                    "finance",
+			DisplayName:           "Finance",
+			ReceivableDelayRounds: 1,
+			PayableDelayRounds:    1,
+			PayrollDelayRounds:    1,
+		},
+	)
+	if err := scenario.Register(definition); err != nil && err.Error() != `scenario "cmd-runtime-test-scenario" already registered` {
+		t.Fatalf("scenario.Register() error = %v", err)
+	}
+
+	resolved, err := resolveScenarioForMatch(domain.MatchState{
+		MatchID:    "match-1",
+		ScenarioID: definition.ID,
+	})
+	if err != nil {
+		t.Fatalf("resolveScenarioForMatch() error = %v", err)
+	}
+	if got := resolved.ID; got != definition.ID {
+		t.Fatalf("resolved.ID = %q, want %q", got, definition.ID)
+	}
+}
+
+func TestResolveScenarioForMatchRejectsUnknownScenario(t *testing.T) {
+	_, err := resolveScenarioForMatch(domain.MatchState{
+		MatchID:    "match-404",
+		ScenarioID: "missing-scenario",
+	})
+	if err == nil {
+		t.Fatal("resolveScenarioForMatch() error = nil, want unknown-scenario validation")
+	}
+	if !strings.Contains(err.Error(), `resolve scenario "missing-scenario"`) {
+		t.Fatalf("resolveScenarioForMatch() error = %v, want missing-scenario context", err)
 	}
 }
