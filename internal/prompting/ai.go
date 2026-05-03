@@ -127,36 +127,6 @@ func mustJSON(value any) string {
 	return string(data)
 }
 
-func exampleAction(roleID domain.RoleID, targets domain.BudgetTargets) domain.RoleAction {
-	switch roleID {
-	case domain.RoleProcurementManager:
-		return domain.RoleAction{
-			Procurement: &domain.ProcurementAction{
-				Orders: []domain.PurchaseOrderIntent{{PartID: "housing", SupplierID: "forgeco", Quantity: 1}},
-			},
-		}
-	case domain.RoleProductionManager:
-		return domain.RoleAction{
-			Production: &domain.ProductionAction{
-				Releases:           []domain.ProductionRelease{{ProductID: "pump", Quantity: 1}},
-				CapacityAllocation: []domain.CapacityAllocation{{WorkstationID: "fabrication", ProductID: "pump", Capacity: 1}},
-			},
-		}
-	case domain.RoleSalesManager:
-		return domain.RoleAction{
-			Sales: &domain.SalesAction{
-				ProductOffers: []domain.ProductOffer{{ProductID: "pump", UnitPrice: 14}},
-			},
-		}
-	case domain.RoleFinanceController:
-		return domain.RoleAction{
-			Finance: &domain.FinanceAction{NextRoundTargets: targets},
-		}
-	default:
-		return domain.RoleAction{}
-	}
-}
-
 type promptExampleSet struct {
 	decisionAction  domain.RoleAction
 	toolCallExample map[string]any
