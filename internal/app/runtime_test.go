@@ -1,6 +1,7 @@
 package app
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -212,5 +213,40 @@ func TestNewRuntimeUsesRegisteredScenarioFromConfig(t *testing.T) {
 	}
 	if got := runtime.InitialMatch.Plant.Cash; got != 99 {
 		t.Fatalf("InitialMatch.Plant.Cash = %d, want 99", got)
+	}
+}
+
+func TestNewRuntimeRejectsConfigThatDoesNotMatchScenarioRoleRoster(t *testing.T) {
+	_, err := NewRuntime(Config{
+		Environment:  "test",
+		ScenarioID:   scenario.StarterID,
+		HumanPlayers: 0,
+		UI: UIConfig{
+			AIRevealDelaySeconds: 12,
+		},
+		Random: RandomConfig{
+			Seed: 9,
+		},
+		LLMCatalog: LLMCatalog{
+			Entries: []LLMCatalogEntry{
+				{Provider: "openrouter", Model: "openai/gpt-5-mini", URL: "https://openrouter.ai/api/v1/", APISDKType: APISDKTypeOpenAI},
+			},
+		},
+		RoleConfigs: []RoleConfigFile{
+			{RoleID: domain.RoleSalesManager, Provider: "openrouter"},
+		},
+	})
+	if err == nil {
+		t.Fatal("NewRuntime() error = nil, want scenario role-roster validation")
+	}
+	for _, want := range []string{
+		"roles must include exactly 4 expected roles",
+		"role configuration missing for procurement_manager",
+		"role configuration missing for production_manager",
+		"role configuration missing for finance_controller",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("NewRuntime() error = %v, want substring %q", err, want)
+		}
 	}
 }
