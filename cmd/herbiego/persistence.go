@@ -15,6 +15,8 @@ type persistentStore interface {
 	ports.MatchStateStore
 	Close() error
 	AppendAICall(matchID domain.MatchID, record ports.AICallRecord) error
+	AICallRecords(matchID domain.MatchID) ([]ports.AICallRecord, error)
+	StateSnapshots(matchID domain.MatchID) ([]domain.MatchState, error)
 }
 
 func resolveMatchPersistence(runtime app.Runtime, sqlitePath, resumeMatchID string) (persistentStore, domain.MatchState, error) {

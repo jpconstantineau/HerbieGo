@@ -80,6 +80,12 @@ func (s *Store) CreateMatch(initial domain.MatchState) error {
 	`, initial.MatchID, initial.ScenarioID, stateJSON, now, now); err != nil {
 		return fmt.Errorf("sqlite store: create match %q: %w", initial.MatchID, err)
 	}
+	if _, err := tx.Exec(`
+		INSERT INTO state_snapshots(match_id, current_round, state_json)
+		VALUES (?, ?, ?)
+	`, initial.MatchID, state.CurrentRound, stateJSON); err != nil {
+		return fmt.Errorf("sqlite store: insert initial snapshot for %q: %w", initial.MatchID, err)
+	}
 
 	if err := insertRounds(tx, initial.MatchID, rounds); err != nil {
 		return err
@@ -172,6 +178,13 @@ func (s *Store) CommitRound(matchID domain.MatchID, nextState domain.MatchState,
 		VALUES (?, ?, ?)
 	`, matchID, round.Round, roundJSON); err != nil {
 		return domain.MatchState{}, fmt.Errorf("sqlite store: insert round %d: %w", round.Round, err)
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO state_snapshots(match_id, current_round, state_json)
+		VALUES (?, ?, ?)
+		ON CONFLICT(match_id, current_round) DO UPDATE SET state_json = excluded.state_json
+	`, matchID, next.CurrentRound, stateJSON); err != nil {
+		return domain.MatchState{}, fmt.Errorf("sqlite store: insert snapshot for round %d: %w", next.CurrentRound, err)
 	}
 	if err := insertEvents(tx, matchID, committedRound.Events); err != nil {
 		return domain.MatchState{}, err
@@ -335,6 +348,41 @@ func (s *Store) AICallRecords(matchID domain.MatchID) ([]ports.AICallRecord, err
 	return records, nil
 }
 
+func (s *Store) StateSnapshots(matchID domain.MatchID) ([]domain.MatchState, error) {
+	rows, err := s.db.Query(`
+		SELECT state_json
+		FROM state_snapshots
+		WHERE match_id = ?
+		ORDER BY current_round ASC
+	`, matchID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite store: query state snapshots: %w", err)
+	}
+	defer rows.Close()
+
+	var snapshots []domain.MatchState
+	for rows.Next() {
+		var encoded string
+		if err := rows.Scan(&encoded); err != nil {
+			return nil, fmt.Errorf("sqlite store: scan state snapshot: %w", err)
+		}
+		var state domain.MatchState
+		if err := json.Unmarshal([]byte(encoded), &state); err != nil {
+			return nil, fmt.Errorf("sqlite store: decode state snapshot: %w", err)
+		}
+		snapshots = append(snapshots, state)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite store: iterate state snapshots: %w", err)
+	}
+	if len(snapshots) == 0 {
+		if _, err := s.CurrentState(matchID); err != nil {
+			return nil, err
+		}
+	}
+	return snapshots, nil
+}
+
 func (s *Store) initSchema() error {
 	if _, err := s.db.Exec(`
 		PRAGMA foreign_keys = ON;
@@ -350,6 +398,12 @@ func (s *Store) initSchema() error {
 			round_number INTEGER NOT NULL,
 			round_json TEXT NOT NULL,
 			PRIMARY KEY(match_id, round_number)
+		);
+		CREATE TABLE IF NOT EXISTS state_snapshots (
+			match_id TEXT NOT NULL,
+			current_round INTEGER NOT NULL,
+			state_json TEXT NOT NULL,
+			PRIMARY KEY(match_id, current_round)
 		);
 		CREATE TABLE IF NOT EXISTS events (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,

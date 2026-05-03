@@ -154,3 +154,37 @@ func TestStoreTrimsCurrentHistoryWindowButKeepsAppendOnlyTimeline(t *testing.T) 
 		t.Fatalf("timeline len = %d, want 3", len(timeline))
 	}
 }
+
+func TestStoreExposesStateSnapshotsAcrossRounds(t *testing.T) {
+	store := memory.NewStore(memory.Options{RecentHistoryLimit: 2})
+	initial := domain.MatchState{
+		MatchID:      "match-snapshots",
+		ScenarioID:   "starter",
+		CurrentRound: 1,
+		Plant:        domain.PlantState{Cash: 24},
+	}
+	if err := store.CreateMatch(initial); err != nil {
+		t.Fatalf("CreateMatch() error = %v", err)
+	}
+
+	nextState := initial.Clone()
+	nextState.CurrentRound = 2
+	nextState.Plant.Cash = 31
+	if _, err := store.CommitRound(initial.MatchID, nextState, domain.RoundRecord{Round: 1}); err != nil {
+		t.Fatalf("CommitRound() error = %v", err)
+	}
+
+	snapshots, err := store.StateSnapshots(initial.MatchID)
+	if err != nil {
+		t.Fatalf("StateSnapshots() error = %v", err)
+	}
+	if len(snapshots) != 2 {
+		t.Fatalf("StateSnapshots len = %d, want 2", len(snapshots))
+	}
+	if got := snapshots[0].CurrentRound; got != 1 {
+		t.Fatalf("snapshots[0].CurrentRound = %d, want 1", got)
+	}
+	if got := snapshots[1].Plant.Cash; got != 31 {
+		t.Fatalf("snapshots[1].Plant.Cash = %d, want 31", got)
+	}
+}

@@ -3,12 +3,21 @@ package tui
 import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jpconstantineau/herbiego/internal/domain"
+	"github.com/jpconstantineau/herbiego/internal/ports"
 	"github.com/jpconstantineau/herbiego/internal/scenario"
 )
 
 // Run launches the main Bubble Tea shell for the current match snapshot.
 func Run(definition scenario.Definition, initial domain.MatchState) error {
 	return RunWithSource(definition, newStaticStateSource(initial), nil, tea.WithAltScreen())
+}
+
+// RunReplay launches the shell with persisted state snapshots and optional AI traces.
+func RunReplay(definition scenario.Definition, current domain.MatchState, snapshots []domain.MatchState, debugRecords []ports.AICallRecord) error {
+	source := newReplayStateSource(current, snapshots)
+	program := NewProgram(definition, source, nil, newStaticDebugSource(debugRecords), tea.WithAltScreen())
+	_, err := program.Run()
+	return err
 }
 
 // NewProgram constructs the Bubble Tea program for the supplied match source.

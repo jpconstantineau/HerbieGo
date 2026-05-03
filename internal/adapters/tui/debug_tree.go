@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jpconstantineau/herbiego/internal/domain"
 	"github.com/jpconstantineau/herbiego/internal/ports"
@@ -49,14 +50,87 @@ func (m Model) debugRoleRecords() []ports.AICallRecord {
 }
 
 func (m Model) buildDebugTree() []*debugTreeNode {
+	var roots []*debugTreeNode
+	if inspection := m.buildRoundInspectionTree(); inspection != nil {
+		roots = append(roots, inspection)
+	}
+	if traces := m.buildTraceTree(); traces != nil {
+		roots = append(roots, traces)
+	}
+	return roots
+}
+
+func (m Model) buildRoundInspectionTree() *debugTreeNode {
+	if len(m.state.History.RecentRounds) == 0 {
+		return nil
+	}
+
+	root := &debugTreeNode{
+		id:    "debug:inspection",
+		title: fmt.Sprintf("Round inspections (%d retained)", len(m.state.History.RecentRounds)),
+	}
+	for _, round := range slices.Backward(m.state.History.RecentRounds) {
+		root.children = append(root.children, m.buildRoundInspectionNode(round))
+	}
+	return root
+}
+
+func (m Model) buildRoundInspectionNode(round domain.RoundRecord) *debugTreeNode {
+	node := &debugTreeNode{
+		id:       debugInspectionRoundNodeID(round.Round),
+		parentID: "debug:inspection",
+		title: fmt.Sprintf(
+			"Round %d (%d actions | %d events | %d commentary)",
+			round.Round,
+			len(round.Actions),
+			len(round.Events),
+			len(round.Commentary),
+		),
+	}
+
+	actionNode := &debugTreeNode{
+		id:       debugInspectionActionNodeID(round.Round),
+		parentID: node.id,
+		title:    fmt.Sprintf("Action inspection for %s", m.roleTitle()),
+		body:     debugActionInspectionBody(round, m.selectedAssignment().RoleID),
+	}
+	stateNode := &debugTreeNode{
+		id:       debugInspectionStateNodeID(round.Round),
+		parentID: node.id,
+		title:    "State transition summary",
+		body:     m.debugStateDiffBody(round.Round, round.Metrics),
+	}
+	timelineNode := &debugTreeNode{
+		id:       debugInspectionTimelineNodeID(round.Round),
+		parentID: node.id,
+		title:    "Round timeline highlights",
+		body:     debugTimelineBody(round),
+	}
+
+	node.children = []*debugTreeNode{actionNode, stateNode, timelineNode}
+	return node
+}
+
+func (m Model) buildTraceTree() *debugTreeNode {
 	records := m.debugRoleRecords()
 	if len(records) == 0 {
 		return nil
 	}
 
+	root := &debugTreeNode{
+		id:    "debug:traces",
+		title: fmt.Sprintf("Prompt/response traces for %s (%d total)", m.roleTitle(), len(records)),
+	}
+	for _, roundNode := range buildTraceRoundNodes(records) {
+		roundNode.parentID = root.id
+		root.children = append(root.children, roundNode)
+	}
+	return root
+}
+
+func buildTraceRoundNodes(records []ports.AICallRecord) []*debugTreeNode {
 	roundNodes := make([]*debugTreeNode, 0)
 	roundIndex := make(map[domain.RoundNumber]*debugTreeNode)
-	attemptIndex := make(map[string]*debugTreeNode)
 	attemptCounts := make(map[domain.RoundNumber]int)
 
 	for _, record := range records {
@@ -70,23 +144,15 @@ func (m Model) buildDebugTree() []*debugTreeNode {
 			roundNodes = append(roundNodes, roundNode)
 		}
 
-		attemptID := debugAttemptNodeID(record.Round, record.Attempt)
-		if attemptIndex[attemptID] != nil {
-			continue
-		}
-
-		attemptNode := buildDebugAttemptNode(record)
-		attemptNode.parentID = roundNode.id
-		roundNode.children = append(roundNode.children, attemptNode)
-		attemptIndex[attemptID] = attemptNode
+		roundNode.children = append(roundNode.children, buildDebugAttemptNode(record, roundNode.id))
 		attemptCounts[record.Round]++
 	}
 
 	slices.SortFunc(roundNodes, func(left, right *debugTreeNode) int {
 		switch {
-		case left.id < right.id:
-			return -1
 		case left.id > right.id:
+			return -1
+		case left.id < right.id:
 			return 1
 		default:
 			return 0
@@ -110,23 +176,24 @@ func (m Model) buildDebugTree() []*debugTreeNode {
 	return roundNodes
 }
 
-func buildDebugAttemptNode(record ports.AICallRecord) *debugTreeNode {
+func buildDebugAttemptNode(record ports.AICallRecord, parentID string) *debugTreeNode {
 	_, statusBody := debugAttemptStatus(record)
 	requestSummary := fmt.Sprintf(
-		"Request Summary (%s/%s, system %d chars, user %d chars)",
+		"Request summary (%s/%s, system %d chars, user %d chars)",
 		record.Provider,
 		record.Model,
 		len(record.SystemPrompt),
 		len(record.UserPrompt),
 	)
 	responseSummary := fmt.Sprintf(
-		"Response Summary (%s)",
+		"Response summary (%s)",
 		debugResponseSummary(record),
 	)
 
 	attemptNode := &debugTreeNode{
-		id:    debugAttemptNodeID(record.Round, record.Attempt),
-		title: fmt.Sprintf("Try %d - %s", record.Attempt, debugAttemptOutcome(record)),
+		id:       debugAttemptNodeID(record.Round, record.Attempt),
+		parentID: parentID,
+		title:    fmt.Sprintf("Try %d - %s", record.Attempt, debugAttemptOutcome(record)),
 	}
 	statusNode := &debugTreeNode{
 		id:       debugStatusNodeID(record.Round, record.Attempt),
@@ -184,7 +251,7 @@ func (m Model) isDebugNodeExpanded(nodeID string, depth int) bool {
 	if ok {
 		return expanded
 	}
-	return depth == 0
+	return depth <= 1
 }
 
 func (m *Model) ensureDebugSelection() {
@@ -327,19 +394,18 @@ func (m *Model) moveDebugSelectionToEdge(toEnd bool) {
 
 func (m Model) renderDebugWorkspaceContent(width int) debugWorkspaceRender {
 	lines := []string{
-		fmt.Sprintf("Debug tree for %s", m.roleTitle()),
-		"View: role-scoped AI API requests and responses in a drill-down tree",
+		fmt.Sprintf("Debug inspector for %s", m.roleTitle()),
+		"View: round actions, state transitions, and AI prompt/response traces in one drill-down tree",
 		"",
-	}
-
-	if m.debugLog == nil {
-		lines = append(lines, "Debug log not available. AI logging requires a live game with AI players.")
-		return debugWorkspaceRender{lines: lines}
 	}
 
 	visible := m.visibleDebugNodes()
 	if len(visible) == 0 {
-		lines = append(lines, "No AI API calls recorded yet for this role.")
+		if len(m.state.History.RecentRounds) == 0 && m.debugLog == nil {
+			lines = append(lines, "No debug data is available yet.")
+		} else {
+			lines = append(lines, "No round inspection or AI trace entries are available yet for this role.")
+		}
 		return debugWorkspaceRender{lines: lines}
 	}
 
@@ -407,6 +473,131 @@ func wrapIndentedBlock(text string, width int, continuation string) []string {
 		}
 	}
 	return lines
+}
+
+func debugActionInspectionBody(round domain.RoundRecord, roleID domain.RoleID) string {
+	var selected *domain.ActionSubmission
+	for i := range round.Actions {
+		if round.Actions[i].RoleID == roleID {
+			clone := round.Actions[i].Clone()
+			selected = &clone
+			break
+		}
+	}
+	if selected == nil {
+		return fmt.Sprintf("No submitted action for %s was recorded in round %d.", displayRoleName(roleID), round.Round)
+	}
+
+	lines := []string{
+		fmt.Sprintf("Role: %s", displayRoleName(selected.RoleID)),
+		fmt.Sprintf("Action ID: %s", selected.ActionID),
+	}
+	if !selected.SubmittedAt.IsZero() {
+		lines = append(lines, "Submitted at: "+selected.SubmittedAt.UTC().Format(time.RFC3339))
+	}
+	lines = append(lines, "Action summary:")
+	for _, summary := range summarizeAction(selected.Action) {
+		lines = append(lines, "  - "+summary)
+	}
+	if strings.TrimSpace(selected.Commentary.Body) != "" {
+		lines = append(lines, "Commentary: "+selected.Commentary.Body)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m Model) debugStateDiffBody(round domain.RoundNumber, metrics domain.PlantMetrics) string {
+	before, after, ok := m.roundStatePair(round)
+	if !ok {
+		return "State diff unavailable. This inspector needs round snapshots from the current live session or persisted replay store."
+	}
+
+	type diffLine struct {
+		label string
+		from  int
+		to    int
+	}
+	diffs := []diffLine{
+		{label: "Cash", from: int(before.Plant.Cash), to: int(after.Plant.Cash)},
+		{label: "Debt", from: int(before.Plant.Debt), to: int(after.Plant.Debt)},
+		{label: "Backlog lines", from: len(before.Plant.Backlog), to: len(after.Plant.Backlog)},
+		{label: "Parts on hand units", from: int(before.Metrics.PartsOnHandUnits), to: int(after.Metrics.PartsOnHandUnits)},
+		{label: "Finished goods units", from: int(before.Metrics.FinishedGoodsUnits), to: int(after.Metrics.FinishedGoodsUnits)},
+		{label: "Inspection hold units", from: int(before.Metrics.InspectionHoldUnits), to: int(after.Metrics.InspectionHoldUnits)},
+		{label: "Receivables open", from: len(before.Plant.Receivables), to: len(after.Plant.Receivables)},
+		{label: "Payables open", from: len(before.Plant.Payables), to: len(after.Plant.Payables)},
+	}
+
+	lines := []string{
+		fmt.Sprintf("State transition: round %d -> %d", before.CurrentRound, after.CurrentRound),
+		fmt.Sprintf("Round profit: %d", metrics.RoundProfit),
+		fmt.Sprintf("Net cash change: %d", metrics.NetCashChange),
+	}
+	changed := 0
+	for _, diff := range diffs {
+		if diff.from == diff.to {
+			continue
+		}
+		changed++
+		lines = append(lines, fmt.Sprintf("%s: %d -> %d (%+d)", diff.label, diff.from, diff.to, diff.to-diff.from))
+	}
+	if changed == 0 {
+		lines = append(lines, "No tracked aggregate counters changed across the stored snapshots.")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func debugTimelineBody(round domain.RoundRecord) string {
+	timeline := round.CanonicalTimeline()
+	if len(timeline) == 0 {
+		return "No timeline entries were recorded for this round."
+	}
+
+	lines := make([]string, 0, min(len(timeline), 8)+1)
+	lines = append(lines, fmt.Sprintf("Showing %d of %d timeline entries.", min(len(timeline), 8), len(timeline)))
+	for _, entry := range timeline[:min(len(timeline), 8)] {
+		switch entry.Kind {
+		case domain.RoundTimelineKindCommentary:
+			if entry.Commentary != nil {
+				lines = append(lines, fmt.Sprintf("%s #%d: %s said %q", timelinePhaseLabel(entry.Phase), entry.Sequence, displayRoleName(entry.Commentary.RoleID), entry.Commentary.Body))
+			}
+		case domain.RoundTimelineKindEvent:
+			if entry.Event != nil {
+				lines = append(lines, fmt.Sprintf("%s #%d: %s", timelinePhaseLabel(entry.Phase), entry.Sequence, entry.Event.Summary))
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m Model) roundStatePair(round domain.RoundNumber) (domain.MatchState, domain.MatchState, bool) {
+	snapshots := m.stateSnapshots()
+	if len(snapshots) == 0 {
+		return domain.MatchState{}, domain.MatchState{}, false
+	}
+
+	var before domain.MatchState
+	var after domain.MatchState
+	foundBefore := false
+	foundAfter := false
+	for _, snapshot := range snapshots {
+		switch snapshot.CurrentRound {
+		case round:
+			before = snapshot.Clone()
+			foundBefore = true
+		case round + 1:
+			after = snapshot.Clone()
+			foundAfter = true
+		}
+	}
+	return before, after, foundBefore && foundAfter
+}
+
+func (m Model) stateSnapshots() []domain.MatchState {
+	source, ok := m.source.(StateSnapshotSource)
+	if !ok {
+		return nil
+	}
+	return source.StateSnapshots()
 }
 
 func debugAttemptOutcome(record ports.AICallRecord) string {
@@ -479,6 +670,22 @@ func debugResponseDetails(record ports.AICallRecord) string {
 
 func sanitizeDebugText(text string) string {
 	return strings.ReplaceAll(text, "\t", " ")
+}
+
+func debugInspectionRoundNodeID(round domain.RoundNumber) string {
+	return fmt.Sprintf("debug:inspection:round:%06d", round)
+}
+
+func debugInspectionActionNodeID(round domain.RoundNumber) string {
+	return debugInspectionRoundNodeID(round) + ":action"
+}
+
+func debugInspectionStateNodeID(round domain.RoundNumber) string {
+	return debugInspectionRoundNodeID(round) + ":state"
+}
+
+func debugInspectionTimelineNodeID(round domain.RoundNumber) string {
+	return debugInspectionRoundNodeID(round) + ":timeline"
 }
 
 func debugRoundNodeID(round domain.RoundNumber) string {

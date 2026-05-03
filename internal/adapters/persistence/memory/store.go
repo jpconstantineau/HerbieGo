@@ -23,6 +23,7 @@ type Store struct {
 
 type storedMatch struct {
 	state      domain.MatchState
+	snapshots  []domain.MatchState
 	rounds     []domain.RoundRecord
 	events     []domain.RoundEvent
 	commentary []domain.CommentaryRecord
@@ -54,6 +55,7 @@ func (s *Store) CreateMatch(initial domain.MatchState) error {
 
 	s.matches[initial.MatchID] = storedMatch{
 		state:      state,
+		snapshots:  []domain.MatchState{state.Clone()},
 		rounds:     cloneRoundRecords(rounds),
 		events:     flattenEvents(rounds),
 		commentary: flattenCommentary(rounds),
@@ -109,6 +111,7 @@ func (s *Store) CommitRound(matchID domain.MatchID, nextState domain.MatchState,
 	match.state.History = domain.RoundHistory{
 		RecentRounds: cloneRoundRecords(tail(match.rounds, s.historyLimit)),
 	}
+	match.snapshots = appendOrReplaceSnapshot(match.snapshots, match.state)
 
 	s.matches[matchID] = match
 	return match.state.Clone(), nil
@@ -155,6 +158,19 @@ func (s *Store) Commentary(matchID domain.MatchID) ([]domain.CommentaryRecord, e
 	}
 
 	return slices.Clone(match.commentary), nil
+}
+
+// StateSnapshots returns one canonical state snapshot per current-round value.
+func (s *Store) StateSnapshots(matchID domain.MatchID) ([]domain.MatchState, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	match, ok := s.matches[matchID]
+	if !ok {
+		return nil, ports.ErrMatchNotFound
+	}
+
+	return cloneStates(match.snapshots), nil
 }
 
 func normalizedHistoryLimit(limit int) int {
@@ -207,6 +223,29 @@ func flattenCommentary(rounds []domain.RoundRecord) []domain.CommentaryRecord {
 	}
 
 	return commentary
+}
+
+func cloneStates(states []domain.MatchState) []domain.MatchState {
+	if states == nil {
+		return nil
+	}
+
+	cloned := make([]domain.MatchState, len(states))
+	for i := range states {
+		cloned[i] = states[i].Clone()
+	}
+	return cloned
+}
+
+func appendOrReplaceSnapshot(states []domain.MatchState, next domain.MatchState) []domain.MatchState {
+	cloned := next.Clone()
+	for i := range states {
+		if states[i].CurrentRound == cloned.CurrentRound {
+			states[i] = cloned
+			return states
+		}
+	}
+	return append(states, cloned)
 }
 
 func tail[T any](items []T, limit int) []T {
