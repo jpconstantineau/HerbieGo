@@ -71,11 +71,6 @@ func BuildSystemPrompt(request ports.AIDecisionRequest) string {
 func BuildUserPrompt(request ports.AIDecisionRequest, retry *ports.RetryFeedback) string {
 	var sections []string
 
-	sections = append(sections, "## Contract Header\n"+mustJSON(map[string]any{
-		"provider": request.Provider,
-		"model":    request.Model,
-	}))
-
 	sections = append(sections, "## Role Briefing\n"+mustJSON(request.Briefing))
 	sections = append(sections, "## Current Round Facts\n"+mustJSON(map[string]any{
 		"round_view":      request.RoundView,

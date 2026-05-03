@@ -50,8 +50,7 @@ func (o AIOrchestrator) SubmitRound(ctx context.Context, request ports.RoundRequ
 // AI decision contract.
 func (o AIOrchestrator) BuildRequest(request ports.RoundRequest) ports.AIDecisionRequest {
 	return ports.AIDecisionRequest{
-		ContractVersion: ports.AIDecisionContractVersion,
-		MatchID:         request.RoleView.MatchID,
+		MatchID:  request.RoleView.MatchID,
 		Round:           request.RoleView.Round,
 		RoleID:          request.Assignment.RoleID,
 		Provider:        request.Assignment.Provider,
@@ -190,9 +189,6 @@ func debugErrorMessage(parseErr error, validationErrors []ports.ValidationError)
 func validateDecisionRequest(request ports.AIDecisionRequest) error {
 	var errs []error
 
-	if request.ContractVersion == "" {
-		errs = append(errs, fmt.Errorf("contract version must not be empty"))
-	}
 	if request.MatchID == "" {
 		errs = append(errs, fmt.Errorf("match id must not be empty"))
 	}
@@ -374,9 +370,6 @@ func validateDecisionResponse(response ports.AIDecisionResponse, request ports.A
 	}
 	if len(summary) > request.ResponseSpec.MaxCommentaryChars {
 		errs = append(errs, ports.ValidationError{Path: "commentary.public_summary", Message: fmt.Sprintf("must be at most %d characters", request.ResponseSpec.MaxCommentaryChars)})
-	}
-	if len(response.Commentary.FocusTags) == 0 {
-		errs = append(errs, ports.ValidationError{Path: "commentary.focus_tags", Message: "must contain at least one tag"})
 	}
 	if len(response.Commentary.FocusTags) > request.ResponseSpec.MaxFocusTags {
 		errs = append(errs, ports.ValidationError{Path: "commentary.focus_tags", Message: fmt.Sprintf("must contain at most %d tags", request.ResponseSpec.MaxFocusTags)})

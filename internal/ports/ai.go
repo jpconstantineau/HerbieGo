@@ -6,8 +6,6 @@ import (
 	"github.com/jpconstantineau/herbiego/internal/domain"
 )
 
-const AIDecisionContractVersion = "herbiego.ai.v1"
-
 // RoleBriefing is the shared human-readable role description used for UI
 // briefings and AI system instructions.
 type RoleBriefing struct {
@@ -21,8 +19,7 @@ type RoleBriefing struct {
 
 // AIDecisionRequest is the canonical provider-neutral input to the AI runner.
 type AIDecisionRequest struct {
-	ContractVersion string
-	MatchID         domain.MatchID
+	MatchID domain.MatchID
 	Round           domain.RoundNumber
 	RoleID          domain.RoleID
 	Provider        string
