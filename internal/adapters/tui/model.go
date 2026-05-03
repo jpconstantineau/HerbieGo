@@ -937,7 +937,7 @@ func (mode workspaceMode) label() string {
 	case workspaceHistoryArchive:
 		return "history archive"
 	case workspaceDebug:
-		return "debug (AI API calls)"
+		return "debug inspector"
 	default:
 		return "round feed"
 	}
@@ -988,7 +988,7 @@ func workspaceInteractionHint(active workspaceMode) string {
 	case workspaceHistoryArchive:
 		return "up/down/pgup/pgdn/home/end scroll archive history"
 	case workspaceDebug:
-		return "up/down move, enter expand, esc collapse, pgup/pgdn/home/end jump through debug tree"
+		return "up/down move, enter expand, esc collapse, pgup/pgdn/home/end jump through inspector tree"
 	default:
 		return "up/down/pgup/pgdn/home/end scroll round feed history"
 	}

@@ -25,7 +25,7 @@ func TestLiveGameplayControllerDeliversHumanSubmissionAndStreamsRoundPhases(t *t
 		{RoleID: domain.RoleFinanceController, PlayerID: "finance-player", Provider: "ollama", ModelName: "gemma"},
 	})
 
-	controller := newLiveGameplayController(initial)
+	controller := newLiveGameplayController(initial, nil)
 	now := time.Date(2026, time.April, 21, 20, 0, 0, 0, time.UTC)
 	runner := app.MatchRunner{
 		Collector: app.RoundCollector{

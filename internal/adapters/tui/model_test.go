@@ -17,8 +17,9 @@ import (
 )
 
 type testStateSource struct {
-	snapshot domain.MatchState
-	updates  <-chan domain.MatchState
+	snapshot  domain.MatchState
+	snapshots []domain.MatchState
+	updates   <-chan domain.MatchState
 }
 
 func (s testStateSource) Snapshot() domain.MatchState {
@@ -27,6 +28,18 @@ func (s testStateSource) Snapshot() domain.MatchState {
 
 func (s testStateSource) Updates() <-chan domain.MatchState {
 	return s.updates
+}
+
+func (s testStateSource) StateSnapshots() []domain.MatchState {
+	snapshots := s.snapshots
+	if len(snapshots) == 0 {
+		snapshots = []domain.MatchState{s.snapshot}
+	}
+	cloned := make([]domain.MatchState, len(snapshots))
+	for i := range snapshots {
+		cloned[i] = snapshots[i].Clone()
+	}
+	return cloned
 }
 
 type testDebugSource struct {
@@ -1015,7 +1028,9 @@ func TestModelDebugWorkspaceFiltersRecordsBySelectedRole(t *testing.T) {
 
 	view := shell.View()
 	for _, want := range []string{
-		"Debug tree for Procurement Manager",
+		"Debug inspector for Procurement Manager",
+		"Prompt/response traces for Procurement Manager (1",
+		"total)",
 		"Round 1 (1 tries)",
 		"Try 1 - Success",
 	} {
@@ -1041,7 +1056,7 @@ func TestModelDebugWorkspaceFiltersRecordsBySelectedRole(t *testing.T) {
 	salesShell.debugExpanded[debugRoundNodeID(2)] = true
 
 	salesView := salesShell.View()
-	if !strings.Contains(salesView, "Debug tree for Sales Manager") || !strings.Contains(salesView, "Round 2 (1 tries)") {
+	if !strings.Contains(salesView, "Debug inspector for Sales Manager") || !strings.Contains(salesView, "Round 2 (1 tries)") {
 		t.Fatalf("sales debug view did not follow role selection\n%s", salesView)
 	}
 	if strings.Contains(salesView, "Procurement system prompt") {
@@ -1075,14 +1090,20 @@ func TestModelDebugTreeNavigationExpandsAndCollapses(t *testing.T) {
 	shell.height = 30
 	shell.ensureDebugSelection()
 
-	if got := shell.debugSelected; got != debugRoundNodeID(1) {
-		t.Fatalf("initial debugSelected = %q, want round node", got)
+	if got := shell.debugSelected; got != "debug:traces" {
+		t.Fatalf("initial debugSelected = %q, want root trace node", got)
 	}
 
 	next, _ := shell.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	shell = next.(Model)
+	if shell.debugSelected != debugRoundNodeID(1) {
+		t.Fatalf("enter on trace root did not select round child: selected=%q", shell.debugSelected)
+	}
+
+	next, _ = shell.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	shell = next.(Model)
 	if !shell.debugExpanded[debugRoundNodeID(1)] || shell.debugSelected != debugAttemptNodeID(1, 1) {
-		t.Fatalf("enter on round did not expand/select first child: expanded=%v selected=%q", shell.debugExpanded[debugRoundNodeID(1)], shell.debugSelected)
+		t.Fatalf("enter on round did not expand/select first attempt: expanded=%v selected=%q", shell.debugExpanded[debugRoundNodeID(1)], shell.debugSelected)
 	}
 
 	next, _ = shell.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -1112,6 +1133,66 @@ func TestModelDebugTreeNavigationExpandsAndCollapses(t *testing.T) {
 	shell = next.(Model)
 	if shell.debugExpanded[debugRoundNodeID(1)] || shell.debugSelected != debugRoundNodeID(1) {
 		t.Fatalf("esc on attempt did not collapse to round: expanded=%v selected=%q", shell.debugExpanded[debugRoundNodeID(1)], shell.debugSelected)
+	}
+}
+
+func TestModelDebugInspectorShowsActionInspectionAndStateDiff(t *testing.T) {
+	before := scenario.Starter().InitialState("starter-match", starterAssignments())
+	after := before.Clone()
+	after.CurrentRound = 2
+	after.Plant.Cash = 31
+	after.Plant.Debt = 2
+	after.Plant.Backlog = after.Plant.Backlog[:1]
+	after.Metrics.RoundProfit = 7
+	after.Metrics.NetCashChange = 7
+	after.Metrics.PartsOnHandUnits = 3
+	after.Metrics.FinishedGoodsUnits = 1
+	round := domain.RoundRecord{
+		Round: 1,
+		Actions: []domain.ActionSubmission{
+			{
+				ActionID: "proc-1",
+				MatchID:  before.MatchID,
+				Round:    1,
+				RoleID:   domain.RoleProcurementManager,
+				Action: domain.RoleAction{
+					Procurement: &domain.ProcurementAction{
+						Orders: []domain.PurchaseOrderIntent{{PartID: "housing", SupplierID: "forgeco", Quantity: 2}},
+					},
+				},
+				Commentary: domain.CommentaryRecord{Body: "Buying only what assembly can absorb."},
+			},
+		},
+		Metrics: after.Metrics,
+	}
+	after.History.RecentRounds = []domain.RoundRecord{round}
+
+	model := NewModel(scenario.Starter(), testStateSource{
+		snapshot:  after,
+		snapshots: []domain.MatchState{before, after},
+	})
+	loaded, _ := model.Update(stateLoadedMsg{state: after})
+	shell := loaded.(Model)
+	shell.workspace = workspaceDebug
+	shell.width = 120
+	shell.height = 30
+	shell.debugExpanded["debug:inspection"] = true
+	shell.debugExpanded[debugInspectionRoundNodeID(1)] = true
+
+	view := shell.View()
+	for _, want := range []string{
+		"Round inspections (1 retained)",
+		"Action inspection for Procurement Manager",
+		"Order 2 of housing from forgeco",
+		"Commentary: Buying only what assembly can absorb.",
+		"State transition summary",
+		"Cash: 24 -> 31 (+7)",
+		"Debt: 0 -> 2 (+2)",
+		"Round profit: 7",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("debug inspector missing %q\n%s", want, view)
+		}
 	}
 }
 

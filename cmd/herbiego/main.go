@@ -12,6 +12,7 @@ import (
 	"github.com/jpconstantineau/herbiego/internal/app"
 	"github.com/jpconstantineau/herbiego/internal/domain"
 	"github.com/jpconstantineau/herbiego/internal/engine"
+	"github.com/jpconstantineau/herbiego/internal/ports"
 )
 
 func main() {
@@ -58,13 +59,32 @@ func main() {
 }
 
 func runLiveGameplay(ctx context.Context, runtime app.Runtime, initialState domain.MatchState, store persistentStore, rounds int, persistAIDebug bool) error {
-	controller := newLiveGameplayController(initialState)
+	stateSnapshots := []domain.MatchState{initialState.Clone()}
+	if store != nil {
+		persistedSnapshots, err := store.StateSnapshots(initialState.MatchID)
+		if err != nil {
+			return fmt.Errorf("load persisted state snapshots: %w", err)
+		}
+		stateSnapshots = persistedSnapshots
+	}
+	controller := newLiveGameplayController(initialState, stateSnapshots)
 	players, debugLog, err := buildPlayersWithHumanSubmit(runtime, initialState, controller.SubmitRound)
 	if err != nil {
 		return fmt.Errorf("player setup: %w", err)
 	}
 	if store != nil && persistAIDebug {
 		configureAICallPersistence(debugLog, runtime.Logger, store, initialState.MatchID)
+	}
+	debugSource := tui.DebugSource(debugLog)
+	if store != nil {
+		debugRecords, err := store.AICallRecords(initialState.MatchID)
+		if err != nil {
+			return fmt.Errorf("load persisted ai traces: %w", err)
+		}
+		debugSource = combinedDebugSource{
+			live:      debugLog,
+			persisted: debugRecords,
+		}
 	}
 
 	runner := app.MatchRunner{
@@ -83,7 +103,7 @@ func runLiveGameplay(ctx context.Context, runtime app.Runtime, initialState doma
 		runtime.Scenario,
 		controller,
 		controller.Submit,
-		debugLog,
+		debugSource,
 		tea.WithAltScreen(),
 		tea.WithContext(ctx),
 	)
@@ -125,4 +145,21 @@ func runLiveGameplay(ctx context.Context, runtime app.Runtime, initialState doma
 		return playErr
 	}
 	return nil
+}
+
+type combinedDebugSource struct {
+	live      *app.DebugLog
+	persisted []ports.AICallRecord
+}
+
+func (s combinedDebugSource) Records() []ports.AICallRecord {
+	liveRecords := s.live.Records()
+	if len(s.persisted) == 0 {
+		return liveRecords
+	}
+
+	records := make([]ports.AICallRecord, 0, len(s.persisted)+len(liveRecords))
+	records = append(records, s.persisted...)
+	records = append(records, liveRecords...)
+	return records
 }

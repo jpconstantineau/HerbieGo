@@ -17,15 +17,21 @@ type submissionKey struct {
 type liveGameplayController struct {
 	mu          sync.Mutex
 	latest      domain.MatchState
+	snapshots   []domain.MatchState
 	updates     chan domain.MatchState
 	submissions chan domain.ActionSubmission
 	pending     map[submissionKey][]domain.ActionSubmission
 	closed      bool
 }
 
-func newLiveGameplayController(initial domain.MatchState) *liveGameplayController {
+func newLiveGameplayController(initial domain.MatchState, snapshots []domain.MatchState) *liveGameplayController {
+	clonedSnapshots := cloneMatchStates(snapshots)
+	if len(clonedSnapshots) == 0 {
+		clonedSnapshots = []domain.MatchState{initial.Clone()}
+	}
 	return &liveGameplayController{
 		latest:      initial.Clone(),
+		snapshots:   clonedSnapshots,
 		updates:     make(chan domain.MatchState, 8),
 		submissions: make(chan domain.ActionSubmission, len(initial.Roles)+1),
 		pending:     make(map[submissionKey][]domain.ActionSubmission),
@@ -42,6 +48,12 @@ func (c *liveGameplayController) Updates() <-chan domain.MatchState {
 	return c.updates
 }
 
+func (c *liveGameplayController) StateSnapshots() []domain.MatchState {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return cloneMatchStates(c.snapshots)
+}
+
 func (c *liveGameplayController) Publish(state domain.MatchState) {
 	cloned := state.Clone()
 
@@ -51,6 +63,7 @@ func (c *liveGameplayController) Publish(state domain.MatchState) {
 		return
 	}
 	c.latest = cloned.Clone()
+	c.snapshots = appendOrReplaceSnapshot(c.snapshots, cloned)
 	updates := c.updates
 	c.mu.Unlock()
 
@@ -137,4 +150,23 @@ func (c *liveGameplayController) storePending(key submissionKey, submission doma
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.pending[key] = append(c.pending[key], submission.Clone())
+}
+
+func cloneMatchStates(states []domain.MatchState) []domain.MatchState {
+	cloned := make([]domain.MatchState, len(states))
+	for i := range states {
+		cloned[i] = states[i].Clone()
+	}
+	return cloned
+}
+
+func appendOrReplaceSnapshot(states []domain.MatchState, next domain.MatchState) []domain.MatchState {
+	cloned := next.Clone()
+	for i := range states {
+		if states[i].CurrentRound == cloned.CurrentRound {
+			states[i] = cloned
+			return states
+		}
+	}
+	return append(states, cloned)
 }
