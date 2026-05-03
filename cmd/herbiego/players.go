@@ -12,7 +12,7 @@ import (
 	"github.com/jpconstantineau/herbiego/internal/ports"
 )
 
-func buildPlayersWithHumanSubmit(runtime app.Runtime, submit human.SubmitFunc) (map[domain.RoleID]ports.Player, *app.DebugLog, error) {
+func buildPlayersWithHumanSubmit(runtime app.Runtime, initial domain.MatchState, submit human.SubmitFunc) (map[domain.RoleID]ports.Player, *app.DebugLog, error) {
 	providers, err := buildDecisionClients(runtime.Config)
 	if err != nil {
 		return nil, nil, err
@@ -23,8 +23,8 @@ func buildPlayersWithHumanSubmit(runtime app.Runtime, submit human.SubmitFunc) (
 	orchestrator.DebugLog = debugLog
 	orchestrator.Logger = runtime.Logger
 
-	players := make(map[domain.RoleID]ports.Player, len(runtime.InitialMatch.Roles))
-	for _, assignment := range runtime.InitialMatch.Roles {
+	players := make(map[domain.RoleID]ports.Player, len(initial.Roles))
+	for _, assignment := range initial.Roles {
 		if assignment.IsHuman {
 			players[assignment.RoleID] = human.New(submit)
 			continue

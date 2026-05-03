@@ -189,6 +189,44 @@ func TestMatchRunnerPersistsCommittedRoundsWhenStoreConfigured(t *testing.T) {
 	}
 }
 
+func TestMatchRunnerCanResumeUsingAnExistingStore(t *testing.T) {
+	starter := scenario.Starter()
+	initial := starter.InitialState("match-208", []domain.RoleAssignment{
+		{RoleID: domain.RoleProcurementManager, PlayerID: "procurement-player", IsHuman: true},
+		{RoleID: domain.RoleProductionManager, PlayerID: "production-player", Provider: "ollama", ModelName: "gemma4:e4b"},
+		{RoleID: domain.RoleSalesManager, PlayerID: "sales-player", Provider: "openrouter", ModelName: "openai/gpt-5-mini"},
+		{RoleID: domain.RoleFinanceController, PlayerID: "finance-player", Provider: "openai", ModelName: "gpt-5-mini"},
+	})
+
+	store := memory.NewStore(memory.Options{RecentHistoryLimit: 10})
+	runner := app.MatchRunner{
+		Collector: app.RoundCollector{Players: scriptedPlayers()},
+		Resolver:  engine.NewResolver(starter.ResolverOptions()),
+		Random:    seeded.New(1),
+		Store:     store,
+	}
+
+	firstFinal, _, err := runner.Play(context.Background(), initial, 1)
+	if err != nil {
+		t.Fatalf("first Play() error = %v", err)
+	}
+	secondFinal, _, err := runner.Play(context.Background(), firstFinal, 1)
+	if err != nil {
+		t.Fatalf("second Play() error = %v", err)
+	}
+	if got := secondFinal.CurrentRound; got != 3 {
+		t.Fatalf("CurrentRound = %d, want 3", got)
+	}
+
+	current, err := store.CurrentState(initial.MatchID)
+	if err != nil {
+		t.Fatalf("CurrentState() error = %v", err)
+	}
+	if got := len(current.History.RecentRounds); got != 2 {
+		t.Fatalf("stored history rounds = %d, want 2", got)
+	}
+}
+
 func scriptedPlayers() map[domain.RoleID]ports.Player {
 	return map[domain.RoleID]ports.Player{
 		domain.RoleProcurementManager: scriptPlayer(func(request ports.RoundRequest) domain.ActionSubmission {
