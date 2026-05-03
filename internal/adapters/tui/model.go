@@ -39,6 +39,11 @@ const (
 
 type workspaceMode int
 
+var (
+	_ = truncateDebugText
+	_ = wrapLines
+)
+
 type stateLoadedMsg struct {
 	state domain.MatchState
 }
