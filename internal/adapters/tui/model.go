@@ -75,6 +75,8 @@ type Model struct {
 	spinnerActive bool
 	spinnerGen    int
 	historyScroll int
+	debugSelected string
+	debugExpanded map[string]bool
 	drafts        map[domain.RoleID]actionDraft
 	lookup        lookupBrowserState
 }
@@ -88,13 +90,14 @@ func NewModel(definition scenario.Definition, source StateSource) Model {
 // submission hook for forwarding locked human actions into the shared runner.
 func NewModelWithSubmit(definition scenario.Definition, source StateSource, submit SubmitFunc) Model {
 	return Model{
-		scenario:  definition,
-		source:    source,
-		updates:   source.Updates(),
-		submit:    submit,
-		workspace: workspaceActionEntry,
-		status:    "Loading round state...",
-		drafts:    make(map[domain.RoleID]actionDraft),
+		scenario:      definition,
+		source:        source,
+		updates:       source.Updates(),
+		submit:        submit,
+		workspace:     workspaceActionEntry,
+		status:        "Loading round state...",
+		drafts:        make(map[domain.RoleID]actionDraft),
+		debugExpanded: make(map[string]bool),
 	}
 }
 
@@ -167,6 +170,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.state = typed.state.Clone()
 		m.selectedRole = clampRoleIndex(m.selectedRole, len(m.state.Roles))
+		m.ensureDebugSelection()
+		m.ensureDebugSelectionVisible()
 		m.status = fmt.Sprintf("Round %d loaded for %s", m.state.CurrentRound, m.roleTitle())
 		cmds := []tea.Cmd{waitForUpdateCmd(m.updates)}
 		if m.hasProviderWaits() {
@@ -276,6 +281,8 @@ func (m *Model) moveRole(delta int) {
 
 	m.selectedRole = (m.selectedRole + delta + roleCount) % roleCount
 	m.historyScroll = 0
+	m.ensureDebugSelection()
+	m.ensureDebugSelectionVisible()
 	m.status = fmt.Sprintf("Selected %s", m.roleTitle())
 }
 
@@ -283,6 +290,8 @@ func (m *Model) moveWorkspace(delta int) {
 	modeCount := int(workspaceDebug) + 1
 	m.workspace = workspaceMode((int(m.workspace) + delta + modeCount) % modeCount)
 	m.historyScroll = 0
+	m.ensureDebugSelection()
+	m.ensureDebugSelectionVisible()
 	m.status = fmt.Sprintf("Workspace switched to %s", m.workspace.label())
 }
 
@@ -294,6 +303,8 @@ func (m *Model) setWorkspace(mode workspaceMode) {
 
 	m.workspace = mode
 	m.historyScroll = 0
+	m.ensureDebugSelection()
+	m.ensureDebugSelectionVisible()
 	m.status = fmt.Sprintf("Workspace switched to %s", m.workspace.label())
 }
 
@@ -471,55 +482,11 @@ func (m Model) renderHistoryArchiveWorkspace(width int) []string {
 }
 
 func (m Model) renderDebugWorkspace(width int) []string {
-	lines := []string{
-		"AI API call log",
-		"View: LLM provider requests and raw responses for all AI players",
-		"",
-	}
-
-	if m.debugLog == nil {
-		lines = append(lines, "Debug log not available. AI logging requires a live game with AI players.")
-		return lines
-	}
-
-	records := m.debugLog.Records()
-	if len(records) == 0 {
-		lines = append(lines, "No AI API calls recorded yet.")
-		return lines
-	}
-
-	textWidth := paneTextWidth(width)
-	for i, rec := range records {
-		status := "INVALID"
-		if rec.Valid {
-			status = "OK"
-		}
-		header := fmt.Sprintf("[%d] Round %d | %s | %s/%s | attempt %d | %s",
-			i+1, rec.Round, rec.RoleID, rec.Provider, rec.Model, rec.Attempt, status)
-		lines = append(lines, header)
-		if rec.ErrorMessage != "" {
-			lines = append(lines, wrapLines("  Error: "+rec.ErrorMessage, textWidth)...)
-		}
-		if rec.SystemPrompt != "" {
-			preview := truncateDebugText(rec.SystemPrompt, 2000)
-			lines = append(lines, wrapLines("  System: "+preview, textWidth)...)
-		}
-		if rec.UserPrompt != "" {
-			preview := truncateDebugText(rec.UserPrompt, 2000)
-			lines = append(lines, wrapLines("  User: "+preview, textWidth)...)
-		}
-		if rec.RawResponse != "" {
-			preview := truncateDebugText(rec.RawResponse, 4000)
-			lines = append(lines, wrapLines("  Response: "+preview, textWidth)...)
-		}
-		lines = append(lines, "")
-	}
-
-	return lines
+	return m.renderDebugWorkspaceContent(width).lines
 }
 
 func truncateDebugText(s string, maxLen int) string {
-	s = strings.ReplaceAll(s, "\n", " ")
+	//s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "\t", " ")
 	if len(s) <= maxLen {
 		return s
@@ -1017,7 +984,7 @@ func workspaceInteractionHint(active workspaceMode) string {
 	case workspaceHistoryArchive:
 		return "up/down/pgup/pgdn/home/end scroll archive history"
 	case workspaceDebug:
-		return "up/down/pgup/pgdn/home/end scroll AI API call log"
+		return "up/down move, enter expand, esc collapse, pgup/pgdn/home/end jump through debug tree"
 	default:
 		return "up/down/pgup/pgdn/home/end scroll round feed history"
 	}
@@ -1030,6 +997,31 @@ func (m Model) historyWorkspaceSupportsScroll() bool {
 func (m *Model) handleHistoryScrollKey(msg tea.KeyMsg) bool {
 	if m.focusedPane != paneHistory || !m.historyWorkspaceSupportsScroll() {
 		return false
+	}
+
+	if m.workspace == workspaceDebug {
+		m.ensureDebugSelection()
+		switch msg.String() {
+		case "up":
+			m.moveDebugSelection(-1)
+		case "down":
+			m.moveDebugSelection(1)
+		case "enter":
+			m.expandDebugSelection()
+		case "esc":
+			m.collapseDebugSelection()
+		case "pgup":
+			m.pageDebugSelection(-m.historyPageSize())
+		case "pgdown":
+			m.pageDebugSelection(m.historyPageSize())
+		case "home":
+			m.moveDebugSelectionToEdge(false)
+		case "end":
+			m.moveDebugSelectionToEdge(true)
+		default:
+			return false
+		}
+		return true
 	}
 
 	switch msg.String() {
@@ -1055,6 +1047,19 @@ func (m *Model) handleHistoryScrollKey(msg tea.KeyMsg) bool {
 func (m *Model) handleHistoryScrollMouse(msg tea.MouseMsg) bool {
 	if m.focusedPane != paneHistory || !m.historyWorkspaceSupportsScroll() || !tea.MouseEvent(msg).IsWheel() {
 		return false
+	}
+
+	if m.workspace == workspaceDebug {
+		m.ensureDebugSelection()
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			m.moveDebugSelection(-3)
+		case tea.MouseButtonWheelDown:
+			m.moveDebugSelection(3)
+		default:
+			return false
+		}
+		return true
 	}
 
 	switch msg.Button {
