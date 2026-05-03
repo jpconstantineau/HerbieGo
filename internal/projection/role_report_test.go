@@ -32,12 +32,20 @@ func TestFinanceReportIncludesProjectedCashView(t *testing.T) {
 	}
 
 	report := projection.BuildRoleRoundReport(state, domain.RoleFinanceController)
-	details := strings.Join(report.Department.DetailLines, "\n")
-
-	if !strings.Contains(details, "Projected cash after all open commitments is 3 with projected debt 0.") {
-		t.Fatalf("finance detail lines missing projected position: %q", details)
+	var details []string
+	for _, section := range report.Department.Sections {
+		details = append(details, section.Summary...)
+		details = append(details, section.Facts...)
+		for _, warning := range section.Warnings {
+			details = append(details, warning.Headline, warning.Detail)
+		}
 	}
-	if !strings.Contains(details, "Next-round maturities net to 2 (5 receivable, 3 payable).") {
-		t.Fatalf("finance detail lines missing maturity summary: %q", details)
+	joined := strings.Join(details, "\n")
+
+	if !strings.Contains(joined, "Projected position after all open commitments is cash 3 and debt 0.") {
+		t.Fatalf("finance sections missing projected position: %q", joined)
+	}
+	if !strings.Contains(joined, "Next-round maturities net to 2 (5 receivable, 3 payable).") {
+		t.Fatalf("finance sections missing maturity summary: %q", joined)
 	}
 }

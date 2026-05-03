@@ -662,8 +662,9 @@ func TestModelRoleReportShowsCompanySnapshot(t *testing.T) {
 		"cycle",
 		"Role report for Procurement Manager",
 		"Company snapshot",
+		"Core decision:",
+		"Inventory risk",
 		"Inventory value:",
-		"Tracked product financial summaries:",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("role report missing %q\n%s", want, view)
