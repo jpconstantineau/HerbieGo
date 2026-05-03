@@ -56,6 +56,9 @@ models:
 	if cfg.Environment != "local" {
 		t.Fatalf("Environment = %q, want %q", cfg.Environment, "local")
 	}
+	if cfg.ScenarioID != "starter" {
+		t.Fatalf("ScenarioID = %q, want starter default", cfg.ScenarioID)
+	}
 
 	if cfg.Random.Seed != 7 {
 		t.Fatalf("Random.Seed = %d, want 7", cfg.Random.Seed)
@@ -180,7 +183,7 @@ roles:
 	message := err.Error()
 	for _, want := range []string{
 		"human_players must be between 0 and 4",
-		"roles must include exactly 4 canonical roles",
+		"roles must include exactly 4 expected roles",
 		"procurement_manager provider must not be empty",
 	} {
 		if !strings.Contains(message, want) {

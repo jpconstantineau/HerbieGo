@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/jpconstantineau/herbiego/internal/domain"
+	"github.com/jpconstantineau/herbiego/internal/scenario"
 	"gopkg.in/yaml.v3"
 )
 
@@ -17,6 +18,7 @@ const (
 	defaultEnvironment    = "local"
 	defaultRandomSeed     = uint64(1)
 	defaultAIRevealDelay  = 15
+	defaultScenarioID     = scenario.DefaultID
 )
 
 var preferredHumanRoleOrder = []domain.RoleID{
@@ -45,6 +47,7 @@ const (
 // Config holds process-level runtime configuration.
 type Config struct {
 	Environment  string                       `yaml:"environment"`
+	ScenarioID   domain.ScenarioID            `yaml:"scenario_id"`
 	MatchID      domain.MatchID               `yaml:"match_id"`
 	Random       RandomConfig                 `yaml:"random"`
 	HumanPlayers int                          `yaml:"human_players"`
@@ -189,6 +192,11 @@ func (c Config) ApplyOverrides(options BootstrapOptions) Config {
 
 // Validate checks that the configuration is internally consistent.
 func (c *Config) Validate() error {
+	return c.ValidateForRoles(domain.CanonicalRoles())
+}
+
+// ValidateForRoles checks that configuration is internally consistent for one role roster.
+func (c *Config) ValidateForRoles(expectedRoles []domain.RoleID) error {
 	c.normalize()
 
 	var errs []error
@@ -196,10 +204,12 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.Environment) == "" {
 		errs = append(errs, errors.New("environment must not be empty"))
 	}
+	if strings.TrimSpace(string(c.ScenarioID)) == "" {
+		errs = append(errs, errors.New("scenario_id must not be empty"))
+	}
 
-	expectedRoles := domain.CanonicalRoles()
 	if len(c.Roles) != len(expectedRoles) {
-		errs = append(errs, fmt.Errorf("roles must include exactly %d canonical roles", len(expectedRoles)))
+		errs = append(errs, fmt.Errorf("roles must include exactly %d expected roles", len(expectedRoles)))
 	}
 
 	if c.HumanPlayers < 0 || c.HumanPlayers > len(expectedRoles) {
@@ -235,6 +245,9 @@ func (c *Config) Validate() error {
 func (c *Config) normalize() {
 	if strings.TrimSpace(c.Environment) == "" {
 		c.Environment = defaultEnvironment
+	}
+	if strings.TrimSpace(string(c.ScenarioID)) == "" {
+		c.ScenarioID = defaultScenarioID
 	}
 
 	if c.Random.Seed == 0 {

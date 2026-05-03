@@ -1,4 +1,5 @@
 environment: local
+scenario_id: starter
 random:
   seed: 1
 human_players: 1
