@@ -24,7 +24,7 @@ func TestClientRequestsStructuredChatCompletion(t *testing.T) {
 			t.Fatalf("Decode() error = %v", err)
 		}
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"{\"contract_version\":\"herbiego.ai.v1\",\"match_id\":\"match-17\",\"round\":2,\"role_id\":\"sales_manager\",\"action\":{\"sales\":{\"product_offers\":[{\"product_id\":\"pump\",\"unit_price\":16}]}},\"commentary\":{\"public_summary\":\"Holding price to protect throughput.\",\"focus_tags\":[\"throughput\",\"pricing\"]}}"}}]}`))
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"{\"action\":{\"sales\":{\"product_offers\":[{\"product_id\":\"pump\",\"unit_price\":16}]}},\"commentary\":{\"public_summary\":\"Holding price to protect throughput.\",\"focus_tags\":[\"throughput\",\"pricing\"]}}"}}]}`))
 	}))
 	defer server.Close()
 
