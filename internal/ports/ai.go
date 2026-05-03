@@ -19,7 +19,7 @@ type RoleBriefing struct {
 
 // AIDecisionRequest is the canonical provider-neutral input to the AI runner.
 type AIDecisionRequest struct {
-	MatchID domain.MatchID
+	MatchID         domain.MatchID
 	Round           domain.RoundNumber
 	RoleID          domain.RoleID
 	Provider        string

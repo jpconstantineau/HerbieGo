@@ -50,16 +50,16 @@ func (o AIOrchestrator) SubmitRound(ctx context.Context, request ports.RoundRequ
 // AI decision contract.
 func (o AIOrchestrator) BuildRequest(request ports.RoundRequest) ports.AIDecisionRequest {
 	return ports.AIDecisionRequest{
-		MatchID:  request.RoleView.MatchID,
-		Round:           request.RoleView.Round,
-		RoleID:          request.Assignment.RoleID,
-		Provider:        request.Assignment.Provider,
-		Model:           request.Assignment.ModelName,
-		Briefing:        roleBriefing(request.Assignment.RoleID),
-		RoundView:       request.RoleView.Clone(),
-		RoleReport:      request.RoleReport.Clone(),
-		AllowedActions:  allowedActionSchema(request.Assignment.RoleID),
-		Tools:           lookupTools(),
+		MatchID:        request.RoleView.MatchID,
+		Round:          request.RoleView.Round,
+		RoleID:         request.Assignment.RoleID,
+		Provider:       request.Assignment.Provider,
+		Model:          request.Assignment.ModelName,
+		Briefing:       roleBriefing(request.Assignment.RoleID),
+		RoundView:      request.RoleView.Clone(),
+		RoleReport:     request.RoleReport.Clone(),
+		AllowedActions: allowedActionSchema(request.Assignment.RoleID),
+		Tools:          lookupTools(),
 		ResponseSpec: ports.ResponseFormatSpec{
 			RequireJSONOnly:     true,
 			AllowMarkdownFences: true,
