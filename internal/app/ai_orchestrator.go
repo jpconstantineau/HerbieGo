@@ -371,7 +371,7 @@ func validateDecisionResponse(response ports.AIDecisionResponse, request ports.A
 	if len(summary) > request.ResponseSpec.MaxCommentaryChars {
 		errs = append(errs, ports.ValidationError{Path: "commentary.public_summary", Message: fmt.Sprintf("must be at most %d characters", request.ResponseSpec.MaxCommentaryChars)})
 	}
-	if len(response.Commentary.FocusTags) > request.ResponseSpec.MaxFocusTags {
+	if len(response.Commentary.FocusTags) > 0 && len(response.Commentary.FocusTags) > request.ResponseSpec.MaxFocusTags {
 		errs = append(errs, ports.ValidationError{Path: "commentary.focus_tags", Message: fmt.Sprintf("must contain at most %d tags", request.ResponseSpec.MaxFocusTags)})
 	}
 	for i, tag := range response.Commentary.FocusTags {
