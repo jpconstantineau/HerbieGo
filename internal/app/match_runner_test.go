@@ -1,8 +1,11 @@
 package app_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/jpconstantineau/herbiego/internal/adapters/random/seeded"
@@ -75,6 +78,50 @@ func TestMatchRunnerPlaysMultipleResolvedRounds(t *testing.T) {
 		if len(result.Round.Timeline) == 0 {
 			t.Fatalf("round %d timeline is empty", index+1)
 		}
+	}
+}
+
+func TestMatchRunnerEmitsStructuredLogs(t *testing.T) {
+	starter := scenario.Starter()
+	initial := starter.InitialState("starter-match", []domain.RoleAssignment{
+		{RoleID: domain.RoleProcurementManager, PlayerID: "procurement-player", IsHuman: true},
+		{RoleID: domain.RoleProductionManager, PlayerID: "production-player", Provider: "ollama", ModelName: "gemma4:e4b"},
+		{RoleID: domain.RoleSalesManager, PlayerID: "sales-player", Provider: "openrouter", ModelName: "openai/gpt-5-mini"},
+		{RoleID: domain.RoleFinanceController, PlayerID: "finance-player", Provider: "openai", ModelName: "gpt-5-mini"},
+	})
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+
+	runner := app.MatchRunner{
+		Collector: app.RoundCollector{
+			Players: scriptedPlayers(),
+			Logger:  logger,
+		},
+		Resolver: engine.NewResolver(starter.ResolverOptions()),
+		Random:   seeded.New(1),
+		Logger:   logger,
+	}
+
+	_, _, err := runner.Play(context.Background(), initial, 1)
+	if err != nil {
+		t.Fatalf("Play() error = %v", err)
+	}
+
+	output := logs.String()
+	if !strings.Contains(output, "msg=\"match play started\"") {
+		t.Fatalf("logs = %q, want match start entry", output)
+	}
+	if !strings.Contains(output, "msg=\"round collection started\"") {
+		t.Fatalf("logs = %q, want collection start entry", output)
+	}
+	if !strings.Contains(output, "msg=\"round completed\"") {
+		t.Fatalf("logs = %q, want round completion entry", output)
+	}
+	if !strings.Contains(output, "component=match_runner") || !strings.Contains(output, "match_id=starter-match") {
+		t.Fatalf("logs = %q, want structured component and match fields", output)
 	}
 }
 

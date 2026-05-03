@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 
@@ -29,6 +30,7 @@ type AIOrchestrator struct {
 	MaxAttempts  int
 	MaxToolCalls int
 	DebugLog     *DebugLog
+	Logger       *slog.Logger
 }
 
 func NewAIOrchestrator(definition scenario.Definition, client ports.DecisionClient) AIOrchestrator {
@@ -84,9 +86,18 @@ func (o AIOrchestrator) Decide(ctx context.Context, request ports.AIDecisionRequ
 	audit := ports.AIDecisionAudit{}
 	retryContext := request.RetryContext
 	toolCalls := 0
+	logger := loggerOrDiscard(o.Logger).With(
+		"component", "ai_orchestrator",
+		"match_id", request.MatchID,
+		"round", request.Round,
+		"role_id", request.RoleID,
+		"provider", request.Provider,
+		"model", request.Model,
+	)
 
 	for attempt := range attempts {
 		audit.AttemptCount = attempt + 1
+		logger.Debug("ai decision attempt started", "attempt", attempt+1)
 
 		providerRequest := ports.ProviderDecisionRequest{
 			Provider:            request.Provider,
@@ -109,6 +120,7 @@ func (o AIOrchestrator) Decide(ctx context.Context, request ports.AIDecisionRequ
 				UserPrompt:   providerRequest.UserPrompt,
 				ErrorMessage: err.Error(),
 			})
+			logger.Error("ai decision request failed", "attempt", attempt+1, "error", err)
 			return domain.ActionSubmission{}, audit, fmt.Errorf("app: ai decision runner: request decision: %w", err)
 		}
 
@@ -135,24 +147,29 @@ func (o AIOrchestrator) Decide(ctx context.Context, request ports.AIDecisionRequ
 				toolCalls++
 				if toolCalls > max(0, o.MaxToolCalls) && o.MaxToolCalls > 0 {
 					validationErrors = []ports.ValidationError{{Path: "tool_call", Message: fmt.Sprintf("tool call budget exceeded; at most %d tool calls allowed", o.MaxToolCalls)}}
+					logger.Warn("ai tool call budget exceeded", "attempt", attempt+1, "tool_call_count", toolCalls, "tool_call_budget", o.MaxToolCalls)
 				} else {
 					toolResult, toolErr := o.executeToolCall(*toolCall)
 					if toolErr != nil {
 						validationErrors = []ports.ValidationError{{Path: "tool_call", Message: toolErr.Error()}}
+						logger.Warn("ai tool call failed", "attempt", attempt+1, "tool_name", toolCall.ToolName, "error", toolErr)
 					} else {
 						request.ToolResults = append(request.ToolResults, toolResult)
 						request.PriorAIResponse = result.RawResponse
 						retryContext = nil
 						audit.ValidationErrors = nil
+						logger.Debug("ai tool call completed", "attempt", attempt+1, "tool_name", toolCall.ToolName, "tool_call_count", toolCalls)
 						continue
 					}
 				}
 			} else {
+				logger.Info("ai decision completed", "attempt_count", attempt+1, "tool_call_count", toolCalls)
 				return responseToSubmission(response, request), audit, nil
 			}
 		}
 
 		audit.ValidationErrors = validationErrors
+		logger.Debug("ai decision validation failed", "attempt", attempt+1, "validation_error_count", len(validationErrors), "parse_error", parseErr != nil)
 		retryContext = &ports.RetryFeedback{
 			Attempt:          attempt + 1,
 			ValidationErrors: slices.Clone(validationErrors),
@@ -163,6 +180,7 @@ func (o AIOrchestrator) Decide(ctx context.Context, request ports.AIDecisionRequ
 	submission, reason := fallbackSubmission(request)
 	audit.UsedFallback = true
 	audit.FallbackReason = reason
+	logger.Warn("ai decision fell back", "attempt_count", audit.AttemptCount, "tool_call_count", toolCalls, "fallback_reason", reason)
 	return submission, audit, nil
 }
 

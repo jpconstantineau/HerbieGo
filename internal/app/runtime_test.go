@@ -59,4 +59,7 @@ func TestNewRuntimeSeedsDefaultStarterMatch(t *testing.T) {
 	if got := len(runtime.InitialMatch.RoundFlow.WaitingOnRoles); got != 4 {
 		t.Fatalf("InitialMatch.RoundFlow.WaitingOnRoles len = %d, want 4", got)
 	}
+	if runtime.Logger == nil {
+		t.Fatal("runtime.Logger = nil, want process logger")
+	}
 }

@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"log/slog"
 	"slices"
 
 	"github.com/jpconstantineau/herbiego/internal/adapters/random/seeded"
@@ -13,6 +14,7 @@ import (
 // Runtime contains the process dependencies created during startup.
 type Runtime struct {
 	Config       Config
+	Logger       *slog.Logger
 	Random       ports.RandomSource
 	Scenario     scenario.Definition
 	InitialMatch domain.MatchState
@@ -47,6 +49,7 @@ func NewRuntime(cfg Config) (Runtime, error) {
 
 	return Runtime{
 		Config:       cfg,
+		Logger:       newProcessLogger(),
 		Random:       seeded.New(cfg.Random.Seed),
 		Scenario:     starter,
 		InitialMatch: initialMatch,
