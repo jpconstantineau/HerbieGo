@@ -142,6 +142,25 @@ models:
 	}
 }
 
+func TestConfigApplyOverridesSupportsMatchIDOverride(t *testing.T) {
+	cfg := Config{
+		Environment: "local",
+		MatchID:     "config-match",
+		Random: RandomConfig{
+			Seed: 7,
+		},
+	}
+
+	override := domain.MatchID("fixture-match-99")
+	cfg = cfg.ApplyOverrides(BootstrapOptions{
+		MatchIDOverride: &override,
+	})
+
+	if got := cfg.MatchID; got != "fixture-match-99" {
+		t.Fatalf("MatchID = %q, want override", got)
+	}
+}
+
 func TestLoadConfigReportsValidationErrors(t *testing.T) {
 	configPath := writeConfigFile(t, `
 human_players: 5

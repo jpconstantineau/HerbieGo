@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"time"
 
 	"github.com/jpconstantineau/herbiego/internal/adapters/random/seeded"
 	"github.com/jpconstantineau/herbiego/internal/domain"
@@ -19,6 +20,8 @@ type Runtime struct {
 	Scenario     scenario.Definition
 	InitialMatch domain.MatchState
 }
+
+var runtimeTimeNow = time.Now
 
 // Bootstrap loads startup configuration and constructs process dependencies.
 func Bootstrap(options BootstrapOptions) (Runtime, error) {
@@ -44,7 +47,7 @@ func NewRuntime(cfg Config) (Runtime, error) {
 	}
 
 	starter := scenario.Default()
-	initialMatch := starter.InitialState("starter-match", runtimeRoles(cfg))
+	initialMatch := starter.InitialState(runtimeMatchID(cfg, starter.ID), runtimeRoles(cfg))
 	initialMatch.RoundFlow.AIRevealDelaySeconds = cfg.UI.AIRevealDelaySeconds
 
 	return Runtime{
@@ -54,6 +57,19 @@ func NewRuntime(cfg Config) (Runtime, error) {
 		Scenario:     starter,
 		InitialMatch: initialMatch,
 	}, nil
+}
+
+func runtimeMatchID(cfg Config, scenarioID domain.ScenarioID) domain.MatchID {
+	if cfg.MatchID != "" {
+		return cfg.MatchID
+	}
+
+	return domain.MatchID(fmt.Sprintf(
+		"%s-match-%d-%d",
+		scenarioID,
+		cfg.Random.Seed,
+		runtimeTimeNow().UTC().UnixNano(),
+	))
 }
 
 // RoleSummaries returns a stable summary of role runtime assignments.

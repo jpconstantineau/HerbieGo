@@ -45,6 +45,7 @@ const (
 // Config holds process-level runtime configuration.
 type Config struct {
 	Environment  string                       `yaml:"environment"`
+	MatchID      domain.MatchID               `yaml:"match_id"`
 	Random       RandomConfig                 `yaml:"random"`
 	HumanPlayers int                          `yaml:"human_players"`
 	UI           UIConfig                     `yaml:"ui"`
@@ -84,6 +85,7 @@ type RoleConfigFile struct {
 type BootstrapOptions struct {
 	ConfigPath           string
 	LLMCatalogPath       string
+	MatchIDOverride      *domain.MatchID
 	HumanPlayersOverride *int
 	SeedOverride         *uint64
 }
@@ -169,6 +171,10 @@ func LoadLLMCatalog(path string) (LLMCatalog, error) {
 
 // ApplyOverrides applies runtime-only startup overrides after config loading.
 func (c Config) ApplyOverrides(options BootstrapOptions) Config {
+	if options.MatchIDOverride != nil {
+		c.MatchID = *options.MatchIDOverride
+	}
+
 	if options.HumanPlayersOverride != nil {
 		c.HumanPlayers = *options.HumanPlayersOverride
 	}
