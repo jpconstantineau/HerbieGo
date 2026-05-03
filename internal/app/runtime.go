@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -47,7 +48,10 @@ func NewRuntime(cfg Config) (Runtime, error) {
 	if !ok {
 		return Runtime{}, fmt.Errorf("resolve scenario %q: scenario is not registered", cfg.ScenarioID)
 	}
-	if err := cfg.ValidateForRoles(selected.Setup.RoleRoster); err != nil {
+	if err := cfg.Validate(); err != nil {
+		return Runtime{}, fmt.Errorf("validate runtime config: %w", err)
+	}
+	if err := validateRuntimeRoles(cfg, selected.Setup.RoleRoster); err != nil {
 		return Runtime{}, fmt.Errorf("validate runtime config: %w", err)
 	}
 
@@ -61,6 +65,34 @@ func NewRuntime(cfg Config) (Runtime, error) {
 		Scenario:     selected,
 		InitialMatch: initialMatch,
 	}, nil
+}
+
+func validateRuntimeRoles(cfg Config, expectedRoles []domain.RoleID) error {
+	var errs []error
+
+	if len(cfg.Roles) != len(expectedRoles) {
+		errs = append(errs, fmt.Errorf("roles must include exactly %d expected roles", len(expectedRoles)))
+	}
+	if cfg.HumanPlayers > len(expectedRoles) {
+		errs = append(errs, fmt.Errorf("human_players must be between 0 and %d", len(expectedRoles)))
+	}
+
+	for _, roleID := range expectedRoles {
+		if _, ok := cfg.Roles[roleID]; !ok {
+			errs = append(errs, fmt.Errorf("role configuration missing for %s", roleID))
+		}
+	}
+
+	for roleID := range cfg.Roles {
+		if !slices.Contains(expectedRoles, roleID) {
+			errs = append(errs, fmt.Errorf("role configuration %s is not part of scenario %s", roleID, cfg.ScenarioID))
+		}
+	}
+
+	if len(errs) == 0 {
+		return nil
+	}
+	return errors.Join(errs...)
 }
 
 func runtimeMatchID(cfg Config, scenarioID domain.ScenarioID) domain.MatchID {

@@ -182,13 +182,31 @@ roles:
 
 	message := err.Error()
 	for _, want := range []string{
-		"human_players must be between 0 and 4",
-		"roles must include exactly 4 expected roles",
 		"procurement_manager provider must not be empty",
 	} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("error %q does not contain %q", message, want)
 		}
+	}
+}
+
+func TestLoadConfigAllowsPartialRoleSetsBeforeScenarioRuntimeValidation(t *testing.T) {
+	configPath := writeConfigFile(t, `
+human_players: 3
+roles:
+  - role_id: sales_manager
+    provider: openrouter
+`)
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if got := len(cfg.Roles); got != 1 {
+		t.Fatalf("len(cfg.Roles) = %d, want 1", got)
+	}
+	if got := cfg.HumanPlayers; got != 3 {
+		t.Fatalf("HumanPlayers = %d, want 3", got)
 	}
 }
 

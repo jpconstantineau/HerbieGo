@@ -190,13 +190,8 @@ func (c Config) ApplyOverrides(options BootstrapOptions) Config {
 	return c
 }
 
-// Validate checks that the configuration is internally consistent.
+// Validate checks that the configuration is internally consistent without assuming a scenario roster.
 func (c *Config) Validate() error {
-	return c.ValidateForRoles(domain.CanonicalRoles())
-}
-
-// ValidateForRoles checks that configuration is internally consistent for one role roster.
-func (c *Config) ValidateForRoles(expectedRoles []domain.RoleID) error {
 	c.normalize()
 
 	var errs []error
@@ -208,12 +203,8 @@ func (c *Config) ValidateForRoles(expectedRoles []domain.RoleID) error {
 		errs = append(errs, errors.New("scenario_id must not be empty"))
 	}
 
-	if len(c.Roles) != len(expectedRoles) {
-		errs = append(errs, fmt.Errorf("roles must include exactly %d expected roles", len(expectedRoles)))
-	}
-
-	if c.HumanPlayers < 0 || c.HumanPlayers > len(expectedRoles) {
-		errs = append(errs, fmt.Errorf("human_players must be between 0 and %d", len(expectedRoles)))
+	if c.HumanPlayers < 0 {
+		errs = append(errs, errors.New("human_players must be greater than or equal to 0"))
 	}
 	if c.UI.AIRevealDelaySeconds <= 0 {
 		errs = append(errs, errors.New("ui.ai_reveal_delay_seconds must be greater than 0"))
@@ -223,13 +214,7 @@ func (c *Config) ValidateForRoles(expectedRoles []domain.RoleID) error {
 		errs = append(errs, fmt.Errorf("llm catalog: %w", err))
 	}
 
-	for _, roleID := range expectedRoles {
-		roleCfg, ok := c.Roles[roleID]
-		if !ok {
-			errs = append(errs, fmt.Errorf("role configuration missing for %s", roleID))
-			continue
-		}
-
+	for roleID, roleCfg := range c.Roles {
 		if err := validateRoleConfig(roleID, roleCfg, len(c.LLMCatalog.Entries) > 0); err != nil {
 			errs = append(errs, err)
 		}
