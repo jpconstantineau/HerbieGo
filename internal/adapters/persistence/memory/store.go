@@ -7,9 +7,8 @@ import (
 	"sync"
 
 	"github.com/jpconstantineau/herbiego/internal/domain"
+	"github.com/jpconstantineau/herbiego/internal/ports"
 )
-
-var ErrMatchNotFound = errors.New("memory store: match not found")
 
 type Options struct {
 	// RecentHistoryLimit bounds MatchState.History without trimming the full event or commentary timeline.
@@ -69,7 +68,7 @@ func (s *Store) CurrentState(matchID domain.MatchID) (domain.MatchState, error) 
 
 	match, ok := s.matches[matchID]
 	if !ok {
-		return domain.MatchState{}, ErrMatchNotFound
+		return domain.MatchState{}, ports.ErrMatchNotFound
 	}
 
 	return match.state.Clone(), nil
@@ -91,7 +90,7 @@ func (s *Store) CommitRound(matchID domain.MatchID, nextState domain.MatchState,
 
 	match, ok := s.matches[matchID]
 	if !ok {
-		return domain.MatchState{}, ErrMatchNotFound
+		return domain.MatchState{}, ports.ErrMatchNotFound
 	}
 
 	if len(match.rounds) > 0 {
@@ -121,7 +120,7 @@ func (s *Store) Round(matchID domain.MatchID, roundNumber domain.RoundNumber) (d
 
 	match, ok := s.matches[matchID]
 	if !ok {
-		return domain.RoundRecord{}, ErrMatchNotFound
+		return domain.RoundRecord{}, ports.ErrMatchNotFound
 	}
 
 	for _, round := range match.rounds {
@@ -139,7 +138,7 @@ func (s *Store) EventTimeline(matchID domain.MatchID) ([]domain.RoundEvent, erro
 
 	match, ok := s.matches[matchID]
 	if !ok {
-		return nil, ErrMatchNotFound
+		return nil, ports.ErrMatchNotFound
 	}
 
 	return cloneEvents(match.events), nil
@@ -152,7 +151,7 @@ func (s *Store) Commentary(matchID domain.MatchID) ([]domain.CommentaryRecord, e
 
 	match, ok := s.matches[matchID]
 	if !ok {
-		return nil, ErrMatchNotFound
+		return nil, ports.ErrMatchNotFound
 	}
 
 	return slices.Clone(match.commentary), nil

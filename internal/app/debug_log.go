@@ -14,6 +14,7 @@ type DebugLog struct {
 	mu      sync.RWMutex
 	records []ports.AICallRecord
 	maxSize int
+	sink    func(ports.AICallRecord)
 }
 
 // NewDebugLog creates an empty debug log that retains up to maxSize records.
@@ -27,10 +28,15 @@ func NewDebugLog(maxSize int) *DebugLog {
 // Append adds a call record, evicting the oldest entry when the log is full.
 func (d *DebugLog) Append(record ports.AICallRecord) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	d.records = append(d.records, record)
 	if len(d.records) > d.maxSize {
 		d.records = d.records[len(d.records)-d.maxSize:]
+	}
+	sink := d.sink
+	d.mu.Unlock()
+
+	if sink != nil {
+		sink(record)
 	}
 }
 
@@ -41,4 +47,11 @@ func (d *DebugLog) Records() []ports.AICallRecord {
 	result := make([]ports.AICallRecord, len(d.records))
 	copy(result, d.records)
 	return result
+}
+
+// SetSink configures an optional side-effect hook for durable debug capture.
+func (d *DebugLog) SetSink(sink func(ports.AICallRecord)) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.sink = sink
 }

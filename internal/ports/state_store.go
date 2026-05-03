@@ -1,6 +1,12 @@
 package ports
 
-import "github.com/jpconstantineau/herbiego/internal/domain"
+import (
+	"errors"
+
+	"github.com/jpconstantineau/herbiego/internal/domain"
+)
+
+var ErrMatchNotFound = errors.New("match not found")
 
 // MatchStateStore persists and serves canonical match state for the round being collected,
 // plus append-only event and commentary timelines.

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -45,11 +46,19 @@ func (r MatchRunner) Play(ctx context.Context, initial domain.MatchState, rounds
 	logger.Info("match play started", "rounds_requested", rounds, "starting_round", state.CurrentRound)
 
 	if r.Store != nil {
-		if err := r.Store.CreateMatch(state); err != nil {
-			logger.Error("match store create failed", "error", err)
-			return domain.MatchState{}, nil, fmt.Errorf("app: create match in store: %w", err)
+		if _, err := r.Store.CurrentState(state.MatchID); err != nil {
+			if !errors.Is(err, ports.ErrMatchNotFound) {
+				logger.Error("match store lookup failed", "error", err)
+				return domain.MatchState{}, nil, fmt.Errorf("app: load match from store: %w", err)
+			}
+			if err := r.Store.CreateMatch(state); err != nil {
+				logger.Error("match store create failed", "error", err)
+				return domain.MatchState{}, nil, fmt.Errorf("app: create match in store: %w", err)
+			}
+			logger.Info("match store initialized")
+		} else {
+			logger.Info("match store already initialized")
 		}
-		logger.Info("match store initialized")
 	}
 
 	state = prepareCollectionState(state)
