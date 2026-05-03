@@ -7,8 +7,8 @@ const (
 	StarterID domain.ScenarioID = "starter"
 )
 
-func Default() Definition {
-	return Starter()
+func init() {
+	MustRegister(Starter())
 }
 
 func Starter() Definition {

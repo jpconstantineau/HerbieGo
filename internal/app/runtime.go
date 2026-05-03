@@ -42,19 +42,23 @@ func Bootstrap(options BootstrapOptions) (Runtime, error) {
 
 // NewRuntime validates runtime config and constructs startup dependencies.
 func NewRuntime(cfg Config) (Runtime, error) {
-	if err := cfg.Validate(); err != nil {
+	cfg.normalize()
+	selected, ok := scenario.Lookup(cfg.ScenarioID)
+	if !ok {
+		return Runtime{}, fmt.Errorf("resolve scenario %q: scenario is not registered", cfg.ScenarioID)
+	}
+	if err := cfg.ValidateForRoles(selected.Setup.RoleRoster); err != nil {
 		return Runtime{}, fmt.Errorf("validate runtime config: %w", err)
 	}
 
-	starter := scenario.Default()
-	initialMatch := starter.InitialState(runtimeMatchID(cfg, starter.ID), runtimeRoles(cfg))
+	initialMatch := selected.InitialState(runtimeMatchID(cfg, selected.ID), runtimeRoles(cfg, selected))
 	initialMatch.RoundFlow.AIRevealDelaySeconds = cfg.UI.AIRevealDelaySeconds
 
 	return Runtime{
 		Config:       cfg,
 		Logger:       newProcessLogger(),
 		Random:       seeded.New(cfg.Random.Seed),
-		Scenario:     starter,
+		Scenario:     selected,
 		InitialMatch: initialMatch,
 	}, nil
 }
@@ -75,7 +79,7 @@ func runtimeMatchID(cfg Config, scenarioID domain.ScenarioID) domain.MatchID {
 // RoleSummaries returns a stable summary of role runtime assignments.
 func (r Runtime) RoleSummaries() []string {
 	summaries := make([]string, 0, len(r.Config.Roles))
-	for _, roleID := range domain.CanonicalRoles() {
+	for _, roleID := range r.Scenario.Setup.RoleRoster {
 		roleCfg, ok := r.Config.Roles[roleID]
 		if !ok {
 			continue
@@ -93,9 +97,9 @@ func (r Runtime) RoleSummaries() []string {
 	return summaries
 }
 
-func runtimeRoles(cfg Config) []domain.RoleAssignment {
+func runtimeRoles(cfg Config, selected scenario.Definition) []domain.RoleAssignment {
 	roles := make([]domain.RoleAssignment, 0, len(cfg.Roles))
-	for _, roleID := range domain.CanonicalRoles() {
+	for _, roleID := range selected.Setup.RoleRoster {
 		roleCfg, ok := cfg.Roles[roleID]
 		if !ok {
 			continue
