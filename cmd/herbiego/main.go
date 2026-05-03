@@ -52,10 +52,11 @@ func runLiveGameplay(ctx context.Context, runtime app.Runtime, rounds int) error
 	}
 
 	runner := app.MatchRunner{
-		Collector: app.RoundCollector{Players: players},
+		Collector: app.RoundCollector{Players: players, Logger: runtime.Logger},
 		Resolver:  engine.NewResolver(runtime.Scenario.ResolverOptions()),
 		Random:    runtime.Random,
 		OnState:   controller.Publish,
+		Logger:    runtime.Logger,
 	}
 
 	ctx, cancel := context.WithCancel(ctx)

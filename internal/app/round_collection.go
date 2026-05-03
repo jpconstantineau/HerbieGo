@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -20,6 +21,7 @@ type RoundCollector struct {
 	Players     map[domain.RoleID]ports.Player
 	Now         func() time.Time
 	OnRoundFlow func(domain.RoundFlowState)
+	Logger      *slog.Logger
 }
 
 // Collect walks the assigned roles in stable match order so mixed human and AI
@@ -36,6 +38,12 @@ func (c RoundCollector) Collect(ctx context.Context, state domain.MatchState, pr
 	collected := make([]domain.ActionSubmission, len(state.Roles))
 	group, groupCtx := errgroup.WithContext(ctx)
 	progress := newRoundFlowProgress(state.RoundFlow, state.Roles, c.OnRoundFlow)
+	logger := loggerOrDiscard(c.Logger).With(
+		"component", "round_collector",
+		"match_id", state.MatchID,
+		"round", state.CurrentRound,
+	)
+	logger.Info("round collection started", "role_count", len(state.Roles))
 
 	for i, assignment := range state.Roles {
 		i := i
@@ -51,28 +59,40 @@ func (c RoundCollector) Collect(ctx context.Context, state domain.MatchState, pr
 			RoleReport:             projection.BuildRoleRoundReport(state, assignment.RoleID),
 			PreviousAcceptedAction: clonePrevious(previous[assignment.RoleID]),
 		}
+		roleLogger := logger.With(
+			"role_id", assignment.RoleID,
+			"is_human", assignment.IsHuman,
+			"provider", assignment.Provider,
+			"model", assignment.ModelName,
+		)
 
 		group.Go(func() error {
 			progress.markProviderWaiting(assignment, true)
+			roleLogger.Debug("waiting for player submission")
 			submission, err := player.SubmitRound(groupCtx, request)
 			if err != nil {
+				roleLogger.Warn("player submission failed; attempting recovery", "error", err)
 				submission, err = player.RecoverFromNonResponse(groupCtx, request, err)
 				if err != nil {
 					progress.markProviderWaiting(assignment, false)
+					roleLogger.Error("player submission recovery failed", "error", err)
 					return fmt.Errorf("app: collect round %d for %q: %w", state.CurrentRound, assignment.RoleID, err)
 				}
 			}
 
 			collected[i] = normalizeSubmission(submission, request, now)
 			progress.markSubmitted(assignment.RoleID)
+			roleLogger.Info("player submission collected")
 			return nil
 		})
 	}
 
 	if err := group.Wait(); err != nil {
+		logger.Error("round collection failed", "error", err)
 		return nil, err
 	}
 
+	logger.Info("round collection completed", "collected_count", len(collected))
 	return collected, nil
 }
 

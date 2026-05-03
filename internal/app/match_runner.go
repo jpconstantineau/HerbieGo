@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/jpconstantineau/herbiego/internal/domain"
 	"github.com/jpconstantineau/herbiego/internal/engine"
@@ -17,6 +18,7 @@ type MatchRunner struct {
 	Random    ports.RandomSource
 	OnState   func(domain.MatchState)
 	OnRound   func(engine.Result)
+	Logger    *slog.Logger
 }
 
 // Play advances the match for the requested number of rounds.
@@ -34,8 +36,16 @@ func (r MatchRunner) Play(ctx context.Context, initial domain.MatchState, rounds
 	state := prepareCollectionState(initial.Clone())
 	previous := previousAcceptedActions(state)
 	results := make([]engine.Result, 0, rounds)
+	logger := loggerOrDiscard(r.Logger).With(
+		"component", "match_runner",
+		"match_id", state.MatchID,
+		"scenario_id", state.ScenarioID,
+	)
+	logger.Info("match play started", "rounds_requested", rounds, "starting_round", state.CurrentRound)
 
 	for range rounds {
+		roundLogger := logger.With("round", state.CurrentRound)
+		roundLogger.Info("round started")
 		r.emitState(state)
 
 		collector := r.Collector
@@ -47,6 +57,7 @@ func (r MatchRunner) Play(ctx context.Context, initial domain.MatchState, rounds
 
 		actions, err := collector.Collect(ctx, state, previous)
 		if err != nil {
+			roundLogger.Error("round collection failed", "error", err)
 			return state, results, err
 		}
 
@@ -56,6 +67,7 @@ func (r MatchRunner) Play(ctx context.Context, initial domain.MatchState, rounds
 
 		result, err := r.Resolver.ResolveRound(state, actions, r.Random)
 		if err != nil {
+			roundLogger.Error("round resolution failed", "error", err)
 			return state, results, err
 		}
 
@@ -68,10 +80,20 @@ func (r MatchRunner) Play(ctx context.Context, initial domain.MatchState, rounds
 		}
 		r.emitRound(result)
 		r.emitState(revealed)
+		roundLogger.Info(
+			"round completed",
+			"action_count", len(result.Round.Actions),
+			"next_round", revealed.CurrentRound,
+			"cash", revealed.Plant.Cash,
+			"debt", revealed.Plant.Debt,
+			"backlog_count", len(revealed.Plant.Backlog),
+			"round_profit", revealed.Metrics.RoundProfit,
+		)
 
 		state = prepareCollectionState(revealed)
 	}
 
+	logger.Info("match play completed", "final_round", state.CurrentRound, "resolved_rounds", len(results))
 	return state.Clone(), results, nil
 }
 

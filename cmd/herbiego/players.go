@@ -21,6 +21,7 @@ func buildPlayersWithHumanSubmit(runtime app.Runtime, submit human.SubmitFunc) (
 	debugLog := app.NewDebugLog(0)
 	orchestrator := app.NewAIOrchestrator(runtime.Scenario, decisionClient)
 	orchestrator.DebugLog = debugLog
+	orchestrator.Logger = runtime.Logger
 
 	players := make(map[domain.RoleID]ports.Player, len(runtime.InitialMatch.Roles))
 	for _, assignment := range runtime.InitialMatch.Roles {

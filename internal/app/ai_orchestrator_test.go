@@ -1,8 +1,10 @@
 package app_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -358,5 +360,36 @@ func TestAIOrchestratorUsesStructuredProviderResponsesWhenAvailable(t *testing.T
 	}
 	if got := submission.Commentary.Body; got != "Raise price to protect constrained throughput." {
 		t.Fatalf("Commentary.Body = %q, want structured commentary", got)
+	}
+}
+
+func TestAIOrchestratorEmitsStructuredLogs(t *testing.T) {
+	client := &stubDecisionClient{
+		responses: []ports.ProviderDecisionResult{
+			{RawResponse: `{"action":{"sales":{"product_offers":[{"product_id":"pump","unit_price":16}]}},"commentary":{"public_summary":"","focus_tags":[]}}`},
+			{RawResponse: `{"action":{"sales":{"product_offers":[{"product_id":"pump","unit_price":15}]}},"commentary":{"public_summary":"Reducing price slightly to protect revenue without outrunning flow.","focus_tags":["revenue","flow"]}}`},
+		},
+	}
+
+	var logs bytes.Buffer
+	orchestrator := app.NewAIOrchestrator(scenario.Starter(), client)
+	orchestrator.Logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	}))
+
+	_, _, err := orchestrator.Decide(context.Background(), orchestrator.BuildRequest(aiRoundRequest(domain.RoleSalesManager)))
+	if err != nil {
+		t.Fatalf("Decide() error = %v", err)
+	}
+
+	output := logs.String()
+	if !strings.Contains(output, "msg=\"ai decision validation failed\"") {
+		t.Fatalf("logs = %q, want validation failure entry", output)
+	}
+	if !strings.Contains(output, "msg=\"ai decision completed\"") {
+		t.Fatalf("logs = %q, want completion entry", output)
+	}
+	if !strings.Contains(output, "match_id=match-17") || !strings.Contains(output, "role_id=sales_manager") {
+		t.Fatalf("logs = %q, want structured match and role fields", output)
 	}
 }
