@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jpconstantineau/herbiego/internal/adapters/persistence/memory"
 	"github.com/jpconstantineau/herbiego/internal/adapters/random/seeded"
 	"github.com/jpconstantineau/herbiego/internal/app"
 	"github.com/jpconstantineau/herbiego/internal/domain"
@@ -122,6 +123,69 @@ func TestMatchRunnerEmitsStructuredLogs(t *testing.T) {
 	}
 	if !strings.Contains(output, "component=match_runner") || !strings.Contains(output, "match_id=starter-match") {
 		t.Fatalf("logs = %q, want structured component and match fields", output)
+	}
+}
+
+func TestMatchRunnerPersistsCommittedRoundsWhenStoreConfigured(t *testing.T) {
+	starter := scenario.Starter()
+	initial := starter.InitialState("match-207", []domain.RoleAssignment{
+		{RoleID: domain.RoleProcurementManager, PlayerID: "procurement-player", IsHuman: true},
+		{RoleID: domain.RoleProductionManager, PlayerID: "production-player", Provider: "ollama", ModelName: "gemma4:e4b"},
+		{RoleID: domain.RoleSalesManager, PlayerID: "sales-player", Provider: "openrouter", ModelName: "openai/gpt-5-mini"},
+		{RoleID: domain.RoleFinanceController, PlayerID: "finance-player", Provider: "openai", ModelName: "gpt-5-mini"},
+	})
+
+	store := memory.NewStore(memory.Options{RecentHistoryLimit: 10})
+	runner := app.MatchRunner{
+		Collector: app.RoundCollector{
+			Players: scriptedPlayers(),
+		},
+		Resolver: engine.NewResolver(starter.ResolverOptions()),
+		Random:   seeded.New(1),
+		Store:    store,
+	}
+
+	final, results, err := runner.Play(context.Background(), initial, 2)
+	if err != nil {
+		t.Fatalf("Play() error = %v", err)
+	}
+	if got := len(results); got != 2 {
+		t.Fatalf("len(results) = %d, want 2", got)
+	}
+
+	current, err := store.CurrentState(initial.MatchID)
+	if err != nil {
+		t.Fatalf("CurrentState() error = %v", err)
+	}
+	if got := current.CurrentRound; got != final.CurrentRound {
+		t.Fatalf("stored CurrentRound = %d, want %d", got, final.CurrentRound)
+	}
+	if got := len(current.History.RecentRounds); got != 2 {
+		t.Fatalf("stored history rounds = %d, want 2", got)
+	}
+
+	roundOne, err := store.Round(initial.MatchID, 1)
+	if err != nil {
+		t.Fatalf("Round(1) error = %v", err)
+	}
+	if got := len(roundOne.Actions); got != 4 {
+		t.Fatalf("stored round 1 actions = %d, want 4", got)
+	}
+
+	timeline, err := store.EventTimeline(initial.MatchID)
+	if err != nil {
+		t.Fatalf("EventTimeline() error = %v", err)
+	}
+	if len(timeline) == 0 {
+		t.Fatal("stored event timeline is empty, want persisted events")
+	}
+
+	commentary, err := store.Commentary(initial.MatchID)
+	if err != nil {
+		t.Fatalf("Commentary() error = %v", err)
+	}
+	if got := len(commentary); got != 8 {
+		t.Fatalf("stored commentary count = %d, want 8", got)
 	}
 }
 

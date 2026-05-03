@@ -16,6 +16,7 @@ type MatchRunner struct {
 	Collector RoundCollector
 	Resolver  *engine.Resolver
 	Random    ports.RandomSource
+	Store     ports.MatchStateStore
 	OnState   func(domain.MatchState)
 	OnRound   func(engine.Result)
 	Logger    *slog.Logger
@@ -33,7 +34,7 @@ func (r MatchRunner) Play(ctx context.Context, initial domain.MatchState, rounds
 		return domain.MatchState{}, nil, fmt.Errorf("app: match random source is not configured")
 	}
 
-	state := prepareCollectionState(initial.Clone())
+	state := initial.Clone()
 	previous := previousAcceptedActions(state)
 	results := make([]engine.Result, 0, rounds)
 	logger := loggerOrDiscard(r.Logger).With(
@@ -42,6 +43,16 @@ func (r MatchRunner) Play(ctx context.Context, initial domain.MatchState, rounds
 		"scenario_id", state.ScenarioID,
 	)
 	logger.Info("match play started", "rounds_requested", rounds, "starting_round", state.CurrentRound)
+
+	if r.Store != nil {
+		if err := r.Store.CreateMatch(state); err != nil {
+			logger.Error("match store create failed", "error", err)
+			return domain.MatchState{}, nil, fmt.Errorf("app: create match in store: %w", err)
+		}
+		logger.Info("match store initialized")
+	}
+
+	state = prepareCollectionState(state)
 
 	for range rounds {
 		roundLogger := logger.With("round", state.CurrentRound)
@@ -74,6 +85,16 @@ func (r MatchRunner) Play(ctx context.Context, initial domain.MatchState, rounds
 		revealed := result.NextState.Clone()
 		revealed.RoundFlow = roundFlowFor(state.Roles, actions, domain.RoundPhaseRevealed, state.RoundFlow.AIRevealDelaySeconds)
 		result.NextState = revealed.Clone()
+		if r.Store != nil {
+			committed, err := r.Store.CommitRound(state.MatchID, result.NextState, result.Round)
+			if err != nil {
+				roundLogger.Error("round persistence failed", "error", err)
+				return state, results, fmt.Errorf("app: commit round %d: %w", result.Round.Round, err)
+			}
+			revealed = committed.Clone()
+			result.NextState = committed.Clone()
+			roundLogger.Info("round persisted")
+		}
 		results = append(results, result)
 		for _, action := range result.Round.Actions {
 			previous[action.RoleID] = action.Clone()
