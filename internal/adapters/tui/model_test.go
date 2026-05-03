@@ -9,8 +9,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jpconstantineau/herbiego/internal/adapters/random/seeded"
+	"github.com/jpconstantineau/herbiego/internal/app"
 	"github.com/jpconstantineau/herbiego/internal/domain"
 	"github.com/jpconstantineau/herbiego/internal/engine"
+	"github.com/jpconstantineau/herbiego/internal/ports"
 	"github.com/jpconstantineau/herbiego/internal/scenario"
 )
 
@@ -25,6 +27,16 @@ func (s testStateSource) Snapshot() domain.MatchState {
 
 func (s testStateSource) Updates() <-chan domain.MatchState {
 	return s.updates
+}
+
+type testDebugSource struct {
+	records []ports.AICallRecord
+}
+
+func (s testDebugSource) Records() []ports.AICallRecord {
+	cloned := make([]ports.AICallRecord, len(s.records))
+	copy(cloned, s.records)
+	return cloned
 }
 
 func TestModelLoadsInitialSnapshotAndRendersShell(t *testing.T) {
@@ -960,6 +972,200 @@ func TestModelScrollsArchiveHistoryWithMouseWheel(t *testing.T) {
 	scrolledView := scrolledShell.View()
 	if !strings.Contains(scrolledView, "[R1] 1 actions | 1 events | 1 commentary") {
 		t.Fatalf("scrolled archive view missing oldest round\n%s", scrolledView)
+	}
+}
+
+func TestModelDebugWorkspaceFiltersRecordsBySelectedRole(t *testing.T) {
+	model := NewModel(scenario.Starter(), testStateSource{
+		snapshot: scenario.Starter().InitialState("starter-match", starterAssignments()),
+	})
+
+	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
+	shell := loaded.(Model)
+	shell.debugLog = testDebugSource{records: []ports.AICallRecord{
+		{
+			RoleID:       domain.RoleProcurementManager,
+			Round:        1,
+			Attempt:      1,
+			Provider:     "ollama",
+			Model:        "llama3",
+			SystemPrompt: "Procurement system prompt",
+			UserPrompt:   "Procurement user prompt",
+			RawResponse:  `{"action":{"procurement":{"orders":[]}},"commentary":{"public_summary":"ok","focus_tags":["supply"]}}`,
+			Valid:        true,
+		},
+		{
+			RoleID:       domain.RoleSalesManager,
+			Round:        2,
+			Attempt:      1,
+			Provider:     "openrouter",
+			Model:        "gpt",
+			SystemPrompt: "Sales system prompt",
+			UserPrompt:   "Sales user prompt",
+			RawResponse:  `{"action":{"sales":{"product_offers":[]}},"commentary":{"public_summary":"ok","focus_tags":["pricing"]}}`,
+			Valid:        true,
+		},
+	}}
+	shell.workspace = workspaceDebug
+	shell.width = 120
+	shell.height = 30
+	shell.ensureDebugSelection()
+	shell.debugExpanded[debugRoundNodeID(1)] = true
+	shell.debugExpanded[debugAttemptNodeID(1, 1)] = true
+
+	view := shell.View()
+	for _, want := range []string{
+		"Debug tree for Procurement Manager",
+		"Round 1 (1 tries)",
+		"Try 1 - Success",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("procurement debug view missing %q\n%s", want, view)
+		}
+	}
+	for _, unwanted := range []string{
+		"Round 2 (1 tries)",
+		"Sales system prompt",
+	} {
+		if strings.Contains(view, unwanted) {
+			t.Fatalf("procurement debug view leaked %q\n%s", unwanted, view)
+		}
+	}
+
+	shell.focusedPane = paneDepartments
+	next, _ := shell.Update(tea.KeyMsg{Type: tea.KeyDown})
+	next, _ = next.(Model).Update(tea.KeyMsg{Type: tea.KeyDown})
+	salesShell := next.(Model)
+	salesShell.width = shell.width
+	salesShell.height = shell.height
+	salesShell.debugExpanded[debugRoundNodeID(2)] = true
+
+	salesView := salesShell.View()
+	if !strings.Contains(salesView, "Debug tree for Sales Manager") || !strings.Contains(salesView, "Round 2 (1 tries)") {
+		t.Fatalf("sales debug view did not follow role selection\n%s", salesView)
+	}
+	if strings.Contains(salesView, "Procurement system prompt") {
+		t.Fatalf("sales debug view leaked procurement request\n%s", salesView)
+	}
+}
+
+func TestModelDebugTreeNavigationExpandsAndCollapses(t *testing.T) {
+	model := NewModel(scenario.Starter(), testStateSource{
+		snapshot: scenario.Starter().InitialState("starter-match", starterAssignments()),
+	})
+
+	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
+	shell := loaded.(Model)
+	shell.debugLog = testDebugSource{records: []ports.AICallRecord{
+		{
+			RoleID:       domain.RoleProcurementManager,
+			Round:        1,
+			Attempt:      1,
+			Provider:     "ollama",
+			Model:        "llama3",
+			SystemPrompt: "System prompt body",
+			UserPrompt:   "User prompt body",
+			RawResponse:  `{"bad_json":`,
+			ErrorMessage: "response failed validation",
+		},
+	}}
+	shell.workspace = workspaceDebug
+	shell.focusedPane = paneHistory
+	shell.width = 120
+	shell.height = 30
+	shell.ensureDebugSelection()
+
+	if got := shell.debugSelected; got != debugRoundNodeID(1) {
+		t.Fatalf("initial debugSelected = %q, want round node", got)
+	}
+
+	next, _ := shell.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	shell = next.(Model)
+	if !shell.debugExpanded[debugRoundNodeID(1)] || shell.debugSelected != debugAttemptNodeID(1, 1) {
+		t.Fatalf("enter on round did not expand/select first child: expanded=%v selected=%q", shell.debugExpanded[debugRoundNodeID(1)], shell.debugSelected)
+	}
+
+	next, _ = shell.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	shell = next.(Model)
+	if !shell.debugExpanded[debugAttemptNodeID(1, 1)] || shell.debugSelected != debugStatusNodeID(1, 1) {
+		t.Fatalf("enter on attempt did not expand/select status child: expanded=%v selected=%q", shell.debugExpanded[debugAttemptNodeID(1, 1)], shell.debugSelected)
+	}
+
+	view := shell.View()
+	for _, want := range []string{
+		"Try status details",
+		"Recorded details:",
+		"response failed validation",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expanded debug view missing %q\n%s", want, view)
+		}
+	}
+
+	next, _ = shell.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	shell = next.(Model)
+	if shell.debugExpanded[debugAttemptNodeID(1, 1)] || shell.debugSelected != debugAttemptNodeID(1, 1) {
+		t.Fatalf("esc on status details did not collapse to attempt: expanded=%v selected=%q", shell.debugExpanded[debugAttemptNodeID(1, 1)], shell.debugSelected)
+	}
+
+	next, _ = shell.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	shell = next.(Model)
+	if shell.debugExpanded[debugRoundNodeID(1)] || shell.debugSelected != debugRoundNodeID(1) {
+		t.Fatalf("esc on attempt did not collapse to round: expanded=%v selected=%q", shell.debugExpanded[debugRoundNodeID(1)], shell.debugSelected)
+	}
+}
+
+func TestModelDebugTreeKeepsSelectionWhenNewRecordsArrive(t *testing.T) {
+	debugLog := app.NewDebugLog(10)
+	debugLog.Append(ports.AICallRecord{
+		RoleID:       domain.RoleProcurementManager,
+		Round:        1,
+		Attempt:      1,
+		Provider:     "ollama",
+		Model:        "llama3",
+		SystemPrompt: "System one",
+		UserPrompt:   "User one",
+		RawResponse:  `{"action":{"procurement":{"orders":[]}},"commentary":{"public_summary":"ok","focus_tags":["supply"]}}`,
+		Valid:        true,
+	})
+
+	model := NewModel(scenario.Starter(), testStateSource{
+		snapshot: scenario.Starter().InitialState("starter-match", starterAssignments()),
+	})
+	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
+	shell := loaded.(Model)
+	shell.debugLog = debugLog
+	shell.workspace = workspaceDebug
+	shell.focusedPane = paneHistory
+	shell.width = 120
+	shell.height = 24
+	shell.ensureDebugSelection()
+	shell.debugExpanded[debugRoundNodeID(1)] = true
+	shell.debugSelected = debugAttemptNodeID(1, 1)
+
+	debugLog.Append(ports.AICallRecord{
+		RoleID:       domain.RoleProcurementManager,
+		Round:        1,
+		Attempt:      2,
+		Provider:     "ollama",
+		Model:        "llama3",
+		SystemPrompt: "System two",
+		UserPrompt:   "User two",
+		RawResponse:  `{"action":{"procurement":{"orders":[]}},"commentary":{"public_summary":"retry ok","focus_tags":["supply"]}}`,
+		Valid:        true,
+	})
+
+	next, _ := shell.Update(stateLoadedMsg{state: shell.state})
+	updated := next.(Model)
+	updated.width = shell.width
+	updated.height = shell.height
+
+	if got := updated.debugSelected; got != debugAttemptNodeID(1, 1) {
+		t.Fatalf("debugSelected after update = %q, want first attempt preserved", got)
+	}
+	view := updated.View()
+	if !strings.Contains(view, "Try 2 - Success") {
+		t.Fatalf("updated debug view missing new attempt\n%s", view)
 	}
 }
 
