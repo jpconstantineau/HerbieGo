@@ -1,8 +1,19 @@
 package app
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
-func TestNewRuntimeSeedsDefaultStarterMatch(t *testing.T) {
+func TestNewRuntimeSeedsGeneratedStarterMatch(t *testing.T) {
+	originalNow := runtimeTimeNow
+	runtimeTimeNow = func() time.Time {
+		return time.Date(2026, time.May, 3, 17, 30, 45, 123456789, time.UTC)
+	}
+	t.Cleanup(func() {
+		runtimeTimeNow = originalNow
+	})
+
 	runtime, err := NewRuntime(Config{
 		Environment:  "test",
 		HumanPlayers: 1,
@@ -32,8 +43,11 @@ func TestNewRuntimeSeedsDefaultStarterMatch(t *testing.T) {
 	if got := runtime.Scenario.ID; got != "starter" {
 		t.Fatalf("Scenario.ID = %q, want starter", got)
 	}
-	if got := runtime.InitialMatch.MatchID; got != "starter-match" {
-		t.Fatalf("InitialMatch.MatchID = %q, want starter-match", got)
+	if got := runtime.InitialMatch.MatchID; got != "starter-match-9-1777829445123456789" {
+		t.Fatalf("InitialMatch.MatchID = %q, want generated deterministic id", got)
+	}
+	if got := runtime.InitialMatch.MatchID; got == "starter-match" {
+		t.Fatalf("InitialMatch.MatchID = %q, want generated id instead of hardcoded literal", got)
 	}
 	if got := runtime.InitialMatch.CurrentRound; got != 1 {
 		t.Fatalf("InitialMatch.CurrentRound = %d, want 1", got)
@@ -61,5 +75,38 @@ func TestNewRuntimeSeedsDefaultStarterMatch(t *testing.T) {
 	}
 	if runtime.Logger == nil {
 		t.Fatal("runtime.Logger = nil, want process logger")
+	}
+}
+
+func TestNewRuntimeUsesConfiguredMatchIDWhenProvided(t *testing.T) {
+	runtime, err := NewRuntime(Config{
+		Environment:  "test",
+		MatchID:      "fixture-match-42",
+		HumanPlayers: 1,
+		UI: UIConfig{
+			AIRevealDelaySeconds: 12,
+		},
+		Random: RandomConfig{
+			Seed: 9,
+		},
+		LLMCatalog: LLMCatalog{
+			Entries: []LLMCatalogEntry{
+				{Provider: "ollama-localhost", Model: "gemma4:e4b", URL: "http://localhost:11434/v1/", APISDKType: APISDKTypeOpenAI},
+				{Provider: "openrouter", Model: "openai/gpt-5-mini", URL: "https://openrouter.ai/api/v1/", APISDKType: APISDKTypeOpenAI},
+			},
+		},
+		RoleConfigs: []RoleConfigFile{
+			{RoleID: "procurement_manager", Provider: "ollama-localhost"},
+			{RoleID: "production_manager", Provider: "ollama-localhost"},
+			{RoleID: "sales_manager", Provider: "openrouter"},
+			{RoleID: "finance_controller", Provider: "ollama-localhost"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v, want nil", err)
+	}
+
+	if got := runtime.InitialMatch.MatchID; got != "fixture-match-42" {
+		t.Fatalf("InitialMatch.MatchID = %q, want configured match id", got)
 	}
 }
