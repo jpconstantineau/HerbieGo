@@ -13,6 +13,7 @@ import (
 	"github.com/jpconstantineau/herbiego/internal/domain"
 	"github.com/jpconstantineau/herbiego/internal/engine"
 	"github.com/jpconstantineau/herbiego/internal/ports"
+	"github.com/jpconstantineau/herbiego/internal/scenario"
 )
 
 func main() {
@@ -59,6 +60,11 @@ func main() {
 }
 
 func runLiveGameplay(ctx context.Context, runtime app.Runtime, initialState domain.MatchState, store persistentStore, rounds int, persistAIDebug bool) error {
+	definition, err := resolveScenarioForMatch(initialState)
+	if err != nil {
+		return err
+	}
+
 	stateSnapshots := []domain.MatchState{initialState.Clone()}
 	if store != nil {
 		persistedSnapshots, err := store.StateSnapshots(initialState.MatchID)
@@ -68,7 +74,7 @@ func runLiveGameplay(ctx context.Context, runtime app.Runtime, initialState doma
 		stateSnapshots = persistedSnapshots
 	}
 	controller := newLiveGameplayController(initialState, stateSnapshots)
-	players, debugLog, err := buildPlayersWithHumanSubmit(runtime, initialState, controller.SubmitRound)
+	players, debugLog, err := buildPlayersWithHumanSubmit(runtime.Config, definition, initialState, controller.SubmitRound, runtime.Logger)
 	if err != nil {
 		return fmt.Errorf("player setup: %w", err)
 	}
@@ -89,7 +95,7 @@ func runLiveGameplay(ctx context.Context, runtime app.Runtime, initialState doma
 
 	runner := app.MatchRunner{
 		Collector: app.RoundCollector{Players: players, Logger: runtime.Logger},
-		Resolver:  engine.NewResolver(runtime.Scenario.ResolverOptions()),
+		Resolver:  engine.NewResolver(definition.ResolverOptions()),
 		Random:    runtime.Random,
 		Store:     store,
 		OnState:   controller.Publish,
@@ -100,7 +106,7 @@ func runLiveGameplay(ctx context.Context, runtime app.Runtime, initialState doma
 	defer cancel()
 
 	program := tui.NewProgram(
-		runtime.Scenario,
+		definition,
 		controller,
 		controller.Submit,
 		debugSource,
@@ -145,6 +151,14 @@ func runLiveGameplay(ctx context.Context, runtime app.Runtime, initialState doma
 		return playErr
 	}
 	return nil
+}
+
+func resolveScenarioForMatch(state domain.MatchState) (scenario.Definition, error) {
+	definition, ok := scenario.Lookup(state.ScenarioID)
+	if !ok {
+		return scenario.Definition{}, fmt.Errorf("resolve scenario %q for match %q: scenario is not registered", state.ScenarioID, state.MatchID)
+	}
+	return definition, nil
 }
 
 type combinedDebugSource struct {

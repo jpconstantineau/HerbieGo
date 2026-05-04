@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 
 	"github.com/jpconstantineau/herbiego/internal/adapters/ai"
 	"github.com/jpconstantineau/herbiego/internal/adapters/ai/openai"
@@ -10,18 +11,19 @@ import (
 	"github.com/jpconstantineau/herbiego/internal/app"
 	"github.com/jpconstantineau/herbiego/internal/domain"
 	"github.com/jpconstantineau/herbiego/internal/ports"
+	"github.com/jpconstantineau/herbiego/internal/scenario"
 )
 
-func buildPlayersWithHumanSubmit(runtime app.Runtime, initial domain.MatchState, submit human.SubmitFunc) (map[domain.RoleID]ports.Player, *app.DebugLog, error) {
-	providers, err := buildDecisionClients(runtime.Config)
+func buildPlayersWithHumanSubmit(cfg app.Config, definition scenario.Definition, initial domain.MatchState, submit human.SubmitFunc, logger *slog.Logger) (map[domain.RoleID]ports.Player, *app.DebugLog, error) {
+	providers, err := buildDecisionClients(cfg)
 	if err != nil {
 		return nil, nil, err
 	}
 	decisionClient := ai.NewRoutingClient(providers)
 	debugLog := app.NewDebugLog(0)
-	orchestrator := app.NewAIOrchestrator(runtime.Scenario, decisionClient)
+	orchestrator := app.NewAIOrchestrator(definition, decisionClient)
 	orchestrator.DebugLog = debugLog
-	orchestrator.Logger = runtime.Logger
+	orchestrator.Logger = logger
 
 	players := make(map[domain.RoleID]ports.Player, len(initial.Roles))
 	for _, assignment := range initial.Roles {
