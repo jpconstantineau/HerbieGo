@@ -19,12 +19,18 @@ func RunReplay(definition ScenarioReader, current domain.MatchState, snapshots [
 	return err
 }
 
-// NewProgram constructs the Bubble Tea program for the supplied match source.
-func NewProgram(definition ScenarioReader, source StateSource, submit SubmitFunc, debug DebugSource, options ...tea.ProgramOption) *tea.Program {
+// NewProgramWithQuitBehavior constructs the Bubble Tea program for the supplied
+// match source and q-key behavior.
+func NewProgramWithQuitBehavior(definition ScenarioReader, source StateSource, submit SubmitFunc, debug DebugSource, quitBehavior QuitBehavior, options ...tea.ProgramOption) *tea.Program {
 	opts := append([]tea.ProgramOption{tea.WithMouseCellMotion()}, options...)
-	model := NewModelWithSubmit(definition, source, submit)
+	model := NewModelWithSubmitAndQuitBehavior(definition, source, submit, quitBehavior)
 	model.debugLog = debug
 	return tea.NewProgram(model, opts...)
+}
+
+// NewProgram constructs the Bubble Tea program for the supplied match source.
+func NewProgram(definition ScenarioReader, source StateSource, submit SubmitFunc, debug DebugSource, options ...tea.ProgramOption) *tea.Program {
+	return NewProgramWithQuitBehavior(definition, source, submit, debug, QuitBehaviorQuitProgram, options...)
 }
 
 // RunWithSource launches the Bubble Tea shell for a live or static match source.
