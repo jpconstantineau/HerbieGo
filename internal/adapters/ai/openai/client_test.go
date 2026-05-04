@@ -9,7 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jpconstantineau/herbiego/internal/domain"
 	"github.com/jpconstantineau/herbiego/internal/ports"
+	openaiSDK "github.com/sashabaranov/go-openai"
 )
 
 func TestClientRequestsStructuredChatCompletion(t *testing.T) {
@@ -90,6 +92,40 @@ func TestClientReturnsHTTPFailures(t *testing.T) {
 	}
 	if !errors.Is(err, ports.ErrProviderFailure) {
 		t.Fatalf("RequestDecision() error = %v, want ErrProviderFailure", err)
+	}
+}
+
+func TestProviderDecisionResultAllowsEmptyChoiceContentWhenStructuredResponseExists(t *testing.T) {
+	result, err := providerDecisionResult(
+		openaiSDK.ChatCompletionResponse{
+			Choices: []openaiSDK.ChatCompletionChoice{
+				{
+					Message: openaiSDK.ChatCompletionMessage{
+						Content: "   ",
+					},
+				},
+			},
+		},
+		ports.AIDecisionEnvelope{
+			Action: domain.RoleAction{
+				Sales: &domain.SalesAction{
+					ProductOffers: []domain.ProductOffer{{ProductID: "pump", UnitPrice: 16}},
+				},
+			},
+			Commentary: ports.AICommentary{
+				PublicSummary: "Holding price to protect throughput.",
+				FocusTags:     []string{"throughput"},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("providerDecisionResult() error = %v, want nil", err)
+	}
+	if result.StructuredResponse == nil {
+		t.Fatal("StructuredResponse = nil, want structured envelope")
+	}
+	if result.RawResponse != "" {
+		t.Fatalf("RawResponse = %q, want empty optional raw content", result.RawResponse)
 	}
 }
 
