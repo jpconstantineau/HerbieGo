@@ -1,7 +1,9 @@
 package main
 
 import (
+	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jpconstantineau/herbiego/internal/app"
@@ -24,6 +26,34 @@ func TestSplashModelFinishesAfterLastFrame(t *testing.T) {
 	model = next.(splashModel)
 	if !model.finished {
 		t.Fatal("splash model did not finish on the last animation frame")
+	}
+}
+
+func TestSplashFrameDelayDefaultsToThreeSecondsAcrossFrames(t *testing.T) {
+	got := splashFrameDelayForFrameCount(len(herbieSplashFrames()))
+	want := 500 * time.Millisecond
+	if got != want {
+		t.Fatalf("splashFrameDelayForFrameCount() = %v, want %v", got, want)
+	}
+}
+
+func TestSplashFrameRendersExpectedCanvasHeight(t *testing.T) {
+	frame := renderHerbieSplashFrame(2)
+	lines := strings.Split(frame, "\n")
+	if len(lines) != splashCanvasHeight {
+		t.Fatalf("renderHerbieSplashFrame() line count = %d, want %d", len(lines), splashCanvasHeight)
+	}
+}
+
+func TestSplashFramesKeepStableVisibleWidth(t *testing.T) {
+	widths := splashFrameVisibleWidths()
+	if len(widths) == 0 {
+		t.Fatal("splashFrameVisibleWidths() returned no frame widths")
+	}
+	for _, width := range widths[1:] {
+		if width != widths[0] {
+			t.Fatalf("splash frame widths = %v, want all frames to share one visible width", widths)
+		}
 	}
 }
 
