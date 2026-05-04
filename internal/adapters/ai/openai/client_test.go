@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -86,6 +87,35 @@ func TestClientReturnsHTTPFailures(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "bad api key") {
 		t.Fatalf("RequestDecision() error = %v, want response body", err)
+	}
+	if !errors.Is(err, ports.ErrProviderFailure) {
+		t.Fatalf("RequestDecision() error = %v, want ErrProviderFailure", err)
+	}
+}
+
+func TestClientClassifiesContextDeadlineAsProviderTimeout(t *testing.T) {
+	client, err := New()
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	_, err = client.RequestDecision(context.Background(), ports.ProviderDecisionRequest{
+		Model: "openai/gpt-5-mini",
+	})
+	if err == nil {
+		t.Fatal("RequestDecision() error = nil, want configuration or request failure")
+	}
+
+	timeoutErr := classifyRequestError(context.DeadlineExceeded)
+	if !errors.Is(timeoutErr, ports.ErrProviderTimeout) {
+		t.Fatalf("classifyRequestError(deadline) = %v, want ErrProviderTimeout", timeoutErr)
+	}
+}
+
+func TestClassifyRequestErrorWrapsProviderFailures(t *testing.T) {
+	err := classifyRequestError(errors.New("provider returned 500"))
+	if !errors.Is(err, ports.ErrProviderFailure) {
+		t.Fatalf("classifyRequestError() = %v, want ErrProviderFailure", err)
 	}
 }
 
