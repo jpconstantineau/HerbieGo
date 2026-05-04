@@ -72,27 +72,6 @@ type startMenuModel struct {
 	statusLine string
 }
 
-func runStartMenu(cfg app.Config, state startMenuState) (startMenuResult, error) {
-	model := newStartMenuModel(cfg, state)
-	final, err := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
-	if err != nil {
-		return startMenuResult{Action: startMenuActionExit, Config: cfg, State: state}, err
-	}
-
-	menu, ok := final.(startMenuModel)
-	if !ok {
-		return startMenuResult{Action: startMenuActionExit, Config: cfg, State: state}, fmt.Errorf("unexpected start menu result type %T", final)
-	}
-	if menu.cancelled {
-		return startMenuResult{
-			Action: startMenuActionExit,
-			Config: menu.config,
-			State:  menu.state,
-		}, nil
-	}
-	return menu.result, nil
-}
-
 func newStartMenuModel(cfg app.Config, state startMenuState) startMenuModel {
 	normalized := cloneConfig(cfg)
 	if normalized.Roles == nil {

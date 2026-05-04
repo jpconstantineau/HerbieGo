@@ -24,11 +24,6 @@ type splashModel struct {
 	width    int
 }
 
-func runSplashScreen() error {
-	_, err := tea.NewProgram(splashModel{}, tea.WithAltScreen()).Run()
-	return err
-}
-
 func (m splashModel) Init() tea.Cmd {
 	return splashTickCmd()
 }
