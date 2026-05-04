@@ -64,6 +64,7 @@ func runLiveGameplay(ctx context.Context, runtime app.Runtime, initialState doma
 	if err != nil {
 		return err
 	}
+	liveLogger := app.NewDiscardLogger()
 
 	stateSnapshots := []domain.MatchState{initialState.Clone()}
 	if store != nil {
@@ -74,12 +75,12 @@ func runLiveGameplay(ctx context.Context, runtime app.Runtime, initialState doma
 		stateSnapshots = persistedSnapshots
 	}
 	controller := newLiveGameplayController(initialState, stateSnapshots)
-	players, debugLog, err := buildPlayersWithHumanSubmit(runtime.Config, definition, initialState, controller.SubmitRound, runtime.Logger)
+	players, debugLog, err := buildPlayersWithHumanSubmit(runtime.Config, definition, initialState, controller.SubmitRound, liveLogger)
 	if err != nil {
 		return fmt.Errorf("player setup: %w", err)
 	}
 	if store != nil && persistAIDebug {
-		configureAICallPersistence(debugLog, runtime.Logger, store, initialState.MatchID)
+		configureAICallPersistence(debugLog, liveLogger, store, initialState.MatchID)
 	}
 	debugSource := tui.DebugSource(debugLog)
 	if store != nil {
@@ -94,12 +95,12 @@ func runLiveGameplay(ctx context.Context, runtime app.Runtime, initialState doma
 	}
 
 	runner := app.MatchRunner{
-		Collector: app.RoundCollector{Players: players, Logger: runtime.Logger},
+		Collector: app.RoundCollector{Players: players, Logger: liveLogger},
 		Resolver:  engine.NewResolver(definition.ResolverOptions()),
 		Random:    runtime.Random,
 		Store:     store,
 		OnState:   controller.Publish,
-		Logger:    runtime.Logger,
+		Logger:    liveLogger,
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
