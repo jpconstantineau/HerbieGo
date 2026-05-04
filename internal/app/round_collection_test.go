@@ -200,7 +200,62 @@ func TestRoundCollectorReusesPreviousActionWhenAIPlayerTimesOut(t *testing.T) {
 	if got := sales.Action.Sales.ProductOffers[0].UnitPrice; got != 13 {
 		t.Fatalf("sales.ProductOffers[0].UnitPrice = %d, want 13", got)
 	}
-	if got := sales.Commentary.Body; got != "Previous action reused after AI timeout." {
+	if got := sales.Commentary.Body; got != "Previous action reused after AI transport failure." {
+		t.Fatalf("sales.Commentary.Body = %q, want reuse message", got)
+	}
+}
+
+func TestRoundCollectorReusesPreviousActionWhenAIPlayerHasProviderFailure(t *testing.T) {
+	state := fixtureMatchState()
+	previous := domain.ActionSubmission{
+		ActionID: "sales-r1",
+		MatchID:  state.MatchID,
+		Round:    1,
+		RoleID:   domain.RoleSalesManager,
+		Action: domain.RoleAction{
+			Sales: &domain.SalesAction{
+				ProductOffers: []domain.ProductOffer{
+					{ProductID: "pump", UnitPrice: 13},
+				},
+			},
+		},
+		Commentary: domain.CommentaryRecord{
+			Body: "Previous price held.",
+		},
+	}
+
+	collector := app.RoundCollector{
+		Players: map[domain.RoleID]ports.Player{
+			domain.RoleProcurementManager: human.New(func(_ context.Context, _ ports.RoundRequest) (domain.ActionSubmission, error) {
+				return procurementSubmission(), nil
+			}),
+			domain.RoleProductionManager: human.New(func(_ context.Context, _ ports.RoundRequest) (domain.ActionSubmission, error) {
+				return productionSubmission(), nil
+			}),
+			domain.RoleSalesManager: llm.New(func(_ context.Context, _ ports.RoundRequest) (domain.ActionSubmission, error) {
+				return domain.ActionSubmission{}, ports.ErrProviderFailure
+			}),
+			domain.RoleFinanceController: human.New(func(_ context.Context, _ ports.RoundRequest) (domain.ActionSubmission, error) {
+				return financeSubmission(), nil
+			}),
+		},
+	}
+
+	actions, err := collector.Collect(context.Background(), state, map[domain.RoleID]domain.ActionSubmission{
+		domain.RoleSalesManager: previous,
+	})
+	if err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+
+	sales := findAction(actions, domain.RoleSalesManager)
+	if sales == nil {
+		t.Fatal("sales action missing from collected results")
+	}
+	if got := sales.Action.Sales.ProductOffers[0].UnitPrice; got != 13 {
+		t.Fatalf("sales.ProductOffers[0].UnitPrice = %d, want 13", got)
+	}
+	if got := sales.Commentary.Body; got != "Previous action reused after AI transport failure." {
 		t.Fatalf("sales.Commentary.Body = %q, want reuse message", got)
 	}
 }

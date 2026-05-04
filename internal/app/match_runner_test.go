@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/jpconstantineau/herbiego/internal/adapters/persistence/memory"
+	"github.com/jpconstantineau/herbiego/internal/adapters/player/llm"
 	"github.com/jpconstantineau/herbiego/internal/adapters/random/seeded"
 	"github.com/jpconstantineau/herbiego/internal/app"
 	"github.com/jpconstantineau/herbiego/internal/domain"
@@ -228,6 +229,95 @@ func TestMatchRunnerCanResumeUsingAnExistingStore(t *testing.T) {
 	}
 	if got := len(current.History.RecentRounds); got != 2 {
 		t.Fatalf("stored history rounds = %d, want 2", got)
+	}
+}
+
+func TestMatchRunnerContinuesAfterLaterProviderTransportFailure(t *testing.T) {
+	starter := scenario.Starter()
+	initial := starter.InitialState("match-241", []domain.RoleAssignment{
+		{RoleID: domain.RoleProcurementManager, PlayerID: "procurement-player", IsHuman: true},
+		{RoleID: domain.RoleProductionManager, PlayerID: "production-player", Provider: "ollama", ModelName: "gemma4:e4b"},
+		{RoleID: domain.RoleSalesManager, PlayerID: "sales-player", Provider: "openrouter", ModelName: "openai/gpt-5-mini"},
+		{RoleID: domain.RoleFinanceController, PlayerID: "finance-player", Provider: "openai", ModelName: "gpt-5-mini"},
+	})
+
+	salesCalls := 0
+	runner := app.MatchRunner{
+		Collector: app.RoundCollector{
+			Players: map[domain.RoleID]ports.Player{
+				domain.RoleProcurementManager: scriptPlayer(func(request ports.RoundRequest) domain.ActionSubmission {
+					return domain.ActionSubmission{
+						Action: domain.RoleAction{Procurement: &domain.ProcurementAction{}},
+						Commentary: domain.CommentaryRecord{
+							Body: fmt.Sprintf("Round %d procurement protects cash for the bottleneck.", request.RoleView.Round),
+						},
+					}
+				}),
+				domain.RoleProductionManager: scriptPlayer(func(request ports.RoundRequest) domain.ActionSubmission {
+					return domain.ActionSubmission{
+						Action: domain.RoleAction{
+							Production: &domain.ProductionAction{
+								CapacityAllocation: []domain.CapacityAllocation{
+									{WorkstationID: "assembly", ProductID: "pump", Capacity: 2},
+								},
+							},
+						},
+						Commentary: domain.CommentaryRecord{
+							Body: fmt.Sprintf("Round %d production favors throughput over local utilization.", request.RoleView.Round),
+						},
+					}
+				}),
+				domain.RoleSalesManager: llm.New(func(_ context.Context, request ports.RoundRequest) (domain.ActionSubmission, error) {
+					salesCalls++
+					if request.RoleView.Round == 2 {
+						return domain.ActionSubmission{}, ports.ErrProviderFailure
+					}
+					return domain.ActionSubmission{
+						Action: domain.RoleAction{
+							Sales: &domain.SalesAction{
+								ProductOffers: []domain.ProductOffer{
+									{ProductID: "pump", UnitPrice: domain.Money(14 + salesCalls)},
+								},
+							},
+						},
+						Commentary: domain.CommentaryRecord{
+							Body: fmt.Sprintf("Round %d sales holds price while backlog is visible.", request.RoleView.Round),
+						},
+					}, nil
+				}),
+				domain.RoleFinanceController: scriptPlayer(func(request ports.RoundRequest) domain.ActionSubmission {
+					targets := request.RoleView.ActiveTargets
+					targets.EffectiveRound = request.RoleView.Round + 1
+					return domain.ActionSubmission{
+						Action: domain.RoleAction{
+							Finance: &domain.FinanceAction{NextRoundTargets: targets},
+						},
+						Commentary: domain.CommentaryRecord{
+							Body: fmt.Sprintf("Round %d finance keeps targets stable to compare tradeoffs.", request.RoleView.Round),
+						},
+					}
+				}),
+			},
+		},
+		Resolver: engine.NewResolver(starter.ResolverOptions()),
+		Random:   seeded.New(1),
+	}
+
+	final, results, err := runner.Play(context.Background(), initial, 3)
+	if err != nil {
+		t.Fatalf("Play() error = %v", err)
+	}
+	if got := len(results); got != 3 {
+		t.Fatalf("len(results) = %d, want 3", got)
+	}
+	if got := final.CurrentRound; got != 4 {
+		t.Fatalf("final.CurrentRound = %d, want 4", got)
+	}
+	if got := results[1].Round.Actions[2].Commentary.Body; got != "Previous action reused after AI transport failure." {
+		t.Fatalf("round 2 sales commentary = %q, want transport fallback reuse message", got)
+	}
+	if got := results[1].Round.Actions[2].Action.Sales.ProductOffers[0].UnitPrice; got != 15 {
+		t.Fatalf("round 2 fallback UnitPrice = %d, want reused prior round value 15", got)
 	}
 }
 

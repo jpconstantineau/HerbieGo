@@ -2,7 +2,6 @@ package llm
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/jpconstantineau/herbiego/internal/domain"
@@ -28,22 +27,28 @@ func TestRecoverFromNonResponseTreatsProviderTimeoutAsRecoverable(t *testing.T) 
 	if submission.Action.Sales == nil {
 		t.Fatalf("RecoverFromNonResponse() = %#v, want sales no-op fallback", submission.Action)
 	}
-	if got := submission.Commentary.Body; got != "Safe no-op submitted after AI timeout." {
-		t.Fatalf("submission.Commentary.Body = %q, want timeout fallback message", got)
+	if got := submission.Commentary.Body; got != "Safe no-op submitted after AI transport failure." {
+		t.Fatalf("submission.Commentary.Body = %q, want transport fallback message", got)
 	}
 }
 
-func TestRecoverFromNonResponseRejectsGenericProviderFailures(t *testing.T) {
+func TestRecoverFromNonResponseTreatsGenericProviderFailuresAsRecoverable(t *testing.T) {
 	player := New(nil)
 	request := ports.RoundRequest{
 		Assignment: domain.RoleAssignment{RoleID: domain.RoleSalesManager},
+		RoleView: domain.RoundView{
+			ActiveTargets: domain.BudgetTargets{EffectiveRound: 3},
+		},
 	}
 
-	_, err := player.RecoverFromNonResponse(context.Background(), request, ports.ErrProviderFailure)
-	if err == nil {
-		t.Fatal("RecoverFromNonResponse() error = nil, want wrapped provider failure")
+	submission, err := player.RecoverFromNonResponse(context.Background(), request, ports.ErrProviderFailure)
+	if err != nil {
+		t.Fatalf("RecoverFromNonResponse() error = %v", err)
 	}
-	if !errors.Is(err, ports.ErrProviderFailure) {
-		t.Fatalf("RecoverFromNonResponse() error = %v, want ErrProviderFailure", err)
+	if submission.Action.Sales == nil {
+		t.Fatalf("RecoverFromNonResponse() = %#v, want sales no-op fallback", submission.Action)
+	}
+	if got := submission.Commentary.Body; got != "Safe no-op submitted after AI transport failure." {
+		t.Fatalf("submission.Commentary.Body = %q, want transport fallback message", got)
 	}
 }
