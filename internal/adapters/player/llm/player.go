@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/jpconstantineau/herbiego/internal/domain"
 	"github.com/jpconstantineau/herbiego/internal/ports"
@@ -112,5 +111,7 @@ func fallbackCommentary(request ports.RoundRequest, body string) domain.Commenta
 }
 
 func nonResponsive(err error) bool {
-	return errors.Is(err, ports.ErrNonResponsive) || errors.Is(err, context.DeadlineExceeded) || strings.Contains(strings.ToLower(err.Error()), "timeout")
+	return errors.Is(err, ports.ErrNonResponsive) ||
+		errors.Is(err, ports.ErrProviderTimeout) ||
+		errors.Is(err, context.DeadlineExceeded)
 }

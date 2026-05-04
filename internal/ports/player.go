@@ -2,12 +2,9 @@ package ports
 
 import (
 	"context"
-	"errors"
 
 	"github.com/jpconstantineau/herbiego/internal/domain"
 )
-
-var ErrNonResponsive = errors.New("player did not respond")
 
 // Player presents one role-facing round contract regardless of whether the
 // controller behind it is human, AI, or another future player type.

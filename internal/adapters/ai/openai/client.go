@@ -2,7 +2,9 @@ package openai
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -108,7 +110,7 @@ func (c *Client) RequestDecision(ctx context.Context, request ports.ProviderDeci
 		&envelope,
 	)
 	if err != nil {
-		return ports.ProviderDecisionResult{}, fmt.Errorf("call openai chat completions API: %w", err)
+		return ports.ProviderDecisionResult{}, classifyRequestError(err)
 	}
 
 	content, err := firstChoiceContent(response)
@@ -152,4 +154,24 @@ func firstChoiceContent(response openaiSDK.ChatCompletionResponse) (string, erro
 		return "", fmt.Errorf("openai response choice content was empty")
 	}
 	return content, nil
+}
+
+func classifyRequestError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case isProviderTimeout(err):
+		return fmt.Errorf("call openai chat completions API: %w", fmt.Errorf("%w: %w", ports.ErrProviderTimeout, err))
+	default:
+		return fmt.Errorf("call openai chat completions API: %w", fmt.Errorf("%w: %w", ports.ErrProviderFailure, err))
+	}
+}
+
+func isProviderTimeout(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
