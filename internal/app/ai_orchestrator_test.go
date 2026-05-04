@@ -332,7 +332,7 @@ func TestAIOrchestratorUsesStructuredProviderResponsesWhenAvailable(t *testing.T
 	client := &stubDecisionClient{
 		responses: []ports.ProviderDecisionResult{
 			{
-				RawResponse: `{}`,
+				RawResponse: ``,
 				StructuredResponse: &ports.AIDecisionEnvelope{
 					Action: domain.RoleAction{
 						Sales: &domain.SalesAction{

@@ -113,15 +113,7 @@ func (c *Client) RequestDecision(ctx context.Context, request ports.ProviderDeci
 		return ports.ProviderDecisionResult{}, classifyRequestError(err)
 	}
 
-	content, err := firstChoiceContent(response)
-	if err != nil {
-		return ports.ProviderDecisionResult{}, err
-	}
-
-	return ports.ProviderDecisionResult{
-		RawResponse:        content,
-		StructuredResponse: &envelope,
-	}, nil
+	return providerDecisionResult(response, envelope)
 }
 
 func parseBaseURL(rawURL string) (*url.URL, error) {
@@ -149,11 +141,19 @@ func firstChoiceContent(response openaiSDK.ChatCompletionResponse) (string, erro
 		return "", fmt.Errorf("openai response did not include any choices")
 	}
 
-	content := strings.TrimSpace(response.Choices[0].Message.Content)
-	if content == "" {
-		return "", fmt.Errorf("openai response choice content was empty")
+	return strings.TrimSpace(response.Choices[0].Message.Content), nil
+}
+
+func providerDecisionResult(response openaiSDK.ChatCompletionResponse, envelope ports.AIDecisionEnvelope) (ports.ProviderDecisionResult, error) {
+	content, err := firstChoiceContent(response)
+	if err != nil {
+		return ports.ProviderDecisionResult{}, err
 	}
-	return content, nil
+
+	return ports.ProviderDecisionResult{
+		RawResponse:        content,
+		StructuredResponse: &envelope,
+	}, nil
 }
 
 func classifyRequestError(err error) error {
