@@ -10,8 +10,8 @@ import (
 	"testing"
 
 	"github.com/jpconstantineau/herbiego/internal/domain"
-	openaiSDK "github.com/sashabaranov/go-openai"
 	"github.com/jpconstantineau/herbiego/internal/ports"
+	openaiSDK "github.com/sashabaranov/go-openai"
 )
 
 func TestClientRequestsStructuredChatCompletion(t *testing.T) {
