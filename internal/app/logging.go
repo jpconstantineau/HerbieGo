@@ -14,7 +14,17 @@ func loggerOrDiscard(logger *slog.Logger) *slog.Logger {
 }
 
 func newProcessLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+	return newTextLogger(os.Stderr)
+}
+
+// NewDiscardLogger constructs a logger that drops process logs instead of
+// writing into an active terminal UI.
+func NewDiscardLogger() *slog.Logger {
+	return newTextLogger(io.Discard)
+}
+
+func newTextLogger(writer io.Writer) *slog.Logger {
+	return slog.New(slog.NewTextHandler(writer, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
 }

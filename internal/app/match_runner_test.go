@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jpconstantineau/herbiego/internal/adapters/persistence/memory"
@@ -28,6 +29,7 @@ func TestMatchRunnerPlaysMultipleResolvedRounds(t *testing.T) {
 	initial.RoundFlow.AIRevealDelaySeconds = 15
 
 	phaseCounts := map[domain.RoundPhase]int{}
+	var phaseCountsMu sync.Mutex
 	runner := app.MatchRunner{
 		Collector: app.RoundCollector{
 			Players: scriptedPlayers(),
@@ -35,7 +37,9 @@ func TestMatchRunnerPlaysMultipleResolvedRounds(t *testing.T) {
 		Resolver: engine.NewResolver(starter.ResolverOptions()),
 		Random:   seeded.New(1),
 		OnState: func(state domain.MatchState) {
+			phaseCountsMu.Lock()
 			phaseCounts[state.RoundFlow.Phase]++
+			phaseCountsMu.Unlock()
 		},
 	}
 
