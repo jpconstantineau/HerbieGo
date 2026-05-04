@@ -4,16 +4,15 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jpconstantineau/herbiego/internal/domain"
 	"github.com/jpconstantineau/herbiego/internal/ports"
-	"github.com/jpconstantineau/herbiego/internal/scenario"
 )
 
 // Run launches the main Bubble Tea shell for the current match snapshot.
-func Run(definition scenario.Definition, initial domain.MatchState) error {
+func Run(definition ScenarioReader, initial domain.MatchState) error {
 	return RunWithSource(definition, newStaticStateSource(initial), nil, tea.WithAltScreen())
 }
 
 // RunReplay launches the shell with persisted state snapshots and optional AI traces.
-func RunReplay(definition scenario.Definition, current domain.MatchState, snapshots []domain.MatchState, debugRecords []ports.AICallRecord) error {
+func RunReplay(definition ScenarioReader, current domain.MatchState, snapshots []domain.MatchState, debugRecords []ports.AICallRecord) error {
 	source := newReplayStateSource(current, snapshots)
 	program := NewProgram(definition, source, nil, newStaticDebugSource(debugRecords), tea.WithAltScreen())
 	_, err := program.Run()
@@ -21,7 +20,7 @@ func RunReplay(definition scenario.Definition, current domain.MatchState, snapsh
 }
 
 // NewProgram constructs the Bubble Tea program for the supplied match source.
-func NewProgram(definition scenario.Definition, source StateSource, submit SubmitFunc, debug DebugSource, options ...tea.ProgramOption) *tea.Program {
+func NewProgram(definition ScenarioReader, source StateSource, submit SubmitFunc, debug DebugSource, options ...tea.ProgramOption) *tea.Program {
 	opts := append([]tea.ProgramOption{tea.WithMouseCellMotion()}, options...)
 	model := NewModelWithSubmit(definition, source, submit)
 	model.debugLog = debug
@@ -29,7 +28,7 @@ func NewProgram(definition scenario.Definition, source StateSource, submit Submi
 }
 
 // RunWithSource launches the Bubble Tea shell for a live or static match source.
-func RunWithSource(definition scenario.Definition, source StateSource, submit SubmitFunc, options ...tea.ProgramOption) error {
+func RunWithSource(definition ScenarioReader, source StateSource, submit SubmitFunc, options ...tea.ProgramOption) error {
 	program := NewProgram(definition, source, submit, nil, options...)
 	_, err := program.Run()
 	return err

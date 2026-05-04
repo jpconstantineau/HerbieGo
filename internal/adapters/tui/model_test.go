@@ -16,6 +16,72 @@ import (
 	"github.com/jpconstantineau/herbiego/internal/scenario"
 )
 
+type fakeScenarioReader struct {
+	name         string
+	parts        []scenario.Part
+	products     []scenario.Product
+	workstations []scenario.Workstation
+	demandRefs   []scenario.DemandProfileReference
+}
+
+func (f fakeScenarioReader) ScenarioDisplayName() string {
+	return f.name
+}
+
+func (f fakeScenarioReader) Parts() []scenario.Part {
+	return append([]scenario.Part(nil), f.parts...)
+}
+
+func (f fakeScenarioReader) Products() []scenario.Product {
+	return append([]scenario.Product(nil), f.products...)
+}
+
+func (f fakeScenarioReader) Workstations() []scenario.Workstation {
+	return append([]scenario.Workstation(nil), f.workstations...)
+}
+
+func (f fakeScenarioReader) DemandProfileReferences() []scenario.DemandProfileReference {
+	return append([]scenario.DemandProfileReference(nil), f.demandRefs...)
+}
+
+func (f fakeScenarioReader) ListValidSuppliers(partID domain.PartID) (scenario.ValidSuppliersLookup, error) {
+	return scenario.ValidSuppliersLookup{
+		PartID:      partID,
+		DisplayName: "Mock Part",
+		Suppliers:   []domain.SupplierID{"mock-supplier"},
+	}, nil
+}
+
+func (f fakeScenarioReader) ShowProductRoute(productID domain.ProductID) (scenario.ProductRouteLookup, error) {
+	return scenario.ProductRouteLookup{
+		ProductID:    productID,
+		DisplayName:  "Mock Product",
+		Route:        []domain.WorkstationID{"mock-station"},
+		BottleneckID: "mock-station",
+	}, nil
+}
+
+func (f fakeScenarioReader) ShowProductBOM(productID domain.ProductID) (scenario.ProductBOMLookup, error) {
+	return scenario.ProductBOMLookup{
+		ProductID:    productID,
+		DisplayName:  "Mock Product",
+		BOM:          []domain.BOMLine{{PartID: "mock-part", Quantity: 1}},
+		BaseUnitCost: 3,
+	}, nil
+}
+
+func (f fakeScenarioReader) ShowCustomerDemandProfile(customerID domain.CustomerID, productID domain.ProductID) (scenario.CustomerDemandProfileLookup, error) {
+	return scenario.CustomerDemandProfileLookup{
+		CustomerID:       customerID,
+		CustomerName:     "Mock Customer",
+		ProductID:        productID,
+		ProductName:      "Mock Product",
+		ReferencePrice:   9,
+		BaseDemand:       4,
+		PriceSensitivity: 1,
+	}, nil
+}
+
 type testStateSource struct {
 	snapshot  domain.MatchState
 	snapshots []domain.MatchState
@@ -106,6 +172,35 @@ func TestModelLoadsInitialSnapshotAndRendersShell(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() missing %q\n%s", want, view)
 		}
+	}
+}
+
+func TestModelRendersWithScenarioReaderInsteadOfConcreteDefinition(t *testing.T) {
+	initial := scenario.Starter().InitialState("starter-match", starterAssignments())
+	model := NewModel(fakeScenarioReader{
+		name: "Mock Scenario",
+		parts: []scenario.Part{
+			{ID: "mock-part", DisplayName: "Mock Part", SupplierID: "mock-supplier"},
+		},
+		products: []scenario.Product{
+			{ID: "mock-product", DisplayName: "Mock Product"},
+		},
+		workstations: []scenario.Workstation{
+			{ID: "mock-station", DisplayName: "Mock Station"},
+		},
+		demandRefs: []scenario.DemandProfileReference{
+			{CustomerID: "mock-customer", CustomerName: "Mock Customer", ProductID: "mock-product", ProductName: "Mock Product"},
+		},
+	}, testStateSource{snapshot: initial})
+
+	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
+	shell := loaded.(Model)
+	shell.width = 120
+	shell.height = 32
+
+	view := shell.View()
+	if !strings.Contains(view, "Scenario: Mock Scenario") {
+		t.Fatalf("View() did not render mock scenario reader name\n%s", view)
 	}
 }
 

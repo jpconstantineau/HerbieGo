@@ -685,7 +685,7 @@ func parseNonNegativeInt(raw string) (int, error) {
 }
 
 func (m Model) validProduct(productID domain.ProductID) bool {
-	for _, product := range m.scenario.ProductionModel.Products {
+	for _, product := range m.scenario.Products() {
 		if product.ID == productID {
 			return true
 		}
@@ -694,7 +694,7 @@ func (m Model) validProduct(productID domain.ProductID) bool {
 }
 
 func (m Model) validWorkstation(workstationID domain.WorkstationID) bool {
-	for _, workstation := range m.scenario.ProductionModel.Workstations {
+	for _, workstation := range m.scenario.Workstations() {
 		if workstation.ID == workstationID {
 			return true
 		}
@@ -703,7 +703,7 @@ func (m Model) validWorkstation(workstationID domain.WorkstationID) bool {
 }
 
 func (m Model) supplierForPart(partID domain.PartID) (domain.SupplierID, bool) {
-	for _, part := range m.scenario.ProductionModel.Parts {
+	for _, part := range m.scenario.Parts() {
 		if part.ID == partID {
 			return part.SupplierID, true
 		}
