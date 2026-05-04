@@ -60,13 +60,13 @@ func (p *Player) RecoverFromNonResponse(_ context.Context, request ports.RoundRe
 
 	if request.PreviousAcceptedAction != nil {
 		reused := request.PreviousAcceptedAction.Clone()
-		reused.Commentary = fallbackCommentary(request, "Previous action reused after AI timeout.")
+		reused.Commentary = fallbackCommentary(request, "Previous action reused after AI transport failure.")
 		return reused, nil
 	}
 
 	return domain.ActionSubmission{
 		Action:     safeNoOpAction(request),
-		Commentary: fallbackCommentary(request, "Safe no-op submitted after AI timeout."),
+		Commentary: fallbackCommentary(request, "Safe no-op submitted after AI transport failure."),
 	}, nil
 }
 
@@ -112,6 +112,7 @@ func fallbackCommentary(request ports.RoundRequest, body string) domain.Commenta
 
 func nonResponsive(err error) bool {
 	return errors.Is(err, ports.ErrNonResponsive) ||
+		errors.Is(err, ports.ErrProviderFailure) ||
 		errors.Is(err, ports.ErrProviderTimeout) ||
 		errors.Is(err, context.DeadlineExceeded)
 }
