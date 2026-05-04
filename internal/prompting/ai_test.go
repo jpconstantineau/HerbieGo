@@ -40,6 +40,14 @@ func TestBuildSystemPromptUsesRoundViewEntitiesInExamples(t *testing.T) {
 	if strings.Contains(sales, `"product_id": "pump"`) {
 		t.Fatalf("sales prompt = %q, want no starter sales ids", sales)
 	}
+	if !strings.Contains(sales, "## Tool Catalog") {
+		t.Fatalf("sales prompt = %q, want generic tool catalog section", sales)
+	}
+	for _, unwanted := range []string{"## Parts", "## Products", "## Vendors", "## Customers"} {
+		if strings.Contains(sales, unwanted) {
+			t.Fatalf("sales prompt = %q, want no hardcoded tool categories like %q", sales, unwanted)
+		}
+	}
 }
 
 func TestBuildUserPromptUsesRoundViewEntitiesInDecisionAndToolExamples(t *testing.T) {

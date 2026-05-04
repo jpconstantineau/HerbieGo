@@ -51,8 +51,13 @@ func TestAIOrchestratorBuildsPromptAndParsesValidDecision(t *testing.T) {
 	if !strings.Contains(client.requests[0].SystemPrompt, "# Role") || !strings.Contains(client.requests[0].SystemPrompt, "# Instructions") || !strings.Contains(client.requests[0].SystemPrompt, "# Tools") || !strings.Contains(client.requests[0].SystemPrompt, "# Response") {
 		t.Fatalf("SystemPrompt = %q, want structured prompt sections", client.requests[0].SystemPrompt)
 	}
-	if !strings.Contains(client.requests[0].SystemPrompt, "## Parts") || !strings.Contains(client.requests[0].SystemPrompt, "## Products") || !strings.Contains(client.requests[0].SystemPrompt, "## Vendors") || !strings.Contains(client.requests[0].SystemPrompt, "## Customers") {
-		t.Fatalf("SystemPrompt = %q, want grouped tool sections", client.requests[0].SystemPrompt)
+	if !strings.Contains(client.requests[0].SystemPrompt, "## Tool Catalog") {
+		t.Fatalf("SystemPrompt = %q, want generic tool catalog section", client.requests[0].SystemPrompt)
+	}
+	for _, unwanted := range []string{"## Parts", "## Products", "## Vendors", "## Customers"} {
+		if strings.Contains(client.requests[0].SystemPrompt, unwanted) {
+			t.Fatalf("SystemPrompt = %q, want no hardcoded tool section %q", client.requests[0].SystemPrompt, unwanted)
+		}
 	}
 	if !strings.Contains(client.requests[0].UserPrompt, "## Allowed Action Schema") {
 		t.Fatalf("UserPrompt = %q, want schema section", client.requests[0].UserPrompt)
