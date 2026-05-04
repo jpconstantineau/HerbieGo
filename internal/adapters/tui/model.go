@@ -60,6 +60,22 @@ type StatusMsg struct {
 
 type SubmitFunc func(domain.ActionSubmission) error
 
+// ExitIntent records why the gameplay shell exited.
+type ExitIntent string
+
+const (
+	ExitIntentQuit         ExitIntent = "quit"
+	ExitIntentReturnToMenu ExitIntent = "return_to_menu"
+)
+
+// QuitBehavior controls what pressing q does inside the gameplay shell.
+type QuitBehavior int
+
+const (
+	QuitBehaviorQuitProgram QuitBehavior = iota
+	QuitBehaviorReturnToMenu
+)
+
 // Model is the Bubble Tea shell for the round-based gameplay UI.
 type Model struct {
 	scenario      ScenarioReader
@@ -83,6 +99,8 @@ type Model struct {
 	debugExpanded map[string]bool
 	drafts        map[domain.RoleID]actionDraft
 	lookup        lookupBrowserState
+	quitBehavior  QuitBehavior
+	exitIntent    ExitIntent
 }
 
 // NewModel constructs the main gameplay shell model.
@@ -93,6 +111,12 @@ func NewModel(definition ScenarioReader, source StateSource) Model {
 // NewModelWithSubmit constructs the gameplay shell with an optional live
 // submission hook for forwarding locked human actions into the shared runner.
 func NewModelWithSubmit(definition ScenarioReader, source StateSource, submit SubmitFunc) Model {
+	return NewModelWithSubmitAndQuitBehavior(definition, source, submit, QuitBehaviorQuitProgram)
+}
+
+// NewModelWithSubmitAndQuitBehavior constructs the gameplay shell with a
+// configurable q-key behavior.
+func NewModelWithSubmitAndQuitBehavior(definition ScenarioReader, source StateSource, submit SubmitFunc, quitBehavior QuitBehavior) Model {
 	return Model{
 		scenario:      definition,
 		source:        source,
@@ -102,6 +126,8 @@ func NewModelWithSubmit(definition ScenarioReader, source StateSource, submit Su
 		status:        "Loading round state...",
 		drafts:        make(map[domain.RoleID]actionDraft),
 		debugExpanded: make(map[string]bool),
+		quitBehavior:  quitBehavior,
+		exitIntent:    ExitIntentQuit,
 	}
 }
 
@@ -128,7 +154,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		switch typed.String() {
-		case "ctrl+c", "q":
+		case "ctrl+c":
+			m.exitIntent = ExitIntentQuit
+			return m, tea.Quit
+		case "q":
+			if m.quitBehavior == QuitBehaviorReturnToMenu {
+				m.exitIntent = ExitIntentReturnToMenu
+				m.status = "Returning to the start menu..."
+				return m, tea.Quit
+			}
+			m.exitIntent = ExitIntentQuit
 			return m, tea.Quit
 		case "tab":
 			m.focusedPane = (m.focusedPane + 1) % 4
@@ -255,6 +290,11 @@ func (m Model) View() string {
 		m.renderContentArea(layout, width, contentHeight),
 		m.renderCommandBar(commandWidth, commandHeight),
 	)
+}
+
+// ExitIntent reports whether the shell exited back to the menu or quit fully.
+func (m Model) ExitIntent() ExitIntent {
+	return m.exitIntent
 }
 
 func loadSnapshotCmd(source StateSource) tea.Cmd {

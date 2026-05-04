@@ -198,6 +198,49 @@ func TestStorePersistsStateSnapshotsAcrossRounds(t *testing.T) {
 	}
 }
 
+func TestStoreCanSaveAndLoadNamedSlots(t *testing.T) {
+	store := newStore(t)
+	initial := domain.MatchState{
+		MatchID:      "match-5",
+		ScenarioID:   "starter",
+		CurrentRound: 3,
+		Plant:        domain.PlantState{Cash: 41},
+	}
+	if err := store.CreateMatch(initial); err != nil {
+		t.Fatalf("CreateMatch() error = %v", err)
+	}
+
+	summary, err := store.SaveSlot("starter-slot", initial.MatchID)
+	if err != nil {
+		t.Fatalf("SaveSlot() error = %v", err)
+	}
+	if summary.MatchID != initial.MatchID {
+		t.Fatalf("SaveSlot() match id = %q, want %q", summary.MatchID, initial.MatchID)
+	}
+
+	slots, err := store.ListSaveSlots()
+	if err != nil {
+		t.Fatalf("ListSaveSlots() error = %v", err)
+	}
+	if len(slots) != 1 {
+		t.Fatalf("ListSaveSlots len = %d, want 1", len(slots))
+	}
+	if slots[0].SlotName != "starter-slot" {
+		t.Fatalf("ListSaveSlots slot name = %q, want starter-slot", slots[0].SlotName)
+	}
+
+	state, loaded, err := store.LoadSaveSlot("starter-slot")
+	if err != nil {
+		t.Fatalf("LoadSaveSlot() error = %v", err)
+	}
+	if state.MatchID != initial.MatchID {
+		t.Fatalf("LoadSaveSlot() match id = %q, want %q", state.MatchID, initial.MatchID)
+	}
+	if loaded.CurrentRound != 3 {
+		t.Fatalf("LoadSaveSlot() round = %d, want 3", loaded.CurrentRound)
+	}
+}
+
 func newStore(t *testing.T) *sqlite.Store {
 	t.Helper()
 
