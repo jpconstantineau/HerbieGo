@@ -13,9 +13,20 @@ import (
 	"github.com/jpconstantineau/herbiego/internal/ports"
 )
 
+var ErrSaveSlotNotFound = errors.New("save slot not found")
+
 type Options struct {
 	Path               string
 	RecentHistoryLimit int
+}
+
+type SaveSlotSummary struct {
+	SlotName     string
+	MatchID      domain.MatchID
+	ScenarioID   domain.ScenarioID
+	CurrentRound domain.RoundNumber
+	Cash         domain.Money
+	SavedAt      time.Time
 }
 
 type Store struct {
@@ -383,6 +394,112 @@ func (s *Store) StateSnapshots(matchID domain.MatchID) ([]domain.MatchState, err
 	return snapshots, nil
 }
 
+func (s *Store) SaveSlot(slotName string, matchID domain.MatchID) (SaveSlotSummary, error) {
+	if slotName == "" {
+		return SaveSlotSummary{}, errors.New("sqlite store: save slot name must not be empty")
+	}
+	state, err := s.CurrentState(matchID)
+	if err != nil {
+		return SaveSlotSummary{}, err
+	}
+
+	now := time.Now().UTC()
+	if _, err := s.db.Exec(`
+		INSERT INTO save_slots(slot_name, match_id, scenario_id, current_round, cash, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(slot_name) DO UPDATE SET
+			match_id = excluded.match_id,
+			scenario_id = excluded.scenario_id,
+			current_round = excluded.current_round,
+			cash = excluded.cash,
+			updated_at = excluded.updated_at
+	`, slotName, matchID, state.ScenarioID, state.CurrentRound, state.Plant.Cash, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+		return SaveSlotSummary{}, fmt.Errorf("sqlite store: save slot %q: %w", slotName, err)
+	}
+
+	return SaveSlotSummary{
+		SlotName:     slotName,
+		MatchID:      matchID,
+		ScenarioID:   state.ScenarioID,
+		CurrentRound: state.CurrentRound,
+		Cash:         state.Plant.Cash,
+		SavedAt:      now,
+	}, nil
+}
+
+func (s *Store) ListSaveSlots() ([]SaveSlotSummary, error) {
+	rows, err := s.db.Query(`
+		SELECT slot_name, match_id, scenario_id, current_round, cash, updated_at
+		FROM save_slots
+		ORDER BY updated_at DESC, slot_name ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite store: query save slots: %w", err)
+	}
+	defer rows.Close()
+
+	var slots []SaveSlotSummary
+	for rows.Next() {
+		var (
+			slot       SaveSlotSummary
+			updatedAt  string
+			roundValue int
+			cashValue  int
+		)
+		if err := rows.Scan(&slot.SlotName, &slot.MatchID, &slot.ScenarioID, &roundValue, &cashValue, &updatedAt); err != nil {
+			return nil, fmt.Errorf("sqlite store: scan save slot: %w", err)
+		}
+		slot.CurrentRound = domain.RoundNumber(roundValue)
+		slot.Cash = domain.Money(cashValue)
+		slot.SavedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite store: parse save slot time: %w", err)
+		}
+		slots = append(slots, slot)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite store: iterate save slots: %w", err)
+	}
+	return slots, nil
+}
+
+func (s *Store) LoadSaveSlot(slotName string) (domain.MatchState, SaveSlotSummary, error) {
+	if slotName == "" {
+		return domain.MatchState{}, SaveSlotSummary{}, errors.New("sqlite store: save slot name must not be empty")
+	}
+
+	var (
+		summary    SaveSlotSummary
+		updatedAt  string
+		roundValue int
+		cashValue  int
+	)
+	err := s.db.QueryRow(`
+		SELECT slot_name, match_id, scenario_id, current_round, cash, updated_at
+		FROM save_slots
+		WHERE slot_name = ?
+	`, slotName).Scan(&summary.SlotName, &summary.MatchID, &summary.ScenarioID, &roundValue, &cashValue, &updatedAt)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return domain.MatchState{}, SaveSlotSummary{}, ErrSaveSlotNotFound
+	case err != nil:
+		return domain.MatchState{}, SaveSlotSummary{}, fmt.Errorf("sqlite store: load save slot %q: %w", slotName, err)
+	}
+
+	summary.CurrentRound = domain.RoundNumber(roundValue)
+	summary.Cash = domain.Money(cashValue)
+	summary.SavedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
+	if err != nil {
+		return domain.MatchState{}, SaveSlotSummary{}, fmt.Errorf("sqlite store: parse save slot time: %w", err)
+	}
+
+	state, err := s.CurrentState(summary.MatchID)
+	if err != nil {
+		return domain.MatchState{}, SaveSlotSummary{}, err
+	}
+	return state, summary, nil
+}
+
 func (s *Store) initSchema() error {
 	if _, err := s.db.Exec(`
 		PRAGMA foreign_keys = ON;
@@ -419,6 +536,15 @@ func (s *Store) initSchema() error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			match_id TEXT NOT NULL,
 			record_json TEXT NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS save_slots (
+			slot_name TEXT PRIMARY KEY,
+			match_id TEXT NOT NULL,
+			scenario_id TEXT NOT NULL,
+			current_round INTEGER NOT NULL,
+			cash INTEGER NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
 		);
 	`); err != nil {
 		return fmt.Errorf("sqlite store: initialize schema: %w", err)

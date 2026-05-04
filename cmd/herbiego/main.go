@@ -68,10 +68,10 @@ const (
 	gameplayExitToMenu
 )
 
-func runLiveGameplay(ctx context.Context, runtime app.Runtime, initialState domain.MatchState, store persistentStore, rounds int, persistAIDebug bool) (gameplayExitIntent, error) {
+func runLiveGameplay(ctx context.Context, runtime app.Runtime, initialState domain.MatchState, store persistentStore, rounds int, persistAIDebug bool) (gameplayExitIntent, domain.MatchState, error) {
 	definition, err := resolveScenarioForMatch(initialState)
 	if err != nil {
-		return gameplayExitQuit, err
+		return gameplayExitQuit, domain.MatchState{}, err
 	}
 	liveLogger := app.NewDiscardLogger()
 
@@ -79,14 +79,14 @@ func runLiveGameplay(ctx context.Context, runtime app.Runtime, initialState doma
 	if store != nil {
 		persistedSnapshots, err := store.StateSnapshots(initialState.MatchID)
 		if err != nil {
-			return gameplayExitQuit, fmt.Errorf("load persisted state snapshots: %w", err)
+			return gameplayExitQuit, domain.MatchState{}, fmt.Errorf("load persisted state snapshots: %w", err)
 		}
 		stateSnapshots = persistedSnapshots
 	}
 	controller := newLiveGameplayController(initialState, stateSnapshots)
 	players, debugLog, err := buildPlayersWithHumanSubmit(runtime.Config, definition, initialState, controller.SubmitRound, liveLogger)
 	if err != nil {
-		return gameplayExitQuit, fmt.Errorf("player setup: %w", err)
+		return gameplayExitQuit, domain.MatchState{}, fmt.Errorf("player setup: %w", err)
 	}
 	if store != nil && persistAIDebug {
 		configureAICallPersistence(debugLog, liveLogger, store, initialState.MatchID)
@@ -95,7 +95,7 @@ func runLiveGameplay(ctx context.Context, runtime app.Runtime, initialState doma
 	if store != nil {
 		debugRecords, err := store.AICallRecords(initialState.MatchID)
 		if err != nil {
-			return gameplayExitQuit, fmt.Errorf("load persisted ai traces: %w", err)
+			return gameplayExitQuit, domain.MatchState{}, fmt.Errorf("load persisted ai traces: %w", err)
 		}
 		debugSource = combinedDebugSource{
 			live:      debugLog,
@@ -156,20 +156,20 @@ func runLiveGameplay(ctx context.Context, runtime app.Runtime, initialState doma
 	playErr := <-runnerErr
 
 	if err != nil && !errors.Is(err, tea.ErrProgramKilled) {
-		return gameplayExitQuit, fmt.Errorf("bubble tea runtime: %w", err)
+		return gameplayExitQuit, controller.Snapshot(), fmt.Errorf("bubble tea runtime: %w", err)
 	}
 	if playErr != nil && !errors.Is(playErr, context.Canceled) {
-		return gameplayExitQuit, playErr
+		return gameplayExitQuit, controller.Snapshot(), playErr
 	}
 
 	gameplayModel, ok := finalModel.(tui.Model)
 	if !ok {
-		return gameplayExitQuit, nil
+		return gameplayExitQuit, controller.Snapshot(), nil
 	}
 	if gameplayModel.ExitIntent() == tui.ExitIntentReturnToMenu {
-		return gameplayExitToMenu, nil
+		return gameplayExitToMenu, controller.Snapshot(), nil
 	}
-	return gameplayExitQuit, nil
+	return gameplayExitQuit, controller.Snapshot(), nil
 }
 
 func resolveScenarioForMatch(state domain.MatchState) (scenario.Definition, error) {

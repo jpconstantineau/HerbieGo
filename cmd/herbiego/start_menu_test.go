@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/jpconstantineau/herbiego/internal/adapters/persistence/sqlite"
 	"github.com/jpconstantineau/herbiego/internal/app"
 	"github.com/jpconstantineau/herbiego/internal/domain"
 	"github.com/jpconstantineau/herbiego/internal/scenario"
@@ -57,10 +58,16 @@ func TestSplashFramesKeepStableVisibleWidth(t *testing.T) {
 	}
 }
 
-func TestStartMenuCanToggleRoleAndLaunch(t *testing.T) {
-	model := newStartMenuModel(testMenuConfig())
+func TestStartMenuCanToggleRoleAndStartNewGame(t *testing.T) {
+	model := newStartMenuModel(testMenuConfig(), startMenuState{})
 
 	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	model = next.(startMenuModel)
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	model = next.(startMenuModel)
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	model = next.(startMenuModel)
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
 	model = next.(startMenuModel)
 	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
 	model = next.(startMenuModel)
@@ -75,8 +82,8 @@ func TestStartMenuCanToggleRoleAndLaunch(t *testing.T) {
 	model.cursor = 0
 	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model = next.(startMenuModel)
-	if model.action != startMenuActionStartGame {
-		t.Fatalf("menu action = %v, want start game", model.action)
+	if model.result.Action != startMenuActionStartNewGame {
+		t.Fatalf("menu action = %v, want start new game", model.result.Action)
 	}
 }
 
@@ -126,13 +133,60 @@ func TestStartMenuCanSwitchScenarios(t *testing.T) {
 		}
 	}
 
-	model := newStartMenuModel(testMenuConfig())
-	model.cursor = 1
+	model := newStartMenuModel(testMenuConfig(), startMenuState{})
+	model.cursor = 4
 
 	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRight})
 	model = next.(startMenuModel)
 	if model.config.ScenarioID == scenario.StarterID {
 		t.Fatalf("scenario id = %q, want scenario selection to advance", model.config.ScenarioID)
+	}
+}
+
+func TestStartMenuCanSelectSaveAndLoadSlots(t *testing.T) {
+	session := &activeSession{
+		state: domain.MatchState{
+			MatchID:      "match-7",
+			ScenarioID:   scenario.StarterID,
+			CurrentRound: 3,
+			Plant:        domain.PlantState{Cash: 42},
+		},
+	}
+	state := startMenuState{
+		ActiveSession: session,
+		StoreEnabled:  true,
+		SaveSlots: []sqlite.SaveSlotSummary{
+			{SlotName: "slot-a", MatchID: "match-a", ScenarioID: scenario.StarterID, CurrentRound: 2, Cash: 20, SavedAt: time.Now()},
+			{SlotName: "slot-b", MatchID: "match-b", ScenarioID: scenario.StarterID, CurrentRound: 4, Cash: 33, SavedAt: time.Now()},
+		},
+	}
+	model := newStartMenuModel(testMenuConfig(), state)
+
+	model.cursor = 2
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRight})
+	model = next.(startMenuModel)
+	if model.state.SelectedLoadIndex != 1 {
+		t.Fatalf("SelectedLoadIndex = %d, want 1", model.state.SelectedLoadIndex)
+	}
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = next.(startMenuModel)
+	if model.result.Action != startMenuActionLoadGame || model.result.SlotName != "slot-b" {
+		t.Fatalf("load result = %#v, want slot-b load action", model.result)
+	}
+
+	model = newStartMenuModel(testMenuConfig(), state)
+	model.cursor = 3
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRight})
+	model = next.(startMenuModel)
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRight})
+	model = next.(startMenuModel)
+	if model.selectedSaveSlotName() != "" {
+		t.Fatalf("selectedSaveSlotName() = %q, want empty for new-slot target", model.selectedSaveSlotName())
+	}
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = next.(startMenuModel)
+	if model.result.Action != startMenuActionSaveGame || model.result.SlotName != "" {
+		t.Fatalf("save result = %#v, want new-slot save action", model.result)
 	}
 }
 
