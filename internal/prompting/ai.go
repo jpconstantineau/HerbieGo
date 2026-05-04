@@ -47,9 +47,7 @@ func BuildSystemPrompt(request ports.AIDecisionRequest) string {
 	lines = append(lines, "# Tools")
 	lines = append(lines, "You have the following tools available to you:")
 	lines = append(lines, "")
-	for _, section := range groupedToolSections(request.Tools) {
-		lines = append(lines, section...)
-	}
+	lines = append(lines, renderToolCatalog(request.Tools)...)
 	lines = append(lines, "# Response")
 	lines = append(lines, "")
 	lines = append(lines, "Once you have your decision, communicate it to the rest of the team in JSON format according to the example below.")
@@ -377,63 +375,26 @@ func roleDecisionScope(roleID domain.RoleID) string {
 	}
 }
 
-func groupedToolSections(tools []ports.LookupToolSpec) [][]string {
-	byCategory := map[string][]ports.LookupToolSpec{
-		"Parts":     nil,
-		"Products":  nil,
-		"Vendors":   nil,
-		"Customers": nil,
+func renderToolCatalog(tools []ports.LookupToolSpec) []string {
+	if len(tools) == 0 {
+		return []string{"No scenario lookup tools are available for this match.", ""}
 	}
 
+	lines := []string{"## Tool Catalog"}
 	for _, tool := range tools {
-		for _, category := range toolCategories(tool.Name) {
-			byCategory[category] = append(byCategory[category], tool)
-		}
-	}
-
-	order := []string{"Parts", "Products", "Vendors", "Customers"}
-	sections := make([][]string, 0, len(order))
-	for _, category := range order {
-		lines := []string{"## " + category}
-		toolsForCategory := byCategory[category]
-		if len(toolsForCategory) == 0 {
-			lines = append(lines, "No dedicated lookup tool is available in this category yet.")
-			lines = append(lines, "")
-			sections = append(sections, lines)
+		lines = append(lines, fmt.Sprintf("- `%s`: %s", tool.Name, tool.Description))
+		if len(tool.Arguments) == 0 {
 			continue
 		}
-
-		for _, tool := range toolsForCategory {
-			lines = append(lines, fmt.Sprintf("- `%s`: %s", tool.Name, tool.Description))
-			if len(tool.Arguments) > 0 {
-				lines = append(lines, "  Arguments:")
-				for _, argument := range tool.Arguments {
-					required := "optional"
-					if argument.Required {
-						required = "required"
-					}
-					lines = append(lines, fmt.Sprintf("  - %s (%s): %s", argument.Name, required, argument.Description))
-				}
+		lines = append(lines, "  Arguments:")
+		for _, argument := range tool.Arguments {
+			required := "optional"
+			if argument.Required {
+				required = "required"
 			}
+			lines = append(lines, fmt.Sprintf("  - %s (%s): %s", argument.Name, required, argument.Description))
 		}
-		lines = append(lines, "")
-		sections = append(sections, lines)
 	}
-
-	return sections
-}
-
-func toolCategories(toolName string) []string {
-	switch toolName {
-	case "show_product_bom":
-		return []string{"Parts", "Products"}
-	case "show_product_route":
-		return []string{"Products"}
-	case "list_valid_suppliers":
-		return []string{"Parts", "Vendors"}
-	case "show_customer_demand_profile":
-		return []string{"Customers"}
-	default:
-		return []string{"Parts"}
-	}
+	lines = append(lines, "")
+	return lines
 }
