@@ -23,9 +23,16 @@ func RunReplay(definition ScenarioReader, current domain.MatchState, snapshots [
 // match source and q-key behavior.
 func NewProgramWithQuitBehavior(definition ScenarioReader, source StateSource, submit SubmitFunc, debug DebugSource, quitBehavior QuitBehavior, options ...tea.ProgramOption) *tea.Program {
 	opts := append([]tea.ProgramOption{tea.WithMouseCellMotion()}, options...)
+	model := NewModelWithSubmitDebugAndQuitBehavior(definition, source, submit, debug, quitBehavior)
+	return tea.NewProgram(model, opts...)
+}
+
+// NewModelWithSubmitDebugAndQuitBehavior constructs the gameplay model with
+// live submission, debug data, and a configurable q-key behavior.
+func NewModelWithSubmitDebugAndQuitBehavior(definition ScenarioReader, source StateSource, submit SubmitFunc, debug DebugSource, quitBehavior QuitBehavior) Model {
 	model := NewModelWithSubmitAndQuitBehavior(definition, source, submit, quitBehavior)
 	model.debugLog = debug
-	return tea.NewProgram(model, opts...)
+	return model
 }
 
 // NewProgram constructs the Bubble Tea program for the supplied match source.
