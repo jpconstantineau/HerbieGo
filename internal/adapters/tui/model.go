@@ -10,7 +10,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jpconstantineau/herbiego/internal/domain"
 	"github.com/jpconstantineau/herbiego/internal/projection"
-	"github.com/jpconstantineau/herbiego/internal/scenario"
 )
 
 const (
@@ -63,7 +62,7 @@ type SubmitFunc func(domain.ActionSubmission) error
 
 // Model is the Bubble Tea shell for the round-based gameplay UI.
 type Model struct {
-	scenario      scenario.Definition
+	scenario      ScenarioReader
 	source        StateSource
 	debugLog      DebugSource
 	updates       <-chan domain.MatchState
@@ -87,13 +86,13 @@ type Model struct {
 }
 
 // NewModel constructs the main gameplay shell model.
-func NewModel(definition scenario.Definition, source StateSource) Model {
+func NewModel(definition ScenarioReader, source StateSource) Model {
 	return NewModelWithSubmit(definition, source, nil)
 }
 
 // NewModelWithSubmit constructs the gameplay shell with an optional live
 // submission hook for forwarding locked human actions into the shared runner.
-func NewModelWithSubmit(definition scenario.Definition, source StateSource, submit SubmitFunc) Model {
+func NewModelWithSubmit(definition ScenarioReader, source StateSource, submit SubmitFunc) Model {
 	return Model{
 		scenario:      definition,
 		source:        source,
@@ -343,7 +342,7 @@ func (m Model) renderDepartmentsPane(width, height int) string {
 	report := m.selectedRoleReport()
 
 	lines := []string{
-		fmt.Sprintf("Scenario: %s", m.scenario.DisplayName),
+		fmt.Sprintf("Scenario: %s", m.scenario.ScenarioDisplayName()),
 		fmt.Sprintf("Match: %s", m.state.MatchID),
 		fmt.Sprintf("Mode: %s", modeLabel(m.focusedPane)),
 		"",

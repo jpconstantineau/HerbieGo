@@ -126,6 +126,23 @@ func (d Definition) Products() []Product {
 	return products
 }
 
+// ScenarioDisplayName returns the stable human-facing scenario name.
+func (d Definition) ScenarioDisplayName() string {
+	return d.DisplayName
+}
+
+// Workstations returns all canonical workstation definitions in stable display order.
+func (d Definition) Workstations() []Workstation {
+	workstations := slices.Clone(d.ProductionModel.Workstations)
+	slices.SortFunc(workstations, func(left, right Workstation) int {
+		if byName := cmp.Compare(left.DisplayName, right.DisplayName); byName != 0 {
+			return byName
+		}
+		return cmp.Compare(left.ID, right.ID)
+	})
+	return workstations
+}
+
 // Workstation returns one canonical workstation definition.
 func (d Definition) Workstation(workstationID domain.WorkstationID) (Workstation, bool) {
 	workstation, ok := d.workstationsByID()[workstationID]

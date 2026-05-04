@@ -86,7 +86,7 @@ func (m *Model) shiftLookupSelection(delta int) {
 
 func (m Model) renderScenarioLookupWorkspace(width int) []string {
 	lines := []string{
-		fmt.Sprintf("Scenario lookups for %s", m.scenario.DisplayName),
+		fmt.Sprintf("Scenario lookups for %s", m.scenario.ScenarioDisplayName()),
 		"View: browse the same canonical scenario lookup surface used by AI tool calls",
 		selectedLookupTabsLine(m.lookup.active),
 		"Use v/r/b/d to switch lookup type and up/down to browse entries.",
