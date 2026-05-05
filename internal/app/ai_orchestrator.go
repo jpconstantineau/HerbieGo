@@ -55,17 +55,17 @@ func (o AIOrchestrator) BuildRequest(request ports.RoundRequest) ports.AIDecisio
 	roundView := request.RoleView.Clone()
 	actionSchema := actionschema.Build(o.Scenario, request.Assignment.RoleID, roundView)
 	return ports.AIDecisionRequest{
-		MatchID:        request.RoleView.MatchID,
-		Round:          request.RoleView.Round,
-		RoleID:         request.Assignment.RoleID,
-		Provider:       request.Assignment.Provider,
-		Model:          request.Assignment.ModelName,
-		Briefing:       roleBriefing(o.Scenario, request.Assignment.RoleID),
-		RoundView:      roundView,
-		RoleReport:     request.RoleReport.Clone(),
+		MatchID:             request.RoleView.MatchID,
+		Round:               request.RoleView.Round,
+		RoleID:              request.Assignment.RoleID,
+		Provider:            request.Assignment.Provider,
+		Model:               request.Assignment.ModelName,
+		Briefing:            roleBriefing(o.Scenario, request.Assignment.RoleID),
+		RoundView:           roundView,
+		RoleReport:          request.RoleReport.Clone(),
 		SharedActionSurface: actionSchema,
-		AllowedActions: allowedActionSchema(o.Scenario, request.Assignment.RoleID),
-		Tools:          lookupTools(),
+		AllowedActions:      allowedActionSchema(o.Scenario, request.Assignment.RoleID),
+		Tools:               lookupTools(),
 		ResponseSpec: ports.ResponseFormatSpec{
 			RequireJSONOnly:     true,
 			AllowMarkdownFences: true,

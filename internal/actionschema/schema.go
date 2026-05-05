@@ -11,9 +11,9 @@ import (
 type ValueKind string
 
 const (
-	ValueKindChoice ValueKind = "choice"
+	ValueKindChoice  ValueKind = "choice"
 	ValueKindInteger ValueKind = "integer"
-	ValueKindText ValueKind = "text"
+	ValueKindText    ValueKind = "text"
 )
 
 type Option struct {
@@ -67,12 +67,12 @@ type FieldSpec struct {
 }
 
 type RoleSchema struct {
-	RoleID           domain.RoleID
-	RequiredAction   string
-	JSONSchemaName   string
-	AllowedSummary   []string
-	ValidationRules  []string
-	Fields           []FieldSpec
+	RoleID          domain.RoleID
+	RequiredAction  string
+	JSONSchemaName  string
+	AllowedSummary  []string
+	ValidationRules []string
+	Fields          []FieldSpec
 }
 
 type CatalogSource interface {

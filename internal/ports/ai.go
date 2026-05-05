@@ -19,22 +19,22 @@ type RoleBriefing struct {
 
 // AIDecisionRequest is the canonical provider-neutral input to the AI runner.
 type AIDecisionRequest struct {
-	MatchID         domain.MatchID
-	Round           domain.RoundNumber
-	RoleID          domain.RoleID
-	Provider        string
-	Model           string
-	Briefing        RoleBriefing
-	RoundView       domain.RoundView
-	RoleReport      domain.RoleRoundReport
+	MatchID             domain.MatchID
+	Round               domain.RoundNumber
+	RoleID              domain.RoleID
+	Provider            string
+	Model               string
+	Briefing            RoleBriefing
+	RoundView           domain.RoundView
+	RoleReport          domain.RoleRoundReport
 	SharedActionSurface any
-	AllowedActions  AllowedActionSchema
-	Tools           []LookupToolSpec
-	ToolResults     []LookupToolResult
-	PriorAIResponse string
-	ResponseSpec    ResponseFormatSpec
-	RetryContext    *RetryFeedback
-	PreviousAction  *domain.ActionSubmission
+	AllowedActions      AllowedActionSchema
+	Tools               []LookupToolSpec
+	ToolResults         []LookupToolResult
+	PriorAIResponse     string
+	ResponseSpec        ResponseFormatSpec
+	RetryContext        *RetryFeedback
+	PreviousAction      *domain.ActionSubmission
 }
 
 // AllowedActionSchema narrows the action payload to the active role.
