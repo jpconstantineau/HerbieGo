@@ -1019,7 +1019,7 @@ func focusedPaneCommandHints(focusedPane int, active workspaceMode) string {
 func workspaceInteractionHint(active workspaceMode) string {
 	switch active {
 	case workspaceActionEntry:
-		return "up/down move fields or table rows, left/right move table columns, a add row, x remove row, enter edit/save, esc cancel, r review, s submit"
+		return "up/down move fields or table rows, left/right move table columns, a add row, x remove row, enter edit/save, esc cancel, r review, s submit, arrows cycle choice editors while editing"
 	case workspaceScenarioLookup:
 		return "v/r/b/d switch lookup tabs, up/down browse entries"
 	case workspaceRoleReport:

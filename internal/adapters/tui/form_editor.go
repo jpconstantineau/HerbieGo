@@ -234,21 +234,24 @@ func (m *actionFormModel) BeginEdit() bool {
 		if column == nil {
 			return false
 		}
-		if column.Kind == actionschema.ValueKindChoice {
-			return m.CycleChoice(1)
-		}
 		value := m.currentValue()
 		if len(value.Rows) == 0 {
 			m.AddRow()
 			value = m.currentValue()
 		}
-		m.InputBuffer = value.Rows[m.RowIndex][column.ID]
+		if column.Kind == actionschema.ValueKindChoice {
+			m.InputBuffer = initialChoiceValue(column.Options.Options(value.Rows[m.RowIndex]), value.Rows[m.RowIndex][column.ID])
+		} else {
+			m.InputBuffer = value.Rows[m.RowIndex][column.ID]
+		}
 		m.Editing = true
 		return true
 	}
 
 	if field.Kind == actionschema.ValueKindChoice {
-		return m.CycleChoice(1)
+		m.InputBuffer = initialChoiceValue(field.Options.Static, m.currentValue().Scalar)
+		m.Editing = true
+		return true
 	}
 	m.InputBuffer = m.currentValue().Scalar
 	m.Editing = true
@@ -291,7 +294,7 @@ func (m *actionFormModel) CancelEdit() bool {
 }
 
 func (m *actionFormModel) TypeRunes(input string) bool {
-	if !m.Editing {
+	if !m.Editing || m.editingChoice() {
 		return false
 	}
 	m.InputBuffer += input
@@ -299,7 +302,7 @@ func (m *actionFormModel) TypeRunes(input string) bool {
 }
 
 func (m *actionFormModel) Backspace() bool {
-	if !m.Editing || len(m.InputBuffer) == 0 {
+	if !m.Editing || m.editingChoice() || len(m.InputBuffer) == 0 {
 		return false
 	}
 	m.InputBuffer = m.InputBuffer[:len(m.InputBuffer)-1]
@@ -309,6 +312,9 @@ func (m *actionFormModel) Backspace() bool {
 func (m actionFormModel) displayScalar(field actionschema.FieldSpec) string {
 	value := m.Values[field.ID].Scalar
 	if m.Editing && m.currentField() != nil && m.currentField().ID == field.ID && field.Collection == nil {
+		if field.Kind == actionschema.ValueKindChoice {
+			return renderInputCursor(optionLabel(field.Options.Static, m.InputBuffer))
+		}
 		return renderInputCursor(m.InputBuffer)
 	}
 	if strings.TrimSpace(value) == "" {
@@ -327,6 +333,9 @@ func (m actionFormModel) displayCell(field actionschema.FieldSpec, rowIndex int,
 	}
 	cell := value.Rows[rowIndex][column.ID]
 	if m.Editing && m.currentField() != nil && m.currentField().ID == field.ID && m.RowIndex == rowIndex && m.currentColumn() != nil && m.currentColumn().ID == column.ID {
+		if column.Kind == actionschema.ValueKindChoice {
+			return renderInputCursor(optionLabel(column.Options.Options(value.Rows[rowIndex]), m.InputBuffer))
+		}
 		return renderInputCursor(m.InputBuffer)
 	}
 	if strings.TrimSpace(cell) == "" {
@@ -340,6 +349,53 @@ func (m actionFormModel) displayCell(field actionschema.FieldSpec, rowIndex int,
 
 func renderInputCursor(value string) string {
 	return value + "|"
+}
+
+func (m *actionFormModel) editingChoice() bool {
+	if !m.Editing {
+		return false
+	}
+	field := m.currentField()
+	if field == nil {
+		return false
+	}
+	if field.Collection != nil {
+		column := m.currentColumn()
+		return column != nil && column.Kind == actionschema.ValueKindChoice
+	}
+	return field.Kind == actionschema.ValueKindChoice
+}
+
+func (m *actionFormModel) CycleEditingChoice(delta int) bool {
+	if !m.editingChoice() || delta == 0 {
+		return false
+	}
+	field := m.currentField()
+	if field == nil {
+		return false
+	}
+	if field.Collection != nil {
+		value := m.currentValue()
+		if len(value.Rows) == 0 {
+			return false
+		}
+		column := m.currentColumn()
+		if column == nil {
+			return false
+		}
+		next, ok := cycleOptionValue(column.Options.Options(value.Rows[m.RowIndex]), m.InputBuffer, delta)
+		if !ok {
+			return false
+		}
+		m.InputBuffer = next
+		return true
+	}
+	next, ok := cycleOptionValue(field.Options.Static, m.InputBuffer, delta)
+	if !ok {
+		return false
+	}
+	m.InputBuffer = next
+	return true
 }
 
 func (m *actionFormModel) resetFocusForField() {
@@ -369,6 +425,16 @@ func cycleOptionValue(options []actionschema.Option, current string, delta int) 
 	}
 	index = (index + delta + len(options)) % len(options)
 	return options[index].Value, true
+}
+
+func initialChoiceValue(options []actionschema.Option, current string) string {
+	if strings.TrimSpace(current) != "" {
+		return current
+	}
+	if len(options) == 0 {
+		return ""
+	}
+	return options[0].Value
 }
 
 func optionLabel(options []actionschema.Option, value string) string {

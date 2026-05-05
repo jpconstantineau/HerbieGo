@@ -148,6 +148,20 @@ func (m *Model) handleActionEntryKey(msg tea.KeyMsg) bool {
 
 func (m *Model) handleEditingKey(msg tea.KeyMsg, roleID domain.RoleID) bool {
 	draft := m.currentDraft()
+	if draft.form.editingChoice() {
+		switch msg.String() {
+		case "up", "k", "left", "h":
+			if draft.form.CycleEditingChoice(-1) {
+				m.drafts[roleID] = draft
+			}
+			return true
+		case "down", "j", "right", "l":
+			if draft.form.CycleEditingChoice(1) {
+				m.drafts[roleID] = draft
+			}
+			return true
+		}
+	}
 	switch msg.Type {
 	case tea.KeyEsc:
 		draft.form.CancelEdit()
@@ -247,7 +261,8 @@ func (m Model) renderActionEntryWorkspace(width int) []string {
 	lines = append(lines,
 		"",
 		"Editing flow",
-		"Use up/down to move between fields or table rows, left/right to move across table columns, enter to edit or cycle, a to add rows, x to remove rows, esc to cancel text edits, and r to review.",
+		"Use up/down to move between fields or table rows, left/right to move across table columns, enter to edit and save, a to add rows, x to remove rows, esc to cancel, and r to review.",
+		"Choice editors keep focus while editing so arrows can change the selected option before enter commits it.",
 	)
 	for index, field := range draft.form.Schema.Fields {
 		fieldCursor := " "
