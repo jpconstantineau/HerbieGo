@@ -261,8 +261,8 @@ func (m Model) renderActionEntryWorkspace(width int) []string {
 	lines = append(lines,
 		"",
 		"Editing flow",
-		"Use up/down to move between fields or table rows, left/right to move across table columns, enter to edit and save, a to add rows, x to remove rows, esc to cancel, and r to review.",
-		"Choice editors keep focus while editing so arrows can change the selected option before enter commits it.",
+		"Use up/down to move between fields or table rows, left/right to move across table columns, enter to edit and commit, a to add rows, x to remove rows, esc to cancel, and r to review.",
+		"Enter commits and advances. Editors that use arrows internally keep those arrows until the value is committed or cancelled.",
 	)
 	for index, field := range draft.form.Schema.Fields {
 		fieldCursor := " "

@@ -281,6 +281,7 @@ func (m *actionFormModel) CommitEdit() bool {
 	}
 	m.Editing = false
 	m.InputBuffer = ""
+	m.AdvanceAfterCommit()
 	return true
 }
 
@@ -311,44 +312,64 @@ func (m *actionFormModel) Backspace() bool {
 
 func (m actionFormModel) displayScalar(field actionschema.FieldSpec) string {
 	value := m.Values[field.ID].Scalar
+	display := value
 	if m.Editing && m.currentField() != nil && m.currentField().ID == field.ID && field.Collection == nil {
 		if field.Kind == actionschema.ValueKindChoice {
-			return renderInputCursor(optionLabel(field.Options.Static, m.InputBuffer))
+			display = renderInputCursor(optionLabel(field.Options.Static, m.InputBuffer))
+			return renderActiveCell(display)
 		}
-		return renderInputCursor(m.InputBuffer)
+		display = renderInputCursor(m.InputBuffer)
+		return renderActiveCell(display)
 	}
 	if strings.TrimSpace(value) == "" {
-		return field.Placeholder
+		display = field.Placeholder
+	} else if field.Kind == actionschema.ValueKindChoice {
+		display = optionLabel(field.Options.Static, value)
 	}
-	if field.Kind == actionschema.ValueKindChoice {
-		return optionLabel(field.Options.Static, value)
+	if m.currentField() != nil && m.currentField().ID == field.ID {
+		return renderActiveCell(display)
 	}
-	return value
+	return display
 }
 
 func (m actionFormModel) displayCell(field actionschema.FieldSpec, rowIndex int, column actionschema.ColumnSpec) string {
 	value := m.Values[field.ID]
 	if rowIndex >= len(value.Rows) {
+		if m.isActiveCell(field.ID, rowIndex, column.ID) {
+			return renderActiveCell(column.Placeholder)
+		}
 		return column.Placeholder
 	}
 	cell := value.Rows[rowIndex][column.ID]
+	display := cell
 	if m.Editing && m.currentField() != nil && m.currentField().ID == field.ID && m.RowIndex == rowIndex && m.currentColumn() != nil && m.currentColumn().ID == column.ID {
 		if column.Kind == actionschema.ValueKindChoice {
-			return renderInputCursor(optionLabel(column.Options.Options(value.Rows[rowIndex]), m.InputBuffer))
+			display = renderInputCursor(optionLabel(column.Options.Options(value.Rows[rowIndex]), m.InputBuffer))
+			return renderActiveCell(display)
 		}
-		return renderInputCursor(m.InputBuffer)
+		display = renderInputCursor(m.InputBuffer)
+		return renderActiveCell(display)
 	}
 	if strings.TrimSpace(cell) == "" {
-		return column.Placeholder
+		display = column.Placeholder
+	} else if column.Kind == actionschema.ValueKindChoice {
+		display = optionLabel(column.Options.Options(value.Rows[rowIndex]), cell)
 	}
-	if column.Kind == actionschema.ValueKindChoice {
-		return optionLabel(column.Options.Options(value.Rows[rowIndex]), cell)
+	if m.isActiveCell(field.ID, rowIndex, column.ID) {
+		return renderActiveCell(display)
 	}
-	return cell
+	return display
 }
 
 func renderInputCursor(value string) string {
 	return value + "|"
+}
+
+func renderActiveCell(value string) string {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color("229")).
+		Background(lipgloss.Color("57")).
+		Render(value)
 }
 
 func (m *actionFormModel) editingChoice() bool {
@@ -396,6 +417,44 @@ func (m *actionFormModel) CycleEditingChoice(delta int) bool {
 	}
 	m.InputBuffer = next
 	return true
+}
+
+func (m *actionFormModel) AdvanceAfterCommit() {
+	field := m.currentField()
+	if field == nil {
+		return
+	}
+	if field.Collection != nil {
+		if field.Collection != nil && m.ColumnIndex < len(field.Collection.Columns)-1 {
+			m.ColumnIndex++
+			m.syncCurrentTable()
+			return
+		}
+		value := m.currentValue()
+		if m.RowIndex < len(value.Rows)-1 {
+			m.RowIndex++
+			m.ColumnIndex = 0
+			m.syncCurrentTable()
+			return
+		}
+		m.syncCurrentTable()
+		return
+	}
+	if m.FieldIndex < len(m.Schema.Fields)-1 {
+		m.FieldIndex++
+		m.resetFocusForField()
+	}
+}
+
+func (m actionFormModel) isActiveCell(fieldID string, rowIndex int, columnID string) bool {
+	field := m.currentField()
+	column := m.currentColumn()
+	return field != nil &&
+		field.ID == fieldID &&
+		field.Collection != nil &&
+		column != nil &&
+		column.ID == columnID &&
+		m.RowIndex == rowIndex
 }
 
 func (m *actionFormModel) resetFocusForField() {
@@ -471,10 +530,7 @@ func collectionTableStyles() table.Styles {
 		BorderForeground(lipgloss.Color("240")).
 		BorderBottom(true).
 		Bold(false)
-	styles.Selected = styles.Selected.
-		Foreground(lipgloss.Color("229")).
-		Background(lipgloss.Color("57")).
-		Bold(false)
+	styles.Selected = styles.Cell
 	return styles
 }
 
