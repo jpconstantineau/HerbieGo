@@ -49,6 +49,8 @@ type appShellModel struct {
 	rounds         int
 	persistAIDebug bool
 	autoResume     bool
+	width          int
+	height         int
 
 	screen     shellScreen
 	splash     splashModel
@@ -121,6 +123,11 @@ func (m appShellModel) Init() tea.Cmd {
 }
 
 func (m appShellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if typed, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width = typed.Width
+		m.height = typed.Height
+	}
+
 	switch m.screen {
 	case screenSplash:
 		return m.updateSplash(msg)
@@ -163,6 +170,7 @@ func (m appShellModel) finishSplash() (tea.Model, tea.Cmd) {
 	}
 	m.screen = screenMenu
 	m.menu = newStartMenuModel(m.menuConfig, m.menuState)
+	m.applyWindowSizeToMenu()
 	return m, m.menu.Init()
 }
 
@@ -290,6 +298,7 @@ func (m appShellModel) updateGameplay(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.screen = screenMenu
 		m.menu = newStartMenuModel(m.menuConfig, m.menuState)
+		m.applyWindowSizeToMenu()
 		return m, m.menu.Init()
 	default:
 		if m.gameplay.cancel != nil {
@@ -308,7 +317,24 @@ func (m *appShellModel) enterGameplay(session *activeSession) (tea.Model, tea.Cm
 	}
 	m.screen = screenGameplay
 	m.gameplay = screen
+	m.applyWindowSizeToGameplay()
 	return m, cmd
+}
+
+func (m *appShellModel) applyWindowSizeToMenu() {
+	if m.width <= 0 || m.height <= 0 {
+		return
+	}
+	updated, _ := m.menu.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+	m.menu = updated.(startMenuModel)
+}
+
+func (m *appShellModel) applyWindowSizeToGameplay() {
+	if m.gameplay == nil || m.width <= 0 || m.height <= 0 {
+		return
+	}
+	updated, _ := m.gameplay.model.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+	m.gameplay.model = updated.(tui.Model)
 }
 
 func newGameplayScreen(ctx context.Context, runtime app.Runtime, initialState domain.MatchState, store persistentStore, rounds int, persistAIDebug bool) (*gameplayScreen, tea.Cmd, error) {

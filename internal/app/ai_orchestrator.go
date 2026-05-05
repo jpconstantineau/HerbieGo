@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/jpconstantineau/herbiego/internal/actionschema"
 	"github.com/jpconstantineau/herbiego/internal/domain"
 	"github.com/jpconstantineau/herbiego/internal/ports"
 	"github.com/jpconstantineau/herbiego/internal/prompting"
@@ -51,17 +52,20 @@ func (o AIOrchestrator) SubmitRound(ctx context.Context, request ports.RoundRequ
 // BuildRequest converts the round request into the canonical provider-neutral
 // AI decision contract.
 func (o AIOrchestrator) BuildRequest(request ports.RoundRequest) ports.AIDecisionRequest {
+	roundView := request.RoleView.Clone()
+	actionSchema := actionschema.Build(o.Scenario, request.Assignment.RoleID, roundView)
 	return ports.AIDecisionRequest{
-		MatchID:        request.RoleView.MatchID,
-		Round:          request.RoleView.Round,
-		RoleID:         request.Assignment.RoleID,
-		Provider:       request.Assignment.Provider,
-		Model:          request.Assignment.ModelName,
-		Briefing:       roleBriefing(request.Assignment.RoleID),
-		RoundView:      request.RoleView.Clone(),
-		RoleReport:     request.RoleReport.Clone(),
-		AllowedActions: allowedActionSchema(request.Assignment.RoleID),
-		Tools:          lookupTools(),
+		MatchID:             request.RoleView.MatchID,
+		Round:               request.RoleView.Round,
+		RoleID:              request.Assignment.RoleID,
+		Provider:            request.Assignment.Provider,
+		Model:               request.Assignment.ModelName,
+		Briefing:            roleBriefing(o.Scenario, request.Assignment.RoleID),
+		RoundView:           roundView,
+		RoleReport:          request.RoleReport.Clone(),
+		SharedActionSurface: actionSchema,
+		AllowedActions:      allowedActionSchema(o.Scenario, request.Assignment.RoleID),
+		Tools:               lookupTools(),
 		ResponseSpec: ports.ResponseFormatSpec{
 			RequireJSONOnly:     true,
 			AllowMarkdownFences: true,
@@ -86,6 +90,7 @@ func (o AIOrchestrator) Decide(ctx context.Context, request ports.AIDecisionRequ
 	audit := ports.AIDecisionAudit{}
 	retryContext := request.RetryContext
 	toolCalls := 0
+	actionSchema := actionschema.Build(o.Scenario, request.RoleID, request.RoundView)
 	logger := loggerOrDiscard(o.Logger).With(
 		"component", "ai_orchestrator",
 		"match_id", request.MatchID,
@@ -124,7 +129,7 @@ func (o AIOrchestrator) Decide(ctx context.Context, request ports.AIDecisionRequ
 			return domain.ActionSubmission{}, audit, fmt.Errorf("app: ai decision runner: request decision: %w", err)
 		}
 
-		response, toolCall, validationErrors, parseErr := parseAndValidateDecision(result, request)
+		response, toolCall, validationErrors, parseErr := parseAndValidateDecision(result, request, actionSchema)
 		isToolCall := parseErr == nil && toolCall != nil
 		valid := parseErr == nil && !isToolCall && len(validationErrors) == 0
 
@@ -228,9 +233,9 @@ func validateDecisionRequest(request ports.AIDecisionRequest) error {
 	return errorsJoin(errs...)
 }
 
-func parseAndValidateDecision(result ports.ProviderDecisionResult, request ports.AIDecisionRequest) (ports.AIDecisionResponse, *ports.LookupToolCall, []ports.ValidationError, error) {
+func parseAndValidateDecision(result ports.ProviderDecisionResult, request ports.AIDecisionRequest, schema actionschema.RoleSchema) (ports.AIDecisionResponse, *ports.LookupToolCall, []ports.ValidationError, error) {
 	if result.StructuredResponse != nil {
-		return validateStructuredDecision(*result.StructuredResponse, request)
+		return validateStructuredDecision(*result.StructuredResponse, request, schema)
 	}
 
 	raw := result.RawResponse
@@ -257,7 +262,7 @@ func parseAndValidateDecision(result ports.ProviderDecisionResult, request ports
 		return ports.AIDecisionResponse{}, nil, validationErrors, err
 	}
 
-	validationErrors := validateDecisionResponse(response, request)
+	validationErrors := validateDecisionResponse(response, request, schema)
 	if len(validationErrors) > 0 {
 		return ports.AIDecisionResponse{}, nil, validationErrors, fmt.Errorf("response failed validation")
 	}
@@ -265,7 +270,7 @@ func parseAndValidateDecision(result ports.ProviderDecisionResult, request ports
 	return response, nil, nil, nil
 }
 
-func validateStructuredDecision(envelope ports.AIDecisionEnvelope, request ports.AIDecisionRequest) (ports.AIDecisionResponse, *ports.LookupToolCall, []ports.ValidationError, error) {
+func validateStructuredDecision(envelope ports.AIDecisionEnvelope, request ports.AIDecisionRequest, schema actionschema.RoleSchema) (ports.AIDecisionResponse, *ports.LookupToolCall, []ports.ValidationError, error) {
 	if envelope.ToolCall != nil {
 		validationErrors := validateToolCall(*envelope.ToolCall, request.Tools)
 		if len(validationErrors) > 0 {
@@ -275,7 +280,7 @@ func validateStructuredDecision(envelope ports.AIDecisionEnvelope, request ports
 	}
 
 	response := envelope.DecisionResponse()
-	validationErrors := validateDecisionResponse(response, request)
+	validationErrors := validateDecisionResponse(response, request, schema)
 	if len(validationErrors) > 0 {
 		return ports.AIDecisionResponse{}, nil, validationErrors, fmt.Errorf("response failed validation")
 	}
@@ -340,7 +345,7 @@ func extractJSONObject(raw string) (string, error) {
 	return "", fmt.Errorf("response did not contain a recoverable JSON object")
 }
 
-func validateDecisionResponse(response ports.AIDecisionResponse, request ports.AIDecisionRequest) []ports.ValidationError {
+func validateDecisionResponse(response ports.AIDecisionResponse, request ports.AIDecisionRequest, schema actionschema.RoleSchema) []ports.ValidationError {
 	var errs []ports.ValidationError
 
 	payloadCount := 0
@@ -360,27 +365,7 @@ func validateDecisionResponse(response ports.AIDecisionResponse, request ports.A
 		errs = append(errs, ports.ValidationError{Path: "action", Message: "must contain exactly one populated role action payload"})
 	}
 
-	switch request.RoleID {
-	case domain.RoleProcurementManager:
-		if response.Action.Procurement == nil {
-			errs = append(errs, ports.ValidationError{Path: "action.procurement", Message: "must be populated for procurement_manager"})
-		}
-		errs = append(errs, validateProcurementAction(response.Action.Procurement)...)
-	case domain.RoleProductionManager:
-		if response.Action.Production == nil {
-			errs = append(errs, ports.ValidationError{Path: "action.production", Message: "must be populated for production_manager"})
-		}
-		errs = append(errs, validateProductionAction(response.Action.Production, request.RoundView)...)
-	case domain.RoleSalesManager:
-		if response.Action.Sales == nil {
-			errs = append(errs, ports.ValidationError{Path: "action.sales", Message: "must be populated for sales_manager"})
-		}
-		errs = append(errs, validateSalesAction(response.Action.Sales, request.RoundView)...)
-	case domain.RoleFinanceController:
-		if response.Action.Finance == nil {
-			errs = append(errs, ports.ValidationError{Path: "action.finance", Message: "must be populated for finance_controller"})
-		}
-	}
+	errs = append(errs, translateValidationErrors(actionschema.ValidateRoleAction(schema, response.Action, request.RoundView))...)
 
 	summary := strings.TrimSpace(response.Commentary.PublicSummary)
 	if summary == "" {
@@ -422,75 +407,6 @@ func validateToolCall(call ports.LookupToolCall, tools []ports.LookupToolSpec) [
 	for _, argument := range selected.Arguments {
 		if argument.Required && strings.TrimSpace(call.Arguments[argument.Name]) == "" {
 			errs = append(errs, ports.ValidationError{Path: fmt.Sprintf("tool_call.arguments.%s", argument.Name), Message: "must not be empty"})
-		}
-	}
-	return errs
-}
-
-func validateProcurementAction(action *domain.ProcurementAction) []ports.ValidationError {
-	if action == nil {
-		return nil
-	}
-
-	var errs []ports.ValidationError
-	for i, order := range action.Orders {
-		if order.PartID == "" {
-			errs = append(errs, ports.ValidationError{Path: fmt.Sprintf("action.procurement.orders[%d].part_id", i), Message: "must not be empty"})
-		}
-		if order.SupplierID == "" {
-			errs = append(errs, ports.ValidationError{Path: fmt.Sprintf("action.procurement.orders[%d].supplier_id", i), Message: "must not be empty"})
-		}
-		if order.Quantity < 0 {
-			errs = append(errs, ports.ValidationError{Path: fmt.Sprintf("action.procurement.orders[%d].quantity", i), Message: "must be non-negative"})
-		}
-	}
-	return errs
-}
-
-func validateProductionAction(action *domain.ProductionAction, view domain.RoundView) []ports.ValidationError {
-	if action == nil {
-		return nil
-	}
-
-	knownProducts := productSet(view)
-	knownStations := workstationSet(view)
-
-	var errs []ports.ValidationError
-	for i, release := range action.Releases {
-		if !knownProducts[release.ProductID] {
-			errs = append(errs, ports.ValidationError{Path: fmt.Sprintf("action.production.releases[%d].product_id", i), Message: "must reference a product visible in the round view"})
-		}
-		if release.Quantity < 0 {
-			errs = append(errs, ports.ValidationError{Path: fmt.Sprintf("action.production.releases[%d].quantity", i), Message: "must be non-negative"})
-		}
-	}
-	for i, allocation := range action.CapacityAllocation {
-		if !knownStations[allocation.WorkstationID] {
-			errs = append(errs, ports.ValidationError{Path: fmt.Sprintf("action.production.capacity_allocation[%d].workstation_id", i), Message: "must reference a workstation visible in the round view"})
-		}
-		if !knownProducts[allocation.ProductID] {
-			errs = append(errs, ports.ValidationError{Path: fmt.Sprintf("action.production.capacity_allocation[%d].product_id", i), Message: "must reference a product visible in the round view"})
-		}
-		if allocation.Capacity < 0 {
-			errs = append(errs, ports.ValidationError{Path: fmt.Sprintf("action.production.capacity_allocation[%d].capacity", i), Message: "must be non-negative"})
-		}
-	}
-	return errs
-}
-
-func validateSalesAction(action *domain.SalesAction, view domain.RoundView) []ports.ValidationError {
-	if action == nil {
-		return nil
-	}
-
-	knownProducts := productSet(view)
-	var errs []ports.ValidationError
-	for i, offer := range action.ProductOffers {
-		if !knownProducts[offer.ProductID] {
-			errs = append(errs, ports.ValidationError{Path: fmt.Sprintf("action.sales.product_offers[%d].product_id", i), Message: "must reference a product visible in the round view"})
-		}
-		if offer.UnitPrice < 0 {
-			errs = append(errs, ports.ValidationError{Path: fmt.Sprintf("action.sales.product_offers[%d].unit_price", i), Message: "must be non-negative"})
 		}
 	}
 	return errs
@@ -559,7 +475,8 @@ func safeNoOpAction(roleID domain.RoleID, targets domain.BudgetTargets) domain.R
 	}
 }
 
-func roleBriefing(roleID domain.RoleID) ports.RoleBriefing {
+func roleBriefing(definition scenario.Definition, roleID domain.RoleID) ports.RoleBriefing {
+	schema := actionschema.Build(definition, roleID, domain.RoundView{})
 	switch roleID {
 	case domain.RoleProcurementManager:
 		return ports.RoleBriefing{
@@ -568,7 +485,7 @@ func roleBriefing(roleID domain.RoleID) ports.RoleBriefing {
 			PublicResponsibilities: []string{"Secure materials required for operations.", "Control input cost.", "Protect the plant from shortages.", "Build reliable supplier coverage."},
 			HiddenIncentives:       []string{"Favor bulk buys and lower unit prices even when inventory and cash risk rise."},
 			DecisionPrinciples:     []string{"Protect supply continuity for bottleneck flow.", "Avoid buying material the plant cannot use soon.", "Stay aware of active budget targets and plant cash."},
-			AllowedActionSummary:   []string{"Return only procurement orders.", "Each order needs part_id, supplier_id, and quantity.", "Use an empty orders list for a deliberate no-op."},
+			AllowedActionSummary:   slices.Clone(schema.AllowedSummary),
 		}
 	case domain.RoleProductionManager:
 		return ports.RoleBriefing{
@@ -577,7 +494,7 @@ func roleBriefing(roleID domain.RoleID) ports.RoleBriefing {
 			PublicResponsibilities: []string{"Maximize production output.", "Keep machines and labor utilized.", "Manage work-in-progress through the shop floor.", "Meet production commitments."},
 			HiddenIncentives:       []string{"Keep resources busy and local output high even when WIP or bottlenecks worsen."},
 			DecisionPrinciples:     []string{"Favor plant throughput over local utilization theater.", "Release only work that can move through the route.", "Keep WIP under control at the bottleneck."},
-			AllowedActionSummary:   []string{"Return production releases, capacity allocations, and optional overtime allocations.", "Each release needs product_id and quantity.", "Each capacity allocation needs workstation_id, product_id, and capacity.", "Each overtime allocation needs workstation_id and capacity; omit overtime entirely if not needed."},
+			AllowedActionSummary:   slices.Clone(schema.AllowedSummary),
 		}
 	case domain.RoleSalesManager:
 		return ports.RoleBriefing{
@@ -586,7 +503,7 @@ func roleBriefing(roleID domain.RoleID) ports.RoleBriefing {
 			PublicResponsibilities: []string{"Grow revenue.", "Capture demand.", "Maintain customer relationships.", "Push the plant toward market opportunity."},
 			HiddenIncentives:       []string{"Favor booked demand and strong promises even when capacity or delivery reliability suffer."},
 			DecisionPrinciples:     []string{"Protect profitable throughput, not just order count.", "Consider backlog and delivery risk before chasing demand.", "Set prices that fit current operational reality."},
-			AllowedActionSummary:   []string{"Return only product offers.", "Each offer needs product_id and unit_price.", "Use an empty product_offers list for a deliberate no-op."},
+			AllowedActionSummary:   slices.Clone(schema.AllowedSummary),
 		}
 	case domain.RoleFinanceController:
 		return ports.RoleBriefing{
@@ -595,76 +512,21 @@ func roleBriefing(roleID domain.RoleID) ports.RoleBriefing {
 			PublicResponsibilities: []string{"Monitor cash, cost, and financial performance.", "Highlight waste and overspending.", "Protect the business from financially dangerous decisions.", "Provide visibility into profit drivers."},
 			HiddenIncentives:       []string{"Favor short-term cost discipline even when it can damage throughput or resilience."},
 			DecisionPrinciples:     []string{"Preserve liquidity without starving profitable flow.", "Set next-round targets that balance cash, debt, and throughput.", "Treat cost cuts that harm throughput as risky."},
-			AllowedActionSummary:   []string{"Return only finance next_round_targets.", "Provide the full next_round_targets object.", "A safe no-op repeats the currently active targets."},
+			AllowedActionSummary:   slices.Clone(schema.AllowedSummary),
 		}
 	default:
 		return ports.RoleBriefing{RoleID: roleID, DisplayName: string(roleID)}
 	}
 }
 
-func allowedActionSchema(roleID domain.RoleID) ports.AllowedActionSchema {
-	switch roleID {
-	case domain.RoleProcurementManager:
-		return ports.AllowedActionSchema{
-			RoleID:         roleID,
-			RequiredAction: "procurement",
-			JSONSchemaName: "ProcurementAction",
-			Rules:          []string{"Populate only action.procurement.", "orders entries require part_id, supplier_id, and quantity.", "quantity must be non-negative."},
-		}
-	case domain.RoleProductionManager:
-		return ports.AllowedActionSchema{
-			RoleID:         roleID,
-			RequiredAction: "production",
-			JSONSchemaName: "ProductionAction",
-			Rules:          []string{"Populate only action.production.", "releases entries require product_id and quantity.", "capacity_allocation entries require workstation_id, product_id, and capacity.", "overtime entries are optional; each requires workstation_id and capacity.", "quantities and capacity must be non-negative."},
-		}
-	case domain.RoleSalesManager:
-		return ports.AllowedActionSchema{
-			RoleID:         roleID,
-			RequiredAction: "sales",
-			JSONSchemaName: "SalesAction",
-			Rules:          []string{"Populate only action.sales.", "product_offers entries require product_id and unit_price.", "unit_price must be non-negative."},
-		}
-	case domain.RoleFinanceController:
-		return ports.AllowedActionSchema{
-			RoleID:         roleID,
-			RequiredAction: "finance",
-			JSONSchemaName: "FinanceAction",
-			Rules:          []string{"Populate only action.finance.", "Provide next_round_targets exactly once.", "Each target field must be present."},
-		}
-	default:
-		return ports.AllowedActionSchema{RoleID: roleID}
+func allowedActionSchema(definition scenario.Definition, roleID domain.RoleID) ports.AllowedActionSchema {
+	spec := actionschema.Build(definition, roleID, domain.RoundView{})
+	return ports.AllowedActionSchema{
+		RoleID:         roleID,
+		RequiredAction: spec.RequiredAction,
+		JSONSchemaName: spec.JSONSchemaName,
+		Rules:          slices.Clone(spec.ValidationRules),
 	}
-}
-
-func productSet(view domain.RoundView) map[domain.ProductID]bool {
-	products := make(map[domain.ProductID]bool)
-	for _, item := range view.Plant.WIPInventory {
-		products[item.ProductID] = true
-	}
-	for _, item := range view.Plant.FinishedInventory {
-		products[item.ProductID] = true
-	}
-	for _, item := range view.Plant.Backlog {
-		products[item.ProductID] = true
-	}
-	for _, customer := range view.Customers {
-		for _, item := range customer.Backlog {
-			products[item.ProductID] = true
-		}
-	}
-	if len(products) == 0 {
-		products["pump"] = true
-	}
-	return products
-}
-
-func workstationSet(view domain.RoundView) map[domain.WorkstationID]bool {
-	stations := make(map[domain.WorkstationID]bool, len(view.Plant.Workstations))
-	for _, item := range view.Plant.Workstations {
-		stations[item.WorkstationID] = true
-	}
-	return stations
 }
 
 func clonePreviousForDecision(previous *domain.ActionSubmission) *domain.ActionSubmission {
@@ -673,6 +535,14 @@ func clonePreviousForDecision(previous *domain.ActionSubmission) *domain.ActionS
 	}
 	cloned := previous.Clone()
 	return &cloned
+}
+
+func translateValidationErrors(errs []actionschema.ValidationError) []ports.ValidationError {
+	out := make([]ports.ValidationError, 0, len(errs))
+	for _, err := range errs {
+		out = append(out, ports.ValidationError{Path: err.Path, Message: err.Message})
+	}
+	return out
 }
 
 func errorsJoin(errs ...error) error {

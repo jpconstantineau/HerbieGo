@@ -163,7 +163,7 @@ func TestModelLoadsInitialSnapshotAndRendersShell(t *testing.T) {
 		"View: draft, review, and submit a private turn without",
 		"leaving the center workspace",
 		"Editing flow",
-		"Orders: housing=2, seal_kit=1",
+		"No purchase orders configured. Press a to add a row.",
 		"Plant Stats",
 		"Command Bar",
 		"Procurement Manager",
@@ -356,21 +356,7 @@ func TestModelSupportsHumanActionDraftReviewAndSubmit(t *testing.T) {
 	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
 	shell := loaded.(Model)
 	shell.focusedPane = paneHistory
-
-	for _, key := range []tea.KeyMsg{
-		{Type: tea.KeyEnter},
-		{Type: tea.KeyRunes, Runes: []rune("housing=2")},
-		{Type: tea.KeyEnter},
-		{Type: tea.KeyDown},
-		{Type: tea.KeyEnter},
-		{Type: tea.KeyRunes, Runes: []rune("Ordering only what assembly can absorb.")},
-		{Type: tea.KeyEnter},
-		{Type: tea.KeyRunes, Runes: []rune{'r'}},
-		{Type: tea.KeyRunes, Runes: []rune{'s'}},
-	} {
-		next, _ := shell.Update(key)
-		shell = next.(Model)
-	}
+	shell = submitProcurementDraft(shell, "Ordering only what assembly can absorb.")
 
 	draft := shell.currentDraft()
 	if draft.stage != draftStageSubmitted {
@@ -422,21 +408,7 @@ func TestModelSubmitForwardsLockedDraftToLiveHook(t *testing.T) {
 	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
 	shell := loaded.(Model)
 	shell.focusedPane = paneHistory
-
-	for _, key := range []tea.KeyMsg{
-		{Type: tea.KeyEnter},
-		{Type: tea.KeyRunes, Runes: []rune("housing=2")},
-		{Type: tea.KeyEnter},
-		{Type: tea.KeyDown},
-		{Type: tea.KeyEnter},
-		{Type: tea.KeyRunes, Runes: []rune("Ordering only what assembly can absorb.")},
-		{Type: tea.KeyEnter},
-		{Type: tea.KeyRunes, Runes: []rune{'r'}},
-		{Type: tea.KeyRunes, Runes: []rune{'s'}},
-	} {
-		next, _ := shell.Update(key)
-		shell = next.(Model)
-	}
+	shell = submitProcurementDraft(shell, "Ordering only what assembly can absorb.")
 
 	if submitted.MatchID != "starter-match" {
 		t.Fatalf("submitted.MatchID = %q, want starter-match", submitted.MatchID)
@@ -463,21 +435,7 @@ func TestModelAdvancesAcrossHumanRolesAndHidesLockedDrafts(t *testing.T) {
 	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
 	shell := loaded.(Model)
 	shell.focusedPane = paneHistory
-
-	for _, key := range []tea.KeyMsg{
-		{Type: tea.KeyEnter},
-		{Type: tea.KeyRunes, Runes: []rune("housing=2")},
-		{Type: tea.KeyEnter},
-		{Type: tea.KeyDown},
-		{Type: tea.KeyEnter},
-		{Type: tea.KeyRunes, Runes: []rune("Buying only what we can use.")},
-		{Type: tea.KeyEnter},
-		{Type: tea.KeyRunes, Runes: []rune{'r'}},
-		{Type: tea.KeyRunes, Runes: []rune{'s'}},
-	} {
-		next, _ := shell.Update(key)
-		shell = next.(Model)
-	}
+	shell = submitProcurementDraft(shell, "Buying only what we can use.")
 
 	if got := shell.selectedAssignment().RoleID; got != domain.RoleSalesManager {
 		t.Fatalf("selected role = %q, want sales_manager", got)
@@ -533,21 +491,7 @@ func TestModelSwitchesToRoundFeedAfterFinalHumanSubmission(t *testing.T) {
 	}
 	shell.selectedRole = 2
 	shell.focusedPane = paneHistory
-
-	for _, key := range []tea.KeyMsg{
-		{Type: tea.KeyEnter},
-		{Type: tea.KeyRunes, Runes: []rune("pump=14")},
-		{Type: tea.KeyEnter},
-		{Type: tea.KeyDown},
-		{Type: tea.KeyEnter},
-		{Type: tea.KeyRunes, Runes: []rune("Holding price steady.")},
-		{Type: tea.KeyEnter},
-		{Type: tea.KeyRunes, Runes: []rune{'r'}},
-		{Type: tea.KeyRunes, Runes: []rune{'s'}},
-	} {
-		next, _ := shell.Update(key)
-		shell = next.(Model)
-	}
+	shell = submitSalesDraft(shell, "Holding price steady.")
 
 	if shell.workspace != workspaceRoundFeed {
 		t.Fatalf("workspace = %v, want %v", shell.workspace, workspaceRoundFeed)
@@ -618,15 +562,15 @@ func TestFinanceActionEntrySeedsCurrentTargetsAsDefaults(t *testing.T) {
 	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
 	shell := loaded.(Model)
 	shell.selectedRole = 3
+	draft := shell.currentDraftForRole(domain.RoleFinanceController)
+	draft.form.Values["procurement_budget"] = formFieldValue{Scalar: "21"}
+	draft.form.Values["production_spend_budget"] = formFieldValue{Scalar: "17"}
+	draft.form.Values["revenue_target"] = formFieldValue{Scalar: "33"}
+	draft.form.Values["cash_floor_target"] = formFieldValue{Scalar: "9"}
+	draft.form.Values["debt_ceiling_target"] = formFieldValue{Scalar: "14"}
+	draft.form.Values["commentary"] = formFieldValue{Scalar: "Keeping target posture stable while we learn the plant."}
 
-	submission, err := shell.buildSubmissionDraft(actionDraft{
-		financeProcurement: "21",
-		financeProduction:  "17",
-		financeRevenue:     "33",
-		financeCashFloor:   "9",
-		financeDebtCeiling: "14",
-		commentary:         "Keeping target posture stable while we learn the plant.",
-	})
+	submission, err := shell.buildSubmissionDraft(draft)
 	if err != nil {
 		t.Fatalf("buildSubmissionDraft() error = %v", err)
 	}
@@ -637,6 +581,235 @@ func TestFinanceActionEntrySeedsCurrentTargetsAsDefaults(t *testing.T) {
 	}
 	if targets.ProcurementBudget != 21 || targets.ProductionSpendBudget != 17 || targets.RevenueTarget != 33 || targets.CashFloorTarget != 9 || targets.DebtCeilingTarget != 14 {
 		t.Fatalf("targets = %+v, want explicit values copied into next-round targets", targets)
+	}
+}
+
+func TestHumanDraftDefaultsToPreviousAcceptedProcurementSubmission(t *testing.T) {
+	state := scenario.Starter().InitialState("starter-match", starterAssignments())
+	state.History.RecentRounds = []domain.RoundRecord{
+		{
+			Round: 1,
+			Actions: []domain.ActionSubmission{
+				{
+					RoleID: domain.RoleProcurementManager,
+					Action: domain.RoleAction{
+						Procurement: &domain.ProcurementAction{
+							Orders: []domain.PurchaseOrderIntent{
+								{PartID: "housing", SupplierID: "forgeco", Quantity: 2},
+							},
+						},
+					},
+					Commentary: domain.CommentaryRecord{Body: "Repeat the housing order while assembly catches up."},
+				},
+			},
+		},
+	}
+
+	model := NewModel(scenario.Starter(), testStateSource{snapshot: state})
+	loaded, _ := model.Update(stateLoadedMsg{state: state})
+	shell := loaded.(Model)
+
+	draft := shell.currentDraftForRole(domain.RoleProcurementManager)
+	if got := draft.form.Values["commentary"].Scalar; got != "Repeat the housing order while assembly catches up." {
+		t.Fatalf("commentary default = %q, want previous commentary", got)
+	}
+	rows := draft.form.Values["orders"].Rows
+	if len(rows) != 1 {
+		t.Fatalf("len(orders rows) = %d, want 1", len(rows))
+	}
+	if rows[0]["part_id"] != "housing" || rows[0]["supplier_id"] != "forgeco" || rows[0]["quantity"] != "2" {
+		t.Fatalf("orders row = %#v, want copied previous order", rows[0])
+	}
+}
+
+func TestHumanDraftDefaultsToPreviousAcceptedFinanceSubmission(t *testing.T) {
+	state := scenario.Starter().InitialState("starter-match", starterAssignments())
+	state.History.RecentRounds = []domain.RoundRecord{
+		{
+			Round: 1,
+			Actions: []domain.ActionSubmission{
+				{
+					RoleID: domain.RoleFinanceController,
+					Action: domain.RoleAction{
+						Finance: &domain.FinanceAction{
+							NextRoundTargets: domain.BudgetTargets{
+								EffectiveRound:        2,
+								ProcurementBudget:     21,
+								ProductionSpendBudget: 17,
+								RevenueTarget:         33,
+								CashFloorTarget:       9,
+								DebtCeilingTarget:     14,
+							},
+						},
+					},
+					Commentary: domain.CommentaryRecord{Body: "Hold the same target posture for one more round."},
+				},
+			},
+		},
+	}
+
+	model := NewModel(scenario.Starter(), testStateSource{snapshot: state})
+	loaded, _ := model.Update(stateLoadedMsg{state: state})
+	shell := loaded.(Model)
+
+	draft := shell.currentDraftForRole(domain.RoleFinanceController)
+	if got := draft.form.Values["procurement_budget"].Scalar; got != "21" {
+		t.Fatalf("procurement budget default = %q, want 21", got)
+	}
+	if got := draft.form.Values["production_spend_budget"].Scalar; got != "17" {
+		t.Fatalf("production budget default = %q, want 17", got)
+	}
+	if got := draft.form.Values["revenue_target"].Scalar; got != "33" {
+		t.Fatalf("revenue target default = %q, want 33", got)
+	}
+	if got := draft.form.Values["cash_floor_target"].Scalar; got != "9" {
+		t.Fatalf("cash floor default = %q, want 9", got)
+	}
+	if got := draft.form.Values["debt_ceiling_target"].Scalar; got != "14" {
+		t.Fatalf("debt ceiling default = %q, want 14", got)
+	}
+	if got := draft.form.Values["commentary"].Scalar; got != "Hold the same target posture for one more round." {
+		t.Fatalf("commentary default = %q, want previous commentary", got)
+	}
+}
+
+func TestStructuredProductionActionEntryBuildsNormalizedSubmission(t *testing.T) {
+	assignments := []domain.RoleAssignment{
+		{RoleID: domain.RoleProcurementManager, PlayerID: "procurement-player", IsHuman: false},
+		{RoleID: domain.RoleProductionManager, PlayerID: "production-player", IsHuman: true},
+		{RoleID: domain.RoleSalesManager, PlayerID: "sales-player", IsHuman: false},
+		{RoleID: domain.RoleFinanceController, PlayerID: "finance-player", IsHuman: false},
+	}
+	model := NewModel(scenario.Starter(), testStateSource{
+		snapshot: scenario.Starter().InitialState("starter-match", assignments),
+	})
+
+	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
+	shell := loaded.(Model)
+	shell.selectedRole = 1
+	shell.focusedPane = paneHistory
+
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune{'a'}},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune{'l'}},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune("2")},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyDown},
+		{Type: tea.KeyRunes, Runes: []rune{'a'}},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune{'l'}},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune{'l'}},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune("2")},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyDown},
+		{Type: tea.KeyRunes, Runes: []rune{'a'}},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune{'l'}},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune("1")},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyDown},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune("Protecting assembly throughput with a light overtime buffer.")},
+		{Type: tea.KeyEnter},
+	} {
+		next, _ := shell.Update(key)
+		shell = next.(Model)
+	}
+
+	submission, err := shell.buildSubmissionDraft(shell.currentDraft())
+	if err != nil {
+		t.Fatalf("buildSubmissionDraft() error = %v", err)
+	}
+
+	if submission.Action.Production == nil {
+		t.Fatalf("submission.Action.Production = nil, want populated production payload")
+	}
+	if got := len(submission.Action.Production.Releases); got != 1 {
+		t.Fatalf("len(Releases) = %d, want 1", got)
+	}
+	if got := len(submission.Action.Production.CapacityAllocation); got != 1 {
+		t.Fatalf("len(CapacityAllocation) = %d, want 1", got)
+	}
+	if got := len(submission.Action.Production.Overtime); got != 1 {
+		t.Fatalf("len(Overtime) = %d, want 1", got)
+	}
+}
+
+func TestStructuredSalesActionEntryBuildsNormalizedSubmission(t *testing.T) {
+	assignments := []domain.RoleAssignment{
+		{RoleID: domain.RoleProcurementManager, PlayerID: "procurement-player", IsHuman: false},
+		{RoleID: domain.RoleProductionManager, PlayerID: "production-player", IsHuman: false},
+		{RoleID: domain.RoleSalesManager, PlayerID: "sales-player", IsHuman: true},
+		{RoleID: domain.RoleFinanceController, PlayerID: "finance-player", IsHuman: false},
+	}
+	model := NewModel(scenario.Starter(), testStateSource{
+		snapshot: scenario.Starter().InitialState("starter-match", assignments),
+	})
+
+	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
+	shell := loaded.(Model)
+	shell.selectedRole = 2
+	shell.focusedPane = paneHistory
+	shell = submitSalesDraft(shell, "Holding starter pricing steady while we watch backlog.")
+
+	submission, err := shell.buildSubmissionDraft(shell.currentDraft())
+	if err != nil {
+		t.Fatalf("buildSubmissionDraft() error = %v", err)
+	}
+	if submission.Action.Sales == nil || len(submission.Action.Sales.ProductOffers) != 1 {
+		t.Fatalf("submission.Action.Sales = %#v, want one structured offer", submission.Action.Sales)
+	}
+	if got := submission.Action.Sales.ProductOffers[0].ProductID; got != "pump" {
+		t.Fatalf("ProductOffers[0].ProductID = %q, want pump", got)
+	}
+}
+
+func TestReviewStepShowsComparisonsAndExpectedGuidance(t *testing.T) {
+	state := scenario.Starter().InitialState("starter-match", starterAssignments())
+	state.History.RecentRounds = []domain.RoundRecord{
+		{
+			Round: 1,
+			Actions: []domain.ActionSubmission{
+				{
+					RoleID: domain.RoleProcurementManager,
+					Action: domain.RoleAction{
+						Procurement: &domain.ProcurementAction{
+							Orders: []domain.PurchaseOrderIntent{{PartID: "housing", SupplierID: "forgeco", Quantity: 1}},
+						},
+					},
+					Commentary: domain.CommentaryRecord{Body: "Bought just enough to protect the pump backlog."},
+				},
+			},
+			Metrics: domain.PlantMetrics{RoundProfit: 7},
+		},
+	}
+	model := NewModel(scenario.Starter(), testStateSource{snapshot: state})
+	loaded, _ := model.Update(stateLoadedMsg{state: state})
+	shell := loaded.(Model)
+	shell.focusedPane = paneHistory
+
+	shell = reviewProcurementDraft(shell, "Checking backlog-driven replenishment against current stock.")
+	shell.width = 120
+	shell.height = 36
+	view := shell.View()
+
+	for _, want := range []string{
+		"Review draft",
+		"Decision support",
+		"Compare with past orders",
+		"Order 1 of housing from forgeco",
+		"Past performance",
+		"Expected guidance",
+		"Current backlog, BOM, inventory, and inbound supply",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("review view missing %q\n%s", want, view)
+		}
 	}
 }
 
@@ -687,7 +860,7 @@ func TestModelUsesCompactLayoutAndEmptyStatesOnSmallerTerminal(t *testing.T) {
 		"Navigate: [1 action] | 2 lookup | 3 report | 4 feed | 5",
 		"archive | [/] cycle",
 		"Action entry for Procurement Manager",
-		"Orders: housing=2, seal_kit=1",
+		"Editing flow",
 		"Cash: 24",
 	} {
 		if !strings.Contains(view, want) {
@@ -746,7 +919,7 @@ func TestCommandBarHintsFollowFocusedPane(t *testing.T) {
 
 	shell.focusedPane = paneHistory
 	historyView := shell.View()
-	if !strings.Contains(historyView, "center workspace: up/down") || !strings.Contains(historyView, "move fields, enter edit/save, esc cancel, r review, s submit") {
+	if !strings.Contains(historyView, "center workspace: up/down") || !strings.Contains(historyView, "move fields or table rows, left/right move table columns, a add row, x remove row") {
 		t.Fatalf("history hint missing action-entry controls\n%s", historyView)
 	}
 
@@ -1364,6 +1537,72 @@ func longRoundRecord(round, eventCount int) domain.RoundRecord {
 
 func twoDigit(value int) string {
 	return fmt.Sprintf("%02d", value)
+}
+
+func submitProcurementDraft(model Model, commentary string) Model {
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune{'a'}},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune{'l'}},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune{'l'}},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune("2")},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyDown},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune(commentary)},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune{'r'}},
+		{Type: tea.KeyRunes, Runes: []rune{'s'}},
+	} {
+		next, _ := model.Update(key)
+		model = next.(Model)
+	}
+	return model
+}
+
+func reviewProcurementDraft(model Model, commentary string) Model {
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune{'a'}},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune{'l'}},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune{'l'}},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune("2")},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyDown},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune(commentary)},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune{'r'}},
+	} {
+		next, _ := model.Update(key)
+		model = next.(Model)
+	}
+	return model
+}
+
+func submitSalesDraft(model Model, commentary string) Model {
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune{'a'}},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune{'l'}},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune("14")},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyDown},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune(commentary)},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune{'r'}},
+		{Type: tea.KeyRunes, Runes: []rune{'s'}},
+	} {
+		next, _ := model.Update(key)
+		model = next.(Model)
+	}
+	return model
 }
 
 func starterAssignments() []domain.RoleAssignment {

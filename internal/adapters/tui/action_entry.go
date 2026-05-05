@@ -7,6 +7,7 @@ import (
 	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/jpconstantineau/herbiego/internal/actionschema"
 	"github.com/jpconstantineau/herbiego/internal/domain"
 	"github.com/jpconstantineau/herbiego/internal/projection"
 )
@@ -19,49 +20,12 @@ const (
 	draftStageSubmitted
 )
 
-type draftField int
-
-const (
-	fieldProcurementOrders draftField = iota
-	fieldProductionReleases
-	fieldProductionAllocations
-	fieldSalesOffers
-	fieldFinanceProcurementBudget
-	fieldFinanceProductionBudget
-	fieldFinanceRevenueTarget
-	fieldFinanceCashFloor
-	fieldFinanceDebtCeiling
-	fieldCommentary
-)
-
 type actionDraft struct {
-	stage         draftStage
-	selectedField int
-	editing       bool
-	inputBuffer   string
-	status        string
-	errorText     string
-
-	procurementOrders     string
-	productionReleases    string
-	productionAllocations string
-	salesOffers           string
-	financeProcurement    string
-	financeProduction     string
-	financeRevenue        string
-	financeCashFloor      string
-	financeDebtCeiling    string
-	commentary            string
-
+	stage      draftStage
+	form       actionFormModel
+	status     string
+	errorText  string
 	submission *domain.ActionSubmission
-}
-
-type fieldSpec struct {
-	id          draftField
-	label       string
-	value       string
-	placeholder string
-	help        string
 }
 
 func (m *Model) handleActionEntryKey(msg tea.KeyMsg) bool {
@@ -79,32 +43,55 @@ func (m *Model) handleActionEntryKey(msg tea.KeyMsg) bool {
 		return false
 	}
 
-	if draft.editing {
+	if draft.form.Editing {
 		return m.handleEditingKey(msg, assignment.RoleID)
 	}
 
 	switch msg.String() {
 	case "up", "k":
-		if draft.selectedField > 0 {
-			draft.selectedField--
-			draft.status = fmt.Sprintf("Focused %s", m.actionFields()[draft.selectedField].label)
-		}
+		draft.form.MoveUp()
+		draft.status = fmt.Sprintf("Focused %s", m.currentFocusLabel(draft))
 		m.drafts[assignment.RoleID] = draft
 		return true
 	case "down", "j":
-		if draft.selectedField < len(m.actionFields())-1 {
-			draft.selectedField++
-			draft.status = fmt.Sprintf("Focused %s", m.actionFields()[draft.selectedField].label)
+		draft.form.MoveDown()
+		draft.status = fmt.Sprintf("Focused %s", m.currentFocusLabel(draft))
+		m.drafts[assignment.RoleID] = draft
+		return true
+	case "left", "h":
+		draft.form.MoveLeft()
+		draft.status = fmt.Sprintf("Focused %s", m.currentFocusLabel(draft))
+		m.drafts[assignment.RoleID] = draft
+		return true
+	case "right", "l":
+		draft.form.MoveRight()
+		draft.status = fmt.Sprintf("Focused %s", m.currentFocusLabel(draft))
+		m.drafts[assignment.RoleID] = draft
+		return true
+	case "a":
+		field := draft.form.currentField()
+		if field != nil && field.Collection != nil {
+			draft.form.AddRow()
+			draft.status = fmt.Sprintf("Added %s row", strings.ToLower(field.Label))
+			draft.errorText = ""
+			m.drafts[assignment.RoleID] = draft
+			return true
 		}
-		m.drafts[assignment.RoleID] = draft
-		return true
+	case "x":
+		field := draft.form.currentField()
+		if field != nil && field.Collection != nil && draft.form.RemoveRow() {
+			draft.status = fmt.Sprintf("Removed %s row", strings.ToLower(field.Label))
+			draft.errorText = ""
+			m.drafts[assignment.RoleID] = draft
+			return true
+		}
 	case "enter", "e":
-		draft.editing = true
-		draft.inputBuffer = m.actionFields()[draft.selectedField].value
-		draft.errorText = ""
-		draft.status = fmt.Sprintf("Editing %s", m.actionFields()[draft.selectedField].label)
-		m.drafts[assignment.RoleID] = draft
-		return true
+		if draft.form.BeginEdit() {
+			draft.errorText = ""
+			draft.status = fmt.Sprintf("Editing %s", m.currentFocusLabel(draft))
+			m.drafts[assignment.RoleID] = draft
+			return true
+		}
 	case "r":
 		submission, err := m.buildSubmissionDraft(draft)
 		if err != nil {
@@ -163,37 +150,37 @@ func (m *Model) handleEditingKey(msg tea.KeyMsg, roleID domain.RoleID) bool {
 	draft := m.currentDraft()
 	switch msg.Type {
 	case tea.KeyEsc:
-		draft.editing = false
-		draft.inputBuffer = ""
+		draft.form.CancelEdit()
 		draft.status = "Edit cancelled"
 		m.drafts[roleID] = draft
 		return true
 	case tea.KeyEnter:
-		spec := m.actionFields()[draft.selectedField]
-		m.setDraftField(&draft, spec.id, draft.inputBuffer)
-		draft.editing = false
-		draft.inputBuffer = ""
-		draft.status = fmt.Sprintf("Saved %s", spec.label)
-		draft.errorText = ""
-		m.drafts[roleID] = draft
+		if draft.form.CommitEdit() {
+			draft.status = fmt.Sprintf("Saved %s", m.currentFocusLabel(draft))
+			draft.errorText = ""
+			m.drafts[roleID] = draft
+		}
 		return true
 	case tea.KeyBackspace:
-		if len(draft.inputBuffer) > 0 {
-			draft.inputBuffer = draft.inputBuffer[:len(draft.inputBuffer)-1]
+		if draft.form.Backspace() {
 			m.drafts[roleID] = draft
 		}
 		return true
 	case tea.KeySpace:
-		draft.inputBuffer += " "
-		m.drafts[roleID] = draft
+		if draft.form.TypeRunes(" ") {
+			m.drafts[roleID] = draft
+		}
 		return true
 	case tea.KeyRunes:
+		var builder strings.Builder
 		for _, r := range msg.Runes {
 			if unicode.IsPrint(r) {
-				draft.inputBuffer += string(r)
+				builder.WriteRune(r)
 			}
 		}
-		m.drafts[roleID] = draft
+		if draft.form.TypeRunes(builder.String()) {
+			m.drafts[roleID] = draft
+		}
 		return true
 	default:
 		return true
@@ -227,6 +214,7 @@ func (m Model) renderActionEntryWorkspace(width int) []string {
 				lines = append(lines, wrapLine("- "+line, paneTextWidth(width)))
 			}
 		}
+		lines = append(lines, m.renderReviewComparisons(width, assignment.RoleID, draft)...)
 		return append(lines, m.renderDraftStatus(width, draft)...)
 	}
 
@@ -259,25 +247,34 @@ func (m Model) renderActionEntryWorkspace(width int) []string {
 	lines = append(lines,
 		"",
 		"Editing flow",
-		"Use up/down to move fields, enter to edit/save, esc to cancel a field edit, and r to review.",
+		"Use up/down to move between fields or table rows, left/right to move across table columns, enter to edit or cycle, a to add rows, x to remove rows, esc to cancel text edits, and r to review.",
 	)
-	for index, field := range m.actionFields() {
-		cursor := " "
-		value := field.value
-		if index == draft.selectedField {
-			cursor = ">"
-			if draft.editing {
-				value = draft.inputBuffer
-			}
+	for index, field := range draft.form.Schema.Fields {
+		fieldCursor := " "
+		if index == draft.form.FieldIndex {
+			fieldCursor = ">"
 		}
-		if strings.TrimSpace(value) == "" {
-			value = field.placeholder
+		lines = append(lines, fmt.Sprintf("%s %s", fieldCursor, field.Label))
+		lines = append(lines, wrapLine("  "+field.Help, paneTextWidth(width)))
+		if field.Collection == nil {
+			lines = append(lines, wrapLine("  "+m.renderScalarFieldValue(draft, field), paneTextWidth(width)))
+			continue
 		}
-		lines = append(lines, fmt.Sprintf("%s %s: %s", cursor, field.label, value))
-		lines = append(lines, wrapLine("  "+field.help, paneTextWidth(width)))
+		lines = append(lines, wrapLine("  "+draft.form.currentCollectionSummary(field), paneTextWidth(width)))
+		active := index == draft.form.FieldIndex
+		lines = append(lines, draft.form.renderedCollectionTable(field, paneTextWidth(width), active))
+		lines = append(lines, "")
 	}
 
 	return append(lines, m.renderDraftStatus(width, draft)...)
+}
+
+func (m Model) renderScalarFieldValue(draft actionDraft, field actionschema.FieldSpec) string {
+	value := draft.form.displayScalar(field)
+	if strings.TrimSpace(value) == "" {
+		value = field.Placeholder
+	}
+	return value
 }
 
 func (m Model) renderDraftStatus(width int, draft actionDraft) []string {
@@ -289,39 +286,6 @@ func (m Model) renderDraftStatus(width int, draft actionDraft) []string {
 		lines = append(lines, wrapLine("Validation: "+draft.errorText, paneTextWidth(width)))
 	}
 	return lines
-}
-
-func (m Model) actionFields() []fieldSpec {
-	draft := m.currentDraft()
-	switch m.selectedAssignment().RoleID {
-	case domain.RoleProcurementManager:
-		return []fieldSpec{
-			{id: fieldProcurementOrders, label: "Orders", value: draft.procurementOrders, placeholder: "housing=2, seal_kit=1", help: "Comma-separated part=quantity entries. Leave blank for no orders."},
-			{id: fieldCommentary, label: "Commentary", value: draft.commentary, placeholder: "Explain your reasoning for this round.", help: "Required public commentary shown after the round is revealed."},
-		}
-	case domain.RoleProductionManager:
-		return []fieldSpec{
-			{id: fieldProductionReleases, label: "Releases", value: draft.productionReleases, placeholder: "pump=2, valve=1", help: "Comma-separated product=quantity entries. Leave blank for no releases."},
-			{id: fieldProductionAllocations, label: "Capacity", value: draft.productionAllocations, placeholder: "fabrication:pump=2, assembly:pump=2", help: "Comma-separated workstation:product=capacity entries. Leave blank for no allocations."},
-			{id: fieldCommentary, label: "Commentary", value: draft.commentary, placeholder: "Explain your reasoning for this round.", help: "Required public commentary shown after the round is revealed."},
-		}
-	case domain.RoleSalesManager:
-		return []fieldSpec{
-			{id: fieldSalesOffers, label: "Offers", value: draft.salesOffers, placeholder: "pump=14, valve=9", help: "Comma-separated product=unit_price entries. Leave blank for no offers."},
-			{id: fieldCommentary, label: "Commentary", value: draft.commentary, placeholder: "Explain your reasoning for this round.", help: "Required public commentary shown after the round is revealed."},
-		}
-	case domain.RoleFinanceController:
-		return []fieldSpec{
-			{id: fieldFinanceProcurementBudget, label: "Procurement budget", value: draft.financeProcurement, placeholder: "0", help: "Whole number budget for the next round."},
-			{id: fieldFinanceProductionBudget, label: "Production budget", value: draft.financeProduction, placeholder: "0", help: "Whole number budget for the next round."},
-			{id: fieldFinanceRevenueTarget, label: "Revenue target", value: draft.financeRevenue, placeholder: "0", help: "Whole number revenue target for the next round."},
-			{id: fieldFinanceCashFloor, label: "Cash floor", value: draft.financeCashFloor, placeholder: "0", help: "Whole number cash floor target for the next round."},
-			{id: fieldFinanceDebtCeiling, label: "Debt ceiling", value: draft.financeDebtCeiling, placeholder: "0", help: "Whole number debt ceiling target for the next round."},
-			{id: fieldCommentary, label: "Commentary", value: draft.commentary, placeholder: "Explain your reasoning for this round.", help: "Required public commentary shown after the round is revealed."},
-		}
-	default:
-		return []fieldSpec{{id: fieldCommentary, label: "Commentary", value: draft.commentary, placeholder: "Explain your reasoning for this round.", help: "Required public commentary shown after the round is revealed."}}
-	}
 }
 
 func (m Model) currentDraft() actionDraft {
@@ -340,38 +304,31 @@ func (m *Model) advanceAfterSubmission(roleID domain.RoleID) {
 	m.status = fmt.Sprintf("%s submitted. All human entries are locked; switched to the round feed.", displayRoleName(roleID))
 }
 
-func (m *Model) setDraftField(draft *actionDraft, field draftField, value string) {
-	switch field {
-	case fieldProcurementOrders:
-		draft.procurementOrders = strings.TrimSpace(value)
-	case fieldProductionReleases:
-		draft.productionReleases = strings.TrimSpace(value)
-	case fieldProductionAllocations:
-		draft.productionAllocations = strings.TrimSpace(value)
-	case fieldSalesOffers:
-		draft.salesOffers = strings.TrimSpace(value)
-	case fieldFinanceProcurementBudget:
-		draft.financeProcurement = strings.TrimSpace(value)
-	case fieldFinanceProductionBudget:
-		draft.financeProduction = strings.TrimSpace(value)
-	case fieldFinanceRevenueTarget:
-		draft.financeRevenue = strings.TrimSpace(value)
-	case fieldFinanceCashFloor:
-		draft.financeCashFloor = strings.TrimSpace(value)
-	case fieldFinanceDebtCeiling:
-		draft.financeDebtCeiling = strings.TrimSpace(value)
-	case fieldCommentary:
-		draft.commentary = strings.TrimSpace(value)
+func (m Model) currentFocusLabel(draft actionDraft) string {
+	field := draft.form.currentField()
+	if field == nil {
+		return "field"
 	}
+	if field.Collection == nil {
+		return field.Label
+	}
+	column := draft.form.currentColumn()
+	if column == nil {
+		return field.Label
+	}
+	return fmt.Sprintf("%s row %d %s", field.Label, draft.form.RowIndex+1, column.Label)
 }
 
 func (m Model) buildSubmissionDraft(draft actionDraft) (domain.ActionSubmission, error) {
 	assignment := m.selectedAssignment()
-	action, err := m.parseRoleAction(assignment.RoleID, draft)
+	action, err := m.parseRoleAction(assignment.RoleID, draft.form)
 	if err != nil {
 		return domain.ActionSubmission{}, err
 	}
-	commentary := strings.TrimSpace(draft.commentary)
+	if err := actionschema.FirstError(actionschema.ValidateRoleAction(draft.form.Schema, action, m.selectedRoleView())); err != nil {
+		return domain.ActionSubmission{}, err
+	}
+	commentary := strings.TrimSpace(draft.form.Values["commentary"].Scalar)
 	if commentary == "" {
 		return domain.ActionSubmission{}, fmt.Errorf("commentary is required before review or submit")
 	}
@@ -386,35 +343,40 @@ func (m Model) buildSubmissionDraft(draft actionDraft) (domain.ActionSubmission,
 	}, nil
 }
 
-func (m Model) parseRoleAction(roleID domain.RoleID, draft actionDraft) (domain.RoleAction, error) {
+func (m Model) parseRoleAction(roleID domain.RoleID, form actionFormModel) (domain.RoleAction, error) {
 	switch roleID {
 	case domain.RoleProcurementManager:
-		orders, err := m.parseOrders(draft.procurementOrders)
+		orders, err := parseOrderRows(form.Values["orders"].Rows)
 		if err != nil {
 			return domain.RoleAction{}, err
 		}
 		return domain.RoleAction{Procurement: &domain.ProcurementAction{Orders: orders}}, nil
 	case domain.RoleProductionManager:
-		releases, err := m.parseReleases(draft.productionReleases)
+		releases, err := parseReleaseRows(form.Values["releases"].Rows)
 		if err != nil {
 			return domain.RoleAction{}, err
 		}
-		allocations, err := m.parseAllocations(draft.productionAllocations)
+		allocations, err := parseAllocationRows(form.Values["capacity_allocation"].Rows)
+		if err != nil {
+			return domain.RoleAction{}, err
+		}
+		overtime, err := parseOvertimeRows(form.Values["overtime"].Rows)
 		if err != nil {
 			return domain.RoleAction{}, err
 		}
 		return domain.RoleAction{Production: &domain.ProductionAction{
 			Releases:           releases,
 			CapacityAllocation: allocations,
+			Overtime:           overtime,
 		}}, nil
 	case domain.RoleSalesManager:
-		offers, err := m.parseOffers(draft.salesOffers)
+		offers, err := parseOfferRows(form.Values["product_offers"].Rows)
 		if err != nil {
 			return domain.RoleAction{}, err
 		}
 		return domain.RoleAction{Sales: &domain.SalesAction{ProductOffers: offers}}, nil
 	case domain.RoleFinanceController:
-		targets, err := m.parseFinanceTargets(draft)
+		targets, err := parseFinanceTargets(form, m.selectedRoleView())
 		if err != nil {
 			return domain.RoleAction{}, err
 		}
@@ -422,133 +384,6 @@ func (m Model) parseRoleAction(roleID domain.RoleID, draft actionDraft) (domain.
 	default:
 		return domain.RoleAction{}, fmt.Errorf("unsupported role %q", roleID)
 	}
-}
-
-func (m Model) parseOrders(raw string) ([]domain.PurchaseOrderIntent, error) {
-	pairs, err := parseKeyValueList(raw)
-	if err != nil {
-		return nil, err
-	}
-	orders := make([]domain.PurchaseOrderIntent, 0, len(pairs))
-	for _, pair := range pairs {
-		partID := domain.PartID(pair.key)
-		supplierID, ok := m.supplierForPart(partID)
-		if !ok {
-			return nil, fmt.Errorf("unknown part %q", pair.key)
-		}
-		quantity := domain.Units(pair.value)
-		orders = append(orders, domain.PurchaseOrderIntent{
-			PartID:     partID,
-			SupplierID: supplierID,
-			Quantity:   quantity,
-		})
-	}
-	return orders, nil
-}
-
-func (m Model) parseReleases(raw string) ([]domain.ProductionRelease, error) {
-	pairs, err := parseKeyValueList(raw)
-	if err != nil {
-		return nil, err
-	}
-	releases := make([]domain.ProductionRelease, 0, len(pairs))
-	for _, pair := range pairs {
-		if !m.validProduct(domain.ProductID(pair.key)) {
-			return nil, fmt.Errorf("unknown product %q", pair.key)
-		}
-		releases = append(releases, domain.ProductionRelease{
-			ProductID: domain.ProductID(pair.key),
-			Quantity:  domain.Units(pair.value),
-		})
-	}
-	return releases, nil
-}
-
-func (m Model) parseAllocations(raw string) ([]domain.CapacityAllocation, error) {
-	if strings.TrimSpace(raw) == "" {
-		return nil, nil
-	}
-	entries := strings.Split(raw, ",")
-	allocations := make([]domain.CapacityAllocation, 0, len(entries))
-	for _, entry := range entries {
-		entry = strings.TrimSpace(entry)
-		workstationAndProduct, capacityText, ok := strings.Cut(entry, "=")
-		if !ok {
-			return nil, fmt.Errorf("capacity entry %q must use workstation:product=capacity", entry)
-		}
-		workstationText, productText, ok := strings.Cut(strings.TrimSpace(workstationAndProduct), ":")
-		if !ok {
-			return nil, fmt.Errorf("capacity entry %q must include workstation:product", entry)
-		}
-		if !m.validWorkstation(domain.WorkstationID(strings.TrimSpace(workstationText))) {
-			return nil, fmt.Errorf("unknown workstation %q", strings.TrimSpace(workstationText))
-		}
-		productID := domain.ProductID(strings.TrimSpace(productText))
-		if !m.validProduct(productID) {
-			return nil, fmt.Errorf("unknown product %q", productText)
-		}
-		capacity, err := parseNonNegativeInt(capacityText)
-		if err != nil {
-			return nil, fmt.Errorf("capacity entry %q: %w", entry, err)
-		}
-		allocations = append(allocations, domain.CapacityAllocation{
-			WorkstationID: domain.WorkstationID(strings.TrimSpace(workstationText)),
-			ProductID:     productID,
-			Capacity:      domain.CapacityUnits(capacity),
-		})
-	}
-	return allocations, nil
-}
-
-func (m Model) parseOffers(raw string) ([]domain.ProductOffer, error) {
-	pairs, err := parseKeyValueList(raw)
-	if err != nil {
-		return nil, err
-	}
-	offers := make([]domain.ProductOffer, 0, len(pairs))
-	for _, pair := range pairs {
-		productID := domain.ProductID(pair.key)
-		if !m.validProduct(productID) {
-			return nil, fmt.Errorf("unknown product %q", pair.key)
-		}
-		offers = append(offers, domain.ProductOffer{
-			ProductID: productID,
-			UnitPrice: domain.Money(pair.value),
-		})
-	}
-	return offers, nil
-}
-
-func (m Model) parseFinanceTargets(draft actionDraft) (domain.BudgetTargets, error) {
-	procurement, err := parseNonNegativeInt(draft.financeProcurement)
-	if err != nil {
-		return domain.BudgetTargets{}, fmt.Errorf("procurement budget: %w", err)
-	}
-	production, err := parseNonNegativeInt(draft.financeProduction)
-	if err != nil {
-		return domain.BudgetTargets{}, fmt.Errorf("production budget: %w", err)
-	}
-	revenue, err := parseNonNegativeInt(draft.financeRevenue)
-	if err != nil {
-		return domain.BudgetTargets{}, fmt.Errorf("revenue target: %w", err)
-	}
-	cashFloor, err := parseNonNegativeInt(draft.financeCashFloor)
-	if err != nil {
-		return domain.BudgetTargets{}, fmt.Errorf("cash floor: %w", err)
-	}
-	debtCeiling, err := parseNonNegativeInt(draft.financeDebtCeiling)
-	if err != nil {
-		return domain.BudgetTargets{}, fmt.Errorf("debt ceiling: %w", err)
-	}
-
-	return domain.BudgetTargets{
-		EffectiveRound:        m.selectedRoleView().ActiveTargets.EffectiveRound + 1,
-		ProcurementBudget:     domain.Money(procurement),
-		ProductionSpendBudget: domain.Money(production),
-		RevenueTarget:         domain.Money(revenue),
-		CashFloorTarget:       domain.Money(cashFloor),
-		DebtCeilingTarget:     domain.Money(debtCeiling),
-	}, nil
 }
 
 func (m Model) effectiveRoundFlow() domain.RoundFlowState {
@@ -609,18 +444,23 @@ func (m Model) currentDraftForRole(roleID domain.RoleID) actionDraft {
 		return draft
 	}
 
-	draft = actionDraft{}
-	if roleID != domain.RoleFinanceController {
+	schema := actionschema.BuildFromCatalog(m.scenario, roleID, projection.BuildRoundView(m.state, roleID))
+	draft = actionDraft{
+		form: newActionFormModel(schema),
+	}
+	if previous := m.previousAcceptedAction(roleID); previous != nil {
+		seedDraftFromSubmission(&draft.form, *previous)
 		return draft
 	}
-
-	view := projection.BuildRoundView(m.state, roleID)
-	targets := view.ActiveTargets
-	draft.financeProcurement = strconv.Itoa(int(targets.ProcurementBudget))
-	draft.financeProduction = strconv.Itoa(int(targets.ProductionSpendBudget))
-	draft.financeRevenue = strconv.Itoa(int(targets.RevenueTarget))
-	draft.financeCashFloor = strconv.Itoa(int(targets.CashFloorTarget))
-	draft.financeDebtCeiling = strconv.Itoa(int(targets.DebtCeilingTarget))
+	if roleID == domain.RoleFinanceController {
+		view := projection.BuildRoundView(m.state, roleID)
+		targets := view.ActiveTargets
+		draft.form.Values["procurement_budget"] = formFieldValue{Scalar: strconv.Itoa(int(targets.ProcurementBudget))}
+		draft.form.Values["production_spend_budget"] = formFieldValue{Scalar: strconv.Itoa(int(targets.ProductionSpendBudget))}
+		draft.form.Values["revenue_target"] = formFieldValue{Scalar: strconv.Itoa(int(targets.RevenueTarget))}
+		draft.form.Values["cash_floor_target"] = formFieldValue{Scalar: strconv.Itoa(int(targets.CashFloorTarget))}
+		draft.form.Values["debt_ceiling_target"] = formFieldValue{Scalar: strconv.Itoa(int(targets.DebtCeilingTarget))}
+	}
 	return draft
 }
 
@@ -647,33 +487,396 @@ func summarizeSubmission(submission domain.ActionSubmission) []string {
 	return append(lines, "Commentary: "+submission.Commentary.Body)
 }
 
-type kvPair struct {
-	key   string
-	value int
+func seedDraftFromSubmission(form *actionFormModel, submission domain.ActionSubmission) {
+	if form == nil {
+		return
+	}
+
+	if action := submission.Action.Procurement; action != nil {
+		rows := make([]map[string]string, 0, len(action.Orders))
+		for _, order := range action.Orders {
+			rows = append(rows, map[string]string{
+				"part_id":     string(order.PartID),
+				"supplier_id": string(order.SupplierID),
+				"quantity":    strconv.Itoa(int(order.Quantity)),
+			})
+		}
+		form.Values["orders"] = formFieldValue{Rows: rows}
+		form.syncTable("orders")
+	}
+
+	if action := submission.Action.Production; action != nil {
+		releases := make([]map[string]string, 0, len(action.Releases))
+		for _, release := range action.Releases {
+			releases = append(releases, map[string]string{
+				"product_id": string(release.ProductID),
+				"quantity":   strconv.Itoa(int(release.Quantity)),
+			})
+		}
+		form.Values["releases"] = formFieldValue{Rows: releases}
+		form.syncTable("releases")
+
+		allocations := make([]map[string]string, 0, len(action.CapacityAllocation))
+		for _, allocation := range action.CapacityAllocation {
+			allocations = append(allocations, map[string]string{
+				"workstation_id": string(allocation.WorkstationID),
+				"product_id":     string(allocation.ProductID),
+				"capacity":       strconv.Itoa(int(allocation.Capacity)),
+			})
+		}
+		form.Values["capacity_allocation"] = formFieldValue{Rows: allocations}
+		form.syncTable("capacity_allocation")
+
+		overtime := make([]map[string]string, 0, len(action.Overtime))
+		for _, allocation := range action.Overtime {
+			overtime = append(overtime, map[string]string{
+				"workstation_id": string(allocation.WorkstationID),
+				"capacity":       strconv.Itoa(int(allocation.Capacity)),
+			})
+		}
+		form.Values["overtime"] = formFieldValue{Rows: overtime}
+		form.syncTable("overtime")
+	}
+
+	if action := submission.Action.Sales; action != nil {
+		rows := make([]map[string]string, 0, len(action.ProductOffers))
+		for _, offer := range action.ProductOffers {
+			rows = append(rows, map[string]string{
+				"product_id": string(offer.ProductID),
+				"unit_price": strconv.Itoa(int(offer.UnitPrice)),
+			})
+		}
+		form.Values["product_offers"] = formFieldValue{Rows: rows}
+		form.syncTable("product_offers")
+	}
+
+	if action := submission.Action.Finance; action != nil {
+		targets := action.NextRoundTargets
+		form.Values["procurement_budget"] = formFieldValue{Scalar: strconv.Itoa(int(targets.ProcurementBudget))}
+		form.Values["production_spend_budget"] = formFieldValue{Scalar: strconv.Itoa(int(targets.ProductionSpendBudget))}
+		form.Values["revenue_target"] = formFieldValue{Scalar: strconv.Itoa(int(targets.RevenueTarget))}
+		form.Values["cash_floor_target"] = formFieldValue{Scalar: strconv.Itoa(int(targets.CashFloorTarget))}
+		form.Values["debt_ceiling_target"] = formFieldValue{Scalar: strconv.Itoa(int(targets.DebtCeilingTarget))}
+	}
+
+	form.Values["commentary"] = formFieldValue{Scalar: submission.Commentary.Body}
 }
 
-func parseKeyValueList(raw string) ([]kvPair, error) {
-	if strings.TrimSpace(raw) == "" {
-		return nil, nil
+func (m Model) renderReviewComparisons(width int, roleID domain.RoleID, draft actionDraft) []string {
+	lines := []string{"", "Decision support"}
+
+	lines = append(lines, "Compare with past orders")
+	if previous := m.previousAcceptedAction(roleID); previous != nil {
+		for _, line := range summarizeAction(previous.Action) {
+			lines = append(lines, wrapLine("- "+line, paneTextWidth(width)))
+		}
+	} else {
+		lines = append(lines, "No prior accepted action is available for this role.")
 	}
-	entries := strings.Split(raw, ",")
-	pairs := make([]kvPair, 0, len(entries))
-	for _, entry := range entries {
-		keyText, valueText, ok := strings.Cut(entry, "=")
-		if !ok {
-			return nil, fmt.Errorf("entry %q must use name=value", strings.TrimSpace(entry))
+
+	lines = append(lines, "", "Past performance")
+	for _, line := range m.reviewPerformanceHighlights() {
+		lines = append(lines, wrapLine("- "+line, paneTextWidth(width)))
+	}
+
+	lines = append(lines, "", "Expected guidance")
+	for _, line := range m.expectedGuidance(roleID, draft) {
+		lines = append(lines, wrapLine("- "+line, paneTextWidth(width)))
+	}
+
+	return lines
+}
+
+func (m Model) reviewPerformanceHighlights() []string {
+	report := m.selectedRoleReport()
+	var lines []string
+	for _, section := range report.Department.Sections {
+		for _, metric := range section.Metrics {
+			lines = append(lines, fmt.Sprintf("%s: %d %s", metric.Label, metric.Metric.Value, metric.Metric.DisplayUnit))
+			if len(lines) == 3 {
+				return lines
+			}
 		}
-		key := strings.TrimSpace(keyText)
-		if key == "" {
-			return nil, fmt.Errorf("entry %q needs a name before =", strings.TrimSpace(entry))
+		for _, warning := range section.Warnings {
+			lines = append(lines, warning.Headline)
+			if len(lines) == 3 {
+				return lines
+			}
 		}
-		value, err := parseNonNegativeInt(valueText)
+	}
+	if len(lines) == 0 {
+		lines = append(lines, "No role-specific performance highlights are available yet.")
+	}
+	return lines
+}
+
+func (m Model) expectedGuidance(roleID domain.RoleID, draft actionDraft) []string {
+	switch roleID {
+	case domain.RoleProcurementManager:
+		return m.expectedProcurementGuidance(draft)
+	case domain.RoleProductionManager:
+		return m.expectedProductionGuidance(draft)
+	case domain.RoleSalesManager:
+		return m.expectedSalesGuidance(draft)
+	case domain.RoleFinanceController:
+		return m.expectedFinanceGuidance(draft)
+	default:
+		return []string{"No expected guidance is configured for this role."}
+	}
+}
+
+func (m Model) expectedProcurementGuidance(_ actionDraft) []string {
+	backlogDemand := make(map[domain.ProductID]int)
+	for _, entry := range m.state.Plant.Backlog {
+		backlogDemand[entry.ProductID] += int(entry.Quantity)
+	}
+
+	finishedByProduct := make(map[domain.ProductID]int)
+	for _, item := range m.state.Plant.FinishedInventory {
+		finishedByProduct[item.ProductID] += int(item.OnHandQty)
+	}
+
+	inTransitByPart := make(map[domain.PartID]int)
+	for _, item := range m.state.Plant.InTransitSupply {
+		inTransitByPart[item.PartID] += int(item.Quantity)
+	}
+
+	partsOnHand := make(map[domain.PartID]int)
+	for _, item := range m.state.Plant.PartsInventory {
+		partsOnHand[item.PartID] += int(item.OnHandQty)
+	}
+
+	requiredByPart := make(map[domain.PartID]int)
+	for _, product := range m.scenario.Products() {
+		gap := backlogDemand[product.ID] - finishedByProduct[product.ID]
+		if gap <= 0 {
+			continue
+		}
+		for _, line := range product.BOM {
+			requiredByPart[line.PartID] += gap * int(line.Quantity)
+		}
+	}
+
+	var lines []string
+	for _, part := range m.scenario.Parts() {
+		expected := requiredByPart[part.ID] - partsOnHand[part.ID] - inTransitByPart[part.ID]
+		if expected <= 0 {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("Expected %s order is roughly %d based on backlog demand, BOM coverage, on-hand parts, and inbound supply.", part.ID, expected))
+	}
+	if len(lines) == 0 {
+		lines = append(lines, "Current backlog, BOM, inventory, and inbound supply do not point to an urgent additional part order.")
+	}
+	return lines
+}
+
+func (m Model) expectedProductionGuidance(_ actionDraft) []string {
+	backlogByProduct := make(map[domain.ProductID]int)
+	for _, entry := range m.state.Plant.Backlog {
+		backlogByProduct[entry.ProductID] += int(entry.Quantity)
+	}
+	finishedByProduct := make(map[domain.ProductID]int)
+	for _, item := range m.state.Plant.FinishedInventory {
+		finishedByProduct[item.ProductID] += int(item.OnHandQty)
+	}
+	wipByProduct := make(map[domain.ProductID]int)
+	for _, item := range m.state.Plant.WIPInventory {
+		wipByProduct[item.ProductID] += int(item.Quantity)
+	}
+
+	var lines []string
+	for _, product := range m.scenario.Products() {
+		gap := backlogByProduct[product.ID] - finishedByProduct[product.ID] - wipByProduct[product.ID]
+		if gap <= 0 {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("Expected %s release is roughly %d based on backlog pressure minus finished goods and WIP already in the line.", product.ID, gap))
+	}
+	if len(lines) == 0 {
+		lines = append(lines, "Backlog pressure does not currently justify more release beyond existing finished goods and WIP.")
+	}
+	return lines
+}
+
+func (m Model) expectedSalesGuidance(_ actionDraft) []string {
+	backlogByProduct := make(map[domain.ProductID]int)
+	for _, entry := range m.state.Plant.Backlog {
+		backlogByProduct[entry.ProductID] += int(entry.Quantity)
+	}
+	finishedByProduct := make(map[domain.ProductID]int)
+	for _, item := range m.state.Plant.FinishedInventory {
+		finishedByProduct[item.ProductID] += int(item.OnHandQty)
+	}
+
+	var lines []string
+	for _, product := range m.scenario.Products() {
+		gap := backlogByProduct[product.ID] - finishedByProduct[product.ID]
+		if gap > 0 {
+			lines = append(lines, fmt.Sprintf("%s demand already exceeds finished-goods coverage by %d unit(s); avoid aggressive demand expansion until operations catch up.", product.ID, gap))
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("%s has finished-goods coverage against visible backlog, so measured demand expansion is supportable if service remains stable.", product.ID))
+	}
+	if len(lines) == 0 {
+		lines = append(lines, "No sales guidance is available because no visible product demand is loaded.")
+	}
+	return lines
+}
+
+func (m Model) expectedFinanceGuidance(_ actionDraft) []string {
+	nextRoundCashPressure := sumCommitmentAmount(m.state.Plant.Payables) - sumCommitmentAmount(m.state.Plant.Receivables)
+	lines := []string{
+		fmt.Sprintf("Current targets already anchor procurement at %d and production at %d for next round.", m.state.ActiveTargets.ProcurementBudget, m.state.ActiveTargets.ProductionSpendBudget),
+	}
+	if nextRoundCashPressure > 0 {
+		lines = append(lines, fmt.Sprintf("Visible commitments are net cash-negative by %d, so budget tightening deserves consideration.", nextRoundCashPressure))
+	} else {
+		lines = append(lines, "Visible commitments are not net cash-negative, so holding current targets is defensible if throughput needs support.")
+	}
+	if m.state.Plant.Debt >= m.state.Plant.DebtCeiling {
+		lines = append(lines, "Debt is already at or above the configured ceiling, so any growth posture needs explicit liquidity justification.")
+	}
+	return lines
+}
+
+func sumCommitmentAmount(items []domain.CashCommitment) int {
+	total := 0
+	for _, item := range items {
+		total += int(item.Amount)
+	}
+	return total
+}
+
+func parseOrderRows(rows []map[string]string) ([]domain.PurchaseOrderIntent, error) {
+	orders := make([]domain.PurchaseOrderIntent, 0, len(rows))
+	for index, row := range rows {
+		partID := domain.PartID(strings.TrimSpace(row["part_id"]))
+		if partID == "" {
+			return nil, fmt.Errorf("orders row %d: part is required", index+1)
+		}
+		supplierID := domain.SupplierID(strings.TrimSpace(row["supplier_id"]))
+		if supplierID == "" {
+			return nil, fmt.Errorf("orders row %d: supplier is required", index+1)
+		}
+		quantity, err := parseNonNegativeInt(row["quantity"])
 		if err != nil {
-			return nil, fmt.Errorf("entry %q: %w", strings.TrimSpace(entry), err)
+			return nil, fmt.Errorf("orders row %d: %w", index+1, err)
 		}
-		pairs = append(pairs, kvPair{key: key, value: value})
+		orders = append(orders, domain.PurchaseOrderIntent{
+			PartID:     partID,
+			SupplierID: supplierID,
+			Quantity:   domain.Units(quantity),
+		})
 	}
-	return pairs, nil
+	return orders, nil
+}
+
+func parseReleaseRows(rows []map[string]string) ([]domain.ProductionRelease, error) {
+	releases := make([]domain.ProductionRelease, 0, len(rows))
+	for index, row := range rows {
+		productID := domain.ProductID(strings.TrimSpace(row["product_id"]))
+		if productID == "" {
+			return nil, fmt.Errorf("releases row %d: product is required", index+1)
+		}
+		quantity, err := parseNonNegativeInt(row["quantity"])
+		if err != nil {
+			return nil, fmt.Errorf("releases row %d: %w", index+1, err)
+		}
+		releases = append(releases, domain.ProductionRelease{ProductID: productID, Quantity: domain.Units(quantity)})
+	}
+	return releases, nil
+}
+
+func parseAllocationRows(rows []map[string]string) ([]domain.CapacityAllocation, error) {
+	allocations := make([]domain.CapacityAllocation, 0, len(rows))
+	for index, row := range rows {
+		workstationID := domain.WorkstationID(strings.TrimSpace(row["workstation_id"]))
+		if workstationID == "" {
+			return nil, fmt.Errorf("capacity allocation row %d: workstation is required", index+1)
+		}
+		productID := domain.ProductID(strings.TrimSpace(row["product_id"]))
+		if productID == "" {
+			return nil, fmt.Errorf("capacity allocation row %d: product is required", index+1)
+		}
+		capacity, err := parseNonNegativeInt(row["capacity"])
+		if err != nil {
+			return nil, fmt.Errorf("capacity allocation row %d: %w", index+1, err)
+		}
+		allocations = append(allocations, domain.CapacityAllocation{
+			WorkstationID: workstationID,
+			ProductID:     productID,
+			Capacity:      domain.CapacityUnits(capacity),
+		})
+	}
+	return allocations, nil
+}
+
+func parseOvertimeRows(rows []map[string]string) ([]domain.OvertimeAllocation, error) {
+	overtime := make([]domain.OvertimeAllocation, 0, len(rows))
+	for index, row := range rows {
+		workstationID := domain.WorkstationID(strings.TrimSpace(row["workstation_id"]))
+		if workstationID == "" {
+			return nil, fmt.Errorf("overtime row %d: workstation is required", index+1)
+		}
+		capacity, err := parseNonNegativeInt(row["capacity"])
+		if err != nil {
+			return nil, fmt.Errorf("overtime row %d: %w", index+1, err)
+		}
+		overtime = append(overtime, domain.OvertimeAllocation{
+			WorkstationID: workstationID,
+			Capacity:      domain.CapacityUnits(capacity),
+		})
+	}
+	return overtime, nil
+}
+
+func parseOfferRows(rows []map[string]string) ([]domain.ProductOffer, error) {
+	offers := make([]domain.ProductOffer, 0, len(rows))
+	for index, row := range rows {
+		productID := domain.ProductID(strings.TrimSpace(row["product_id"]))
+		if productID == "" {
+			return nil, fmt.Errorf("offers row %d: product is required", index+1)
+		}
+		unitPrice, err := parseNonNegativeInt(row["unit_price"])
+		if err != nil {
+			return nil, fmt.Errorf("offers row %d: %w", index+1, err)
+		}
+		offers = append(offers, domain.ProductOffer{ProductID: productID, UnitPrice: domain.Money(unitPrice)})
+	}
+	return offers, nil
+}
+
+func parseFinanceTargets(form actionFormModel, view domain.RoundView) (domain.BudgetTargets, error) {
+	procurement, err := parseNonNegativeInt(form.Values["procurement_budget"].Scalar)
+	if err != nil {
+		return domain.BudgetTargets{}, fmt.Errorf("procurement budget: %w", err)
+	}
+	production, err := parseNonNegativeInt(form.Values["production_spend_budget"].Scalar)
+	if err != nil {
+		return domain.BudgetTargets{}, fmt.Errorf("production budget: %w", err)
+	}
+	revenue, err := parseNonNegativeInt(form.Values["revenue_target"].Scalar)
+	if err != nil {
+		return domain.BudgetTargets{}, fmt.Errorf("revenue target: %w", err)
+	}
+	cashFloor, err := parseNonNegativeInt(form.Values["cash_floor_target"].Scalar)
+	if err != nil {
+		return domain.BudgetTargets{}, fmt.Errorf("cash floor: %w", err)
+	}
+	debtCeiling, err := parseNonNegativeInt(form.Values["debt_ceiling_target"].Scalar)
+	if err != nil {
+		return domain.BudgetTargets{}, fmt.Errorf("debt ceiling: %w", err)
+	}
+
+	return domain.BudgetTargets{
+		EffectiveRound:        view.ActiveTargets.EffectiveRound + 1,
+		ProcurementBudget:     domain.Money(procurement),
+		ProductionSpendBudget: domain.Money(production),
+		RevenueTarget:         domain.Money(revenue),
+		CashFloorTarget:       domain.Money(cashFloor),
+		DebtCeilingTarget:     domain.Money(debtCeiling),
+	}, nil
 }
 
 func parseNonNegativeInt(raw string) (int, error) {
@@ -682,33 +885,6 @@ func parseNonNegativeInt(raw string) (int, error) {
 		return 0, fmt.Errorf("enter a whole number that is 0 or greater")
 	}
 	return value, nil
-}
-
-func (m Model) validProduct(productID domain.ProductID) bool {
-	for _, product := range m.scenario.Products() {
-		if product.ID == productID {
-			return true
-		}
-	}
-	return false
-}
-
-func (m Model) validWorkstation(workstationID domain.WorkstationID) bool {
-	for _, workstation := range m.scenario.Workstations() {
-		if workstation.ID == workstationID {
-			return true
-		}
-	}
-	return false
-}
-
-func (m Model) supplierForPart(partID domain.PartID) (domain.SupplierID, bool) {
-	for _, part := range m.scenario.Parts() {
-		if part.ID == partID {
-			return part.SupplierID, true
-		}
-	}
-	return "", false
 }
 
 func summarizeAction(action domain.RoleAction) []string {
@@ -723,7 +899,7 @@ func summarizeAction(action domain.RoleAction) []string {
 		}
 		return lines
 	case action.Production != nil:
-		lines := make([]string, 0, len(action.Production.Releases)+len(action.Production.CapacityAllocation))
+		lines := make([]string, 0, len(action.Production.Releases)+len(action.Production.CapacityAllocation)+len(action.Production.Overtime))
 		if len(action.Production.Releases) == 0 {
 			lines = append(lines, "No production releases")
 		}
@@ -735,6 +911,9 @@ func summarizeAction(action domain.RoleAction) []string {
 		}
 		for _, allocation := range action.Production.CapacityAllocation {
 			lines = append(lines, fmt.Sprintf("Allocate %d capacity at %s for %s", allocation.Capacity, allocation.WorkstationID, allocation.ProductID))
+		}
+		for _, overtime := range action.Production.Overtime {
+			lines = append(lines, fmt.Sprintf("Use %d overtime capacity at %s", overtime.Capacity, overtime.WorkstationID))
 		}
 		return lines
 	case action.Sales != nil:

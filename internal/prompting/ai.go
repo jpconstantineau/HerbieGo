@@ -77,6 +77,7 @@ func BuildUserPrompt(request ports.AIDecisionRequest, retry *ports.RetryFeedback
 		"role_report":     request.RoleReport,
 		"previous_action": request.PreviousAction,
 	}))
+	sections = append(sections, "## Shared Action Surface\n"+mustJSON(request.SharedActionSurface))
 	sections = append(sections, "## Allowed Action Schema\n"+mustJSON(request.AllowedActions))
 	sections = append(sections, "## Response Format\n"+mustJSON(map[string]any{
 		"response_spec": request.ResponseSpec,
