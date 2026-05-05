@@ -584,6 +584,102 @@ func TestFinanceActionEntrySeedsCurrentTargetsAsDefaults(t *testing.T) {
 	}
 }
 
+func TestStructuredProductionActionEntryBuildsNormalizedSubmission(t *testing.T) {
+	assignments := []domain.RoleAssignment{
+		{RoleID: domain.RoleProcurementManager, PlayerID: "procurement-player", IsHuman: false},
+		{RoleID: domain.RoleProductionManager, PlayerID: "production-player", IsHuman: true},
+		{RoleID: domain.RoleSalesManager, PlayerID: "sales-player", IsHuman: false},
+		{RoleID: domain.RoleFinanceController, PlayerID: "finance-player", IsHuman: false},
+	}
+	model := NewModel(scenario.Starter(), testStateSource{
+		snapshot: scenario.Starter().InitialState("starter-match", assignments),
+	})
+
+	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
+	shell := loaded.(Model)
+	shell.selectedRole = 1
+	shell.focusedPane = paneHistory
+
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune{'a'}},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune{'l'}},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune("2")},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyDown},
+		{Type: tea.KeyRunes, Runes: []rune{'a'}},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune{'l'}},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune{'l'}},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune("2")},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyDown},
+		{Type: tea.KeyRunes, Runes: []rune{'a'}},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune{'l'}},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune("1")},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyDown},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune("Protecting assembly throughput with a light overtime buffer.")},
+		{Type: tea.KeyEnter},
+	} {
+		next, _ := shell.Update(key)
+		shell = next.(Model)
+	}
+
+	submission, err := shell.buildSubmissionDraft(shell.currentDraft())
+	if err != nil {
+		t.Fatalf("buildSubmissionDraft() error = %v", err)
+	}
+
+	if submission.Action.Production == nil {
+		t.Fatalf("submission.Action.Production = nil, want populated production payload")
+	}
+	if got := len(submission.Action.Production.Releases); got != 1 {
+		t.Fatalf("len(Releases) = %d, want 1", got)
+	}
+	if got := len(submission.Action.Production.CapacityAllocation); got != 1 {
+		t.Fatalf("len(CapacityAllocation) = %d, want 1", got)
+	}
+	if got := len(submission.Action.Production.Overtime); got != 1 {
+		t.Fatalf("len(Overtime) = %d, want 1", got)
+	}
+}
+
+func TestStructuredSalesActionEntryBuildsNormalizedSubmission(t *testing.T) {
+	assignments := []domain.RoleAssignment{
+		{RoleID: domain.RoleProcurementManager, PlayerID: "procurement-player", IsHuman: false},
+		{RoleID: domain.RoleProductionManager, PlayerID: "production-player", IsHuman: false},
+		{RoleID: domain.RoleSalesManager, PlayerID: "sales-player", IsHuman: true},
+		{RoleID: domain.RoleFinanceController, PlayerID: "finance-player", IsHuman: false},
+	}
+	model := NewModel(scenario.Starter(), testStateSource{
+		snapshot: scenario.Starter().InitialState("starter-match", assignments),
+	})
+
+	loaded, _ := model.Update(stateLoadedMsg{state: model.source.Snapshot()})
+	shell := loaded.(Model)
+	shell.selectedRole = 2
+	shell.focusedPane = paneHistory
+	shell = submitSalesDraft(shell, "Holding starter pricing steady while we watch backlog.")
+
+	submission, err := shell.buildSubmissionDraft(shell.currentDraft())
+	if err != nil {
+		t.Fatalf("buildSubmissionDraft() error = %v", err)
+	}
+	if submission.Action.Sales == nil || len(submission.Action.Sales.ProductOffers) != 1 {
+		t.Fatalf("submission.Action.Sales = %#v, want one structured offer", submission.Action.Sales)
+	}
+	if got := submission.Action.Sales.ProductOffers[0].ProductID; got != "pump" {
+		t.Fatalf("ProductOffers[0].ProductID = %q, want pump", got)
+	}
+}
+
 func TestModelResubscribesToStateUpdates(t *testing.T) {
 	updates := make(chan domain.MatchState, 1)
 	model := NewModel(scenario.Starter(), testStateSource{
