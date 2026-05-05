@@ -493,15 +493,6 @@ func (m *actionFormModel) syncCurrentTable() {
 func (m *actionFormModel) syncTable(fieldID string) {
 }
 
-func (m actionFormModel) fieldByID(fieldID string) *actionschema.FieldSpec {
-	for i := range m.Schema.Fields {
-		if m.Schema.Fields[i].ID == fieldID {
-			return &m.Schema.Fields[i]
-		}
-	}
-	return nil
-}
-
 func (m actionFormModel) tableRows(field actionschema.FieldSpec, active bool) [][]spreadsheetCell {
 	rows := m.Values[field.ID].Rows
 	result := make([][]spreadsheetCell, 0, max(len(rows), 1))
