@@ -584,6 +584,95 @@ func TestFinanceActionEntrySeedsCurrentTargetsAsDefaults(t *testing.T) {
 	}
 }
 
+func TestHumanDraftDefaultsToPreviousAcceptedProcurementSubmission(t *testing.T) {
+	state := scenario.Starter().InitialState("starter-match", starterAssignments())
+	state.History.RecentRounds = []domain.RoundRecord{
+		{
+			Round: 1,
+			Actions: []domain.ActionSubmission{
+				{
+					RoleID: domain.RoleProcurementManager,
+					Action: domain.RoleAction{
+						Procurement: &domain.ProcurementAction{
+							Orders: []domain.PurchaseOrderIntent{
+								{PartID: "housing", SupplierID: "forgeco", Quantity: 2},
+							},
+						},
+					},
+					Commentary: domain.CommentaryRecord{Body: "Repeat the housing order while assembly catches up."},
+				},
+			},
+		},
+	}
+
+	model := NewModel(scenario.Starter(), testStateSource{snapshot: state})
+	loaded, _ := model.Update(stateLoadedMsg{state: state})
+	shell := loaded.(Model)
+
+	draft := shell.currentDraftForRole(domain.RoleProcurementManager)
+	if got := draft.form.Values["commentary"].Scalar; got != "Repeat the housing order while assembly catches up." {
+		t.Fatalf("commentary default = %q, want previous commentary", got)
+	}
+	rows := draft.form.Values["orders"].Rows
+	if len(rows) != 1 {
+		t.Fatalf("len(orders rows) = %d, want 1", len(rows))
+	}
+	if rows[0]["part_id"] != "housing" || rows[0]["supplier_id"] != "forgeco" || rows[0]["quantity"] != "2" {
+		t.Fatalf("orders row = %#v, want copied previous order", rows[0])
+	}
+}
+
+func TestHumanDraftDefaultsToPreviousAcceptedFinanceSubmission(t *testing.T) {
+	state := scenario.Starter().InitialState("starter-match", starterAssignments())
+	state.History.RecentRounds = []domain.RoundRecord{
+		{
+			Round: 1,
+			Actions: []domain.ActionSubmission{
+				{
+					RoleID: domain.RoleFinanceController,
+					Action: domain.RoleAction{
+						Finance: &domain.FinanceAction{
+							NextRoundTargets: domain.BudgetTargets{
+								EffectiveRound:        2,
+								ProcurementBudget:     21,
+								ProductionSpendBudget: 17,
+								RevenueTarget:         33,
+								CashFloorTarget:       9,
+								DebtCeilingTarget:     14,
+							},
+						},
+					},
+					Commentary: domain.CommentaryRecord{Body: "Hold the same target posture for one more round."},
+				},
+			},
+		},
+	}
+
+	model := NewModel(scenario.Starter(), testStateSource{snapshot: state})
+	loaded, _ := model.Update(stateLoadedMsg{state: state})
+	shell := loaded.(Model)
+
+	draft := shell.currentDraftForRole(domain.RoleFinanceController)
+	if got := draft.form.Values["procurement_budget"].Scalar; got != "21" {
+		t.Fatalf("procurement budget default = %q, want 21", got)
+	}
+	if got := draft.form.Values["production_spend_budget"].Scalar; got != "17" {
+		t.Fatalf("production budget default = %q, want 17", got)
+	}
+	if got := draft.form.Values["revenue_target"].Scalar; got != "33" {
+		t.Fatalf("revenue target default = %q, want 33", got)
+	}
+	if got := draft.form.Values["cash_floor_target"].Scalar; got != "9" {
+		t.Fatalf("cash floor default = %q, want 9", got)
+	}
+	if got := draft.form.Values["debt_ceiling_target"].Scalar; got != "14" {
+		t.Fatalf("debt ceiling default = %q, want 14", got)
+	}
+	if got := draft.form.Values["commentary"].Scalar; got != "Hold the same target posture for one more round." {
+		t.Fatalf("commentary default = %q, want previous commentary", got)
+	}
+}
+
 func TestStructuredProductionActionEntryBuildsNormalizedSubmission(t *testing.T) {
 	assignments := []domain.RoleAssignment{
 		{RoleID: domain.RoleProcurementManager, PlayerID: "procurement-player", IsHuman: false},
@@ -830,7 +919,7 @@ func TestCommandBarHintsFollowFocusedPane(t *testing.T) {
 
 	shell.focusedPane = paneHistory
 	historyView := shell.View()
-	if !strings.Contains(historyView, "center workspace: up/down") || !strings.Contains(historyView, "move fields or rows, left/right move columns, a add row, x remove row") {
+	if !strings.Contains(historyView, "center workspace: up/down") || !strings.Contains(historyView, "move fields or table rows, left/right move table columns, a add row, x remove row") {
 		t.Fatalf("history hint missing action-entry controls\n%s", historyView)
 	}
 

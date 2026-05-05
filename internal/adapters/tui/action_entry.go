@@ -247,7 +247,7 @@ func (m Model) renderActionEntryWorkspace(width int) []string {
 	lines = append(lines,
 		"",
 		"Editing flow",
-		"Use up/down to move between fields or rows, left/right to move across structured columns, enter to edit or cycle, a to add rows, x to remove rows, esc to cancel text edits, and r to review.",
+		"Use up/down to move between fields or table rows, left/right to move across table columns, enter to edit or cycle, a to add rows, x to remove rows, esc to cancel text edits, and r to review.",
 	)
 	for index, field := range draft.form.Schema.Fields {
 		fieldCursor := " "
@@ -260,14 +260,10 @@ func (m Model) renderActionEntryWorkspace(width int) []string {
 			lines = append(lines, wrapLine("  "+m.renderScalarFieldValue(draft, field), paneTextWidth(width)))
 			continue
 		}
-		rows := draft.form.Values[field.ID].Rows
-		if len(rows) == 0 {
-			lines = append(lines, wrapLine("  "+field.Collection.EmptyText+" Press a to add a row.", paneTextWidth(width)))
-			continue
-		}
-		for rowIndex := range rows {
-			lines = append(lines, wrapLine("  "+m.renderCollectionRow(draft, field, rowIndex), paneTextWidth(width)))
-		}
+		lines = append(lines, wrapLine("  "+draft.form.currentCollectionSummary(field), paneTextWidth(width)))
+		active := index == draft.form.FieldIndex
+		lines = append(lines, draft.form.renderedCollectionTable(field, paneTextWidth(width), active))
+		lines = append(lines, "")
 	}
 
 	return append(lines, m.renderDraftStatus(width, draft)...)
@@ -279,30 +275,6 @@ func (m Model) renderScalarFieldValue(draft actionDraft, field actionschema.Fiel
 		value = field.Placeholder
 	}
 	return value
-}
-
-func (m Model) renderCollectionRow(draft actionDraft, field actionschema.FieldSpec, rowIndex int) string {
-	cursor := " "
-	if draft.form.FieldIndex < len(draft.form.Schema.Fields) &&
-		draft.form.Schema.Fields[draft.form.FieldIndex].ID == field.ID &&
-		draft.form.RowIndex == rowIndex {
-		cursor = ">"
-	}
-
-	parts := make([]string, 0, len(field.Collection.Columns))
-	for columnIndex, column := range field.Collection.Columns {
-		value := draft.form.displayCell(field, rowIndex, column)
-		prefix := column.Label + "="
-		if draft.form.FieldIndex < len(draft.form.Schema.Fields) &&
-			draft.form.Schema.Fields[draft.form.FieldIndex].ID == field.ID &&
-			draft.form.RowIndex == rowIndex &&
-			draft.form.ColumnIndex == columnIndex {
-			parts = append(parts, "["+prefix+value+"]")
-			continue
-		}
-		parts = append(parts, prefix+value)
-	}
-	return fmt.Sprintf("%s Row %d: %s", cursor, rowIndex+1, strings.Join(parts, " | "))
 }
 
 func (m Model) renderDraftStatus(width int, draft actionDraft) []string {
@@ -476,6 +448,10 @@ func (m Model) currentDraftForRole(roleID domain.RoleID) actionDraft {
 	draft = actionDraft{
 		form: newActionFormModel(schema),
 	}
+	if previous := m.previousAcceptedAction(roleID); previous != nil {
+		seedDraftFromSubmission(&draft.form, *previous)
+		return draft
+	}
 	if roleID == domain.RoleFinanceController {
 		view := projection.BuildRoundView(m.state, roleID)
 		targets := view.ActiveTargets
@@ -509,6 +485,81 @@ func (m Model) previousAcceptedAction(roleID domain.RoleID) *domain.ActionSubmis
 func summarizeSubmission(submission domain.ActionSubmission) []string {
 	lines := summarizeAction(submission.Action)
 	return append(lines, "Commentary: "+submission.Commentary.Body)
+}
+
+func seedDraftFromSubmission(form *actionFormModel, submission domain.ActionSubmission) {
+	if form == nil {
+		return
+	}
+
+	if action := submission.Action.Procurement; action != nil {
+		rows := make([]map[string]string, 0, len(action.Orders))
+		for _, order := range action.Orders {
+			rows = append(rows, map[string]string{
+				"part_id":     string(order.PartID),
+				"supplier_id": string(order.SupplierID),
+				"quantity":    strconv.Itoa(int(order.Quantity)),
+			})
+		}
+		form.Values["orders"] = formFieldValue{Rows: rows}
+		form.syncTable("orders")
+	}
+
+	if action := submission.Action.Production; action != nil {
+		releases := make([]map[string]string, 0, len(action.Releases))
+		for _, release := range action.Releases {
+			releases = append(releases, map[string]string{
+				"product_id": string(release.ProductID),
+				"quantity":   strconv.Itoa(int(release.Quantity)),
+			})
+		}
+		form.Values["releases"] = formFieldValue{Rows: releases}
+		form.syncTable("releases")
+
+		allocations := make([]map[string]string, 0, len(action.CapacityAllocation))
+		for _, allocation := range action.CapacityAllocation {
+			allocations = append(allocations, map[string]string{
+				"workstation_id": string(allocation.WorkstationID),
+				"product_id":     string(allocation.ProductID),
+				"capacity":       strconv.Itoa(int(allocation.Capacity)),
+			})
+		}
+		form.Values["capacity_allocation"] = formFieldValue{Rows: allocations}
+		form.syncTable("capacity_allocation")
+
+		overtime := make([]map[string]string, 0, len(action.Overtime))
+		for _, allocation := range action.Overtime {
+			overtime = append(overtime, map[string]string{
+				"workstation_id": string(allocation.WorkstationID),
+				"capacity":       strconv.Itoa(int(allocation.Capacity)),
+			})
+		}
+		form.Values["overtime"] = formFieldValue{Rows: overtime}
+		form.syncTable("overtime")
+	}
+
+	if action := submission.Action.Sales; action != nil {
+		rows := make([]map[string]string, 0, len(action.ProductOffers))
+		for _, offer := range action.ProductOffers {
+			rows = append(rows, map[string]string{
+				"product_id": string(offer.ProductID),
+				"unit_price": strconv.Itoa(int(offer.UnitPrice)),
+			})
+		}
+		form.Values["product_offers"] = formFieldValue{Rows: rows}
+		form.syncTable("product_offers")
+	}
+
+	if action := submission.Action.Finance; action != nil {
+		targets := action.NextRoundTargets
+		form.Values["procurement_budget"] = formFieldValue{Scalar: strconv.Itoa(int(targets.ProcurementBudget))}
+		form.Values["production_spend_budget"] = formFieldValue{Scalar: strconv.Itoa(int(targets.ProductionSpendBudget))}
+		form.Values["revenue_target"] = formFieldValue{Scalar: strconv.Itoa(int(targets.RevenueTarget))}
+		form.Values["cash_floor_target"] = formFieldValue{Scalar: strconv.Itoa(int(targets.CashFloorTarget))}
+		form.Values["debt_ceiling_target"] = formFieldValue{Scalar: strconv.Itoa(int(targets.DebtCeilingTarget))}
+	}
+
+	form.Values["commentary"] = formFieldValue{Scalar: submission.Commentary.Body}
 }
 
 func (m Model) renderReviewComparisons(width int, roleID domain.RoleID, draft actionDraft) []string {

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/jpconstantineau/herbiego/internal/actionschema"
@@ -108,5 +109,61 @@ func TestActionFormModelRendersEditCursorForScalarAndCollectionValues(t *testing
 	model.TypeRunes("12")
 	if got := model.displayCell(model.Schema.Fields[1], 0, model.Schema.Fields[1].Collection.Columns[0]); got != "12|" {
 		t.Fatalf("displayCell() = %q, want cursor suffix", got)
+	}
+}
+
+func TestActionFormModelRendersAllRowsInThreeRowCollectionTable(t *testing.T) {
+	model := newActionFormModel(actionschema.RoleSchema{
+		RoleID: domain.RoleProductionManager,
+		Fields: []actionschema.FieldSpec{
+			{
+				ID:    "releases",
+				Label: "Releases",
+				Collection: &actionschema.CollectionSpec{
+					Columns: []actionschema.ColumnSpec{
+						{
+							ID:       "product_id",
+							Label:    "Product",
+							Kind:     actionschema.ValueKindChoice,
+							Required: true,
+							Options: actionschema.OptionSource{Static: []actionschema.Option{
+								{Value: "pump", Label: "Pump"},
+								{Value: "valve", Label: "Valve"},
+							}},
+						},
+						{ID: "quantity", Label: "Quantity", Kind: actionschema.ValueKindInteger, Required: true, Placeholder: "0"},
+					},
+				},
+			},
+		},
+	})
+
+	model.AddRow()
+	model.CycleChoice(1)
+	model.MoveRight()
+	model.BeginEdit()
+	model.TypeRunes("34")
+	model.CommitEdit()
+
+	model.AddRow()
+	model.CycleChoice(1)
+	model.CycleChoice(1)
+	model.MoveRight()
+	model.BeginEdit()
+	model.TypeRunes("23")
+	model.CommitEdit()
+
+	model.AddRow()
+	model.CycleChoice(1)
+	model.MoveRight()
+	model.BeginEdit()
+	model.TypeRunes("11")
+	model.CommitEdit()
+
+	view := model.renderedCollectionTable(model.Schema.Fields[0], 80, true)
+	for _, want := range []string{"Pump", "34", "Valve", "23", "11"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("table view missing %q\n%s", want, view)
+		}
 	}
 }

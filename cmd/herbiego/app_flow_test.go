@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -57,6 +59,35 @@ func TestAppShellRoutesStartNewGameIntoGameplay(t *testing.T) {
 	}
 }
 
+func TestAppShellAppliesExistingWindowSizeWhenEnteringGameplay(t *testing.T) {
+	runtime, err := app.NewRuntime(testMenuConfig())
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+
+	model, err := newAppShellModel(context.Background(), runtime, domain.MatchState{}, false, nil, 1, false)
+	if err != nil {
+		t.Fatalf("newAppShellModel() error = %v", err)
+	}
+
+	model.screen = screenMenu
+	model.menu = newStartMenuModel(model.menuConfig, model.menuState)
+
+	next, _ := model.Update(tea.WindowSizeMsg{Width: 180, Height: 50})
+	model = unwrapShellModel(t, next)
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = unwrapShellModel(t, next)
+
+	if model.screen != screenGameplay || model.gameplay == nil {
+		t.Fatalf("screen = %v, gameplay = %#v, want gameplay screen", model.screen, model.gameplay)
+	}
+
+	debugView := fmt.Sprintf("%#v", model.gameplay.model)
+	if !containsAll(debugView, "width:180", "height:50") {
+		t.Fatalf("gameplay model dimensions were not carried into the embedded shell:\n%s", debugView)
+	}
+}
+
 func unwrapShellModel(t *testing.T, model tea.Model) appShellModel {
 	t.Helper()
 
@@ -69,6 +100,15 @@ func unwrapShellModel(t *testing.T, model tea.Model) appShellModel {
 		t.Fatalf("unexpected shell model type %T", model)
 		return appShellModel{}
 	}
+}
+
+func containsAll(text string, parts ...string) bool {
+	for _, part := range parts {
+		if !strings.Contains(text, part) {
+			return false
+		}
+	}
+	return true
 }
 
 func TestRuntimeConfigFromMenuFiltersRolesToScenarioRoster(t *testing.T) {
