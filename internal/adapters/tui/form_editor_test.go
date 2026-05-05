@@ -8,7 +8,7 @@ import (
 	"github.com/jpconstantineau/herbiego/internal/domain"
 )
 
-func TestActionFormModelSupportsCollectionNavigationAndChoiceCycling(t *testing.T) {
+func TestActionFormModelSupportsSpreadsheetNavigationAndChoiceEditing(t *testing.T) {
 	model := newActionFormModel(actionschema.RoleSchema{
 		RoleID: domain.RoleProcurementManager,
 		Fields: []actionschema.FieldSpec{
@@ -45,11 +45,20 @@ func TestActionFormModelSupportsCollectionNavigationAndChoiceCycling(t *testing.
 		t.Fatalf("len(rows) = %d, want 1", got)
 	}
 
-	if !model.CycleChoice(1) {
-		t.Fatalf("CycleChoice(1) = false, want true")
+	if !model.BeginEdit() {
+		t.Fatalf("BeginEdit() for choice = false, want true")
+	}
+	if !model.Editing {
+		t.Fatalf("Editing = false, want true")
+	}
+	if got := model.InputBuffer; got != "housing" {
+		t.Fatalf("InputBuffer = %q, want housing", got)
+	}
+	if !model.CommitEdit() {
+		t.Fatalf("CommitEdit() for choice = false, want true")
 	}
 	if got := model.Values["orders"].Rows[0]["part_id"]; got != "housing" {
-		t.Fatalf("part_id after cycle = %q, want housing", got)
+		t.Fatalf("part_id after commit = %q, want housing", got)
 	}
 
 	model.MoveRight()
@@ -72,6 +81,51 @@ func TestActionFormModelSupportsCollectionNavigationAndChoiceCycling(t *testing.
 	model.MoveDown()
 	if got := model.FieldIndex; got != 1 {
 		t.Fatalf("FieldIndex = %d, want 1", got)
+	}
+}
+
+func TestActionFormModelChoiceEditingCyclesWithoutLeavingCell(t *testing.T) {
+	model := newActionFormModel(actionschema.RoleSchema{
+		RoleID: domain.RoleProcurementManager,
+		Fields: []actionschema.FieldSpec{
+			{
+				ID:    "orders",
+				Label: "Orders",
+				Collection: &actionschema.CollectionSpec{
+					Columns: []actionschema.ColumnSpec{
+						{
+							ID:    "part_id",
+							Label: "Part",
+							Kind:  actionschema.ValueKindChoice,
+							Options: actionschema.OptionSource{Static: []actionschema.Option{
+								{Value: "housing", Label: "Housing"},
+								{Value: "seal_kit", Label: "Seal Kit"},
+							}},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	model.AddRow()
+	if !model.BeginEdit() {
+		t.Fatalf("BeginEdit() = false, want true")
+	}
+	if !model.CycleEditingChoice(1) {
+		t.Fatalf("CycleEditingChoice(1) = false, want true")
+	}
+	if got := model.InputBuffer; got != "seal_kit" {
+		t.Fatalf("InputBuffer = %q, want seal_kit", got)
+	}
+	if got := model.ColumnIndex; got != 0 {
+		t.Fatalf("ColumnIndex = %d, want 0", got)
+	}
+	if !model.CommitEdit() {
+		t.Fatalf("CommitEdit() = false, want true")
+	}
+	if got := model.Values["orders"].Rows[0]["part_id"]; got != "seal_kit" {
+		t.Fatalf("part_id = %q, want seal_kit", got)
 	}
 }
 
@@ -139,22 +193,25 @@ func TestActionFormModelRendersAllRowsInThreeRowCollectionTable(t *testing.T) {
 	})
 
 	model.AddRow()
-	model.CycleChoice(1)
+	model.BeginEdit()
+	model.CommitEdit()
 	model.MoveRight()
 	model.BeginEdit()
 	model.TypeRunes("34")
 	model.CommitEdit()
 
 	model.AddRow()
-	model.CycleChoice(1)
-	model.CycleChoice(1)
+	model.BeginEdit()
+	model.CycleEditingChoice(1)
+	model.CommitEdit()
 	model.MoveRight()
 	model.BeginEdit()
 	model.TypeRunes("23")
 	model.CommitEdit()
 
 	model.AddRow()
-	model.CycleChoice(1)
+	model.BeginEdit()
+	model.CommitEdit()
 	model.MoveRight()
 	model.BeginEdit()
 	model.TypeRunes("11")

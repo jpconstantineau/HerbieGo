@@ -692,23 +692,23 @@ func TestStructuredProductionActionEntryBuildsNormalizedSubmission(t *testing.T)
 	for _, key := range []tea.KeyMsg{
 		{Type: tea.KeyRunes, Runes: []rune{'a'}},
 		{Type: tea.KeyEnter},
-		{Type: tea.KeyRunes, Runes: []rune{'l'}},
+		{Type: tea.KeyEnter},
 		{Type: tea.KeyEnter},
 		{Type: tea.KeyRunes, Runes: []rune("2")},
 		{Type: tea.KeyEnter},
 		{Type: tea.KeyDown},
 		{Type: tea.KeyRunes, Runes: []rune{'a'}},
 		{Type: tea.KeyEnter},
-		{Type: tea.KeyRunes, Runes: []rune{'l'}},
 		{Type: tea.KeyEnter},
-		{Type: tea.KeyRunes, Runes: []rune{'l'}},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyEnter},
 		{Type: tea.KeyEnter},
 		{Type: tea.KeyRunes, Runes: []rune("2")},
 		{Type: tea.KeyEnter},
 		{Type: tea.KeyDown},
 		{Type: tea.KeyRunes, Runes: []rune{'a'}},
 		{Type: tea.KeyEnter},
-		{Type: tea.KeyRunes, Runes: []rune{'l'}},
+		{Type: tea.KeyEnter},
 		{Type: tea.KeyEnter},
 		{Type: tea.KeyRunes, Runes: []rune("1")},
 		{Type: tea.KeyEnter},
@@ -1540,17 +1540,32 @@ func twoDigit(value int) string {
 }
 
 func submitProcurementDraft(model Model, commentary string) Model {
+	clearExistingCommentary := func(model Model) Model {
+		existing := model.currentDraft().form.Values["commentary"].Scalar
+		for range existing {
+			next, _ := model.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+			model = next.(Model)
+		}
+		return model
+	}
+
 	for _, key := range []tea.KeyMsg{
 		{Type: tea.KeyRunes, Runes: []rune{'a'}},
 		{Type: tea.KeyEnter},
-		{Type: tea.KeyRunes, Runes: []rune{'l'}},
 		{Type: tea.KeyEnter},
-		{Type: tea.KeyRunes, Runes: []rune{'l'}},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyEnter},
 		{Type: tea.KeyEnter},
 		{Type: tea.KeyRunes, Runes: []rune("2")},
 		{Type: tea.KeyEnter},
 		{Type: tea.KeyDown},
 		{Type: tea.KeyEnter},
+	} {
+		next, _ := model.Update(key)
+		model = next.(Model)
+	}
+	model = clearExistingCommentary(model)
+	for _, key := range []tea.KeyMsg{
 		{Type: tea.KeyRunes, Runes: []rune(commentary)},
 		{Type: tea.KeyEnter},
 		{Type: tea.KeyRunes, Runes: []rune{'r'}},
@@ -1563,17 +1578,32 @@ func submitProcurementDraft(model Model, commentary string) Model {
 }
 
 func reviewProcurementDraft(model Model, commentary string) Model {
+	clearExistingCommentary := func(model Model) Model {
+		existing := model.currentDraft().form.Values["commentary"].Scalar
+		for range existing {
+			next, _ := model.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+			model = next.(Model)
+		}
+		return model
+	}
+
 	for _, key := range []tea.KeyMsg{
 		{Type: tea.KeyRunes, Runes: []rune{'a'}},
 		{Type: tea.KeyEnter},
-		{Type: tea.KeyRunes, Runes: []rune{'l'}},
 		{Type: tea.KeyEnter},
-		{Type: tea.KeyRunes, Runes: []rune{'l'}},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyEnter},
 		{Type: tea.KeyEnter},
 		{Type: tea.KeyRunes, Runes: []rune("2")},
 		{Type: tea.KeyEnter},
 		{Type: tea.KeyDown},
 		{Type: tea.KeyEnter},
+	} {
+		next, _ := model.Update(key)
+		model = next.(Model)
+	}
+	model = clearExistingCommentary(model)
+	for _, key := range []tea.KeyMsg{
 		{Type: tea.KeyRunes, Runes: []rune(commentary)},
 		{Type: tea.KeyEnter},
 		{Type: tea.KeyRunes, Runes: []rune{'r'}},
@@ -1588,7 +1618,7 @@ func submitSalesDraft(model Model, commentary string) Model {
 	for _, key := range []tea.KeyMsg{
 		{Type: tea.KeyRunes, Runes: []rune{'a'}},
 		{Type: tea.KeyEnter},
-		{Type: tea.KeyRunes, Runes: []rune{'l'}},
+		{Type: tea.KeyEnter},
 		{Type: tea.KeyEnter},
 		{Type: tea.KeyRunes, Runes: []rune("14")},
 		{Type: tea.KeyEnter},
