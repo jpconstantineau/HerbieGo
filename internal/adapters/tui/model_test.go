@@ -680,6 +680,50 @@ func TestStructuredSalesActionEntryBuildsNormalizedSubmission(t *testing.T) {
 	}
 }
 
+func TestReviewStepShowsComparisonsAndExpectedGuidance(t *testing.T) {
+	state := scenario.Starter().InitialState("starter-match", starterAssignments())
+	state.History.RecentRounds = []domain.RoundRecord{
+		{
+			Round: 1,
+			Actions: []domain.ActionSubmission{
+				{
+					RoleID: domain.RoleProcurementManager,
+					Action: domain.RoleAction{
+						Procurement: &domain.ProcurementAction{
+							Orders: []domain.PurchaseOrderIntent{{PartID: "housing", SupplierID: "forgeco", Quantity: 1}},
+						},
+					},
+					Commentary: domain.CommentaryRecord{Body: "Bought just enough to protect the pump backlog."},
+				},
+			},
+			Metrics: domain.PlantMetrics{RoundProfit: 7},
+		},
+	}
+	model := NewModel(scenario.Starter(), testStateSource{snapshot: state})
+	loaded, _ := model.Update(stateLoadedMsg{state: state})
+	shell := loaded.(Model)
+	shell.focusedPane = paneHistory
+
+	shell = reviewProcurementDraft(shell, "Checking backlog-driven replenishment against current stock.")
+	shell.width = 120
+	shell.height = 36
+	view := shell.View()
+
+	for _, want := range []string{
+		"Review draft",
+		"Decision support",
+		"Compare with past orders",
+		"Order 1 of housing from forgeco",
+		"Past performance",
+		"Expected guidance",
+		"Current backlog, BOM, inventory, and inbound supply",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("review view missing %q\n%s", want, view)
+		}
+	}
+}
+
 func TestModelResubscribesToStateUpdates(t *testing.T) {
 	updates := make(chan domain.MatchState, 1)
 	model := NewModel(scenario.Starter(), testStateSource{
@@ -1422,6 +1466,28 @@ func submitProcurementDraft(model Model, commentary string) Model {
 		{Type: tea.KeyEnter},
 		{Type: tea.KeyRunes, Runes: []rune{'r'}},
 		{Type: tea.KeyRunes, Runes: []rune{'s'}},
+	} {
+		next, _ := model.Update(key)
+		model = next.(Model)
+	}
+	return model
+}
+
+func reviewProcurementDraft(model Model, commentary string) Model {
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune{'a'}},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune{'l'}},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune{'l'}},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune("2")},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyDown},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune(commentary)},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune{'r'}},
 	} {
 		next, _ := model.Update(key)
 		model = next.(Model)

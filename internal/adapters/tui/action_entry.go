@@ -214,6 +214,7 @@ func (m Model) renderActionEntryWorkspace(width int) []string {
 				lines = append(lines, wrapLine("- "+line, paneTextWidth(width)))
 			}
 		}
+		lines = append(lines, m.renderReviewComparisons(width, assignment.RoleID, draft)...)
 		return append(lines, m.renderDraftStatus(width, draft)...)
 	}
 
@@ -508,6 +509,192 @@ func (m Model) previousAcceptedAction(roleID domain.RoleID) *domain.ActionSubmis
 func summarizeSubmission(submission domain.ActionSubmission) []string {
 	lines := summarizeAction(submission.Action)
 	return append(lines, "Commentary: "+submission.Commentary.Body)
+}
+
+func (m Model) renderReviewComparisons(width int, roleID domain.RoleID, draft actionDraft) []string {
+	lines := []string{"", "Decision support"}
+
+	lines = append(lines, "Compare with past orders")
+	if previous := m.previousAcceptedAction(roleID); previous != nil {
+		for _, line := range summarizeAction(previous.Action) {
+			lines = append(lines, wrapLine("- "+line, paneTextWidth(width)))
+		}
+	} else {
+		lines = append(lines, "No prior accepted action is available for this role.")
+	}
+
+	lines = append(lines, "", "Past performance")
+	for _, line := range m.reviewPerformanceHighlights() {
+		lines = append(lines, wrapLine("- "+line, paneTextWidth(width)))
+	}
+
+	lines = append(lines, "", "Expected guidance")
+	for _, line := range m.expectedGuidance(roleID, draft) {
+		lines = append(lines, wrapLine("- "+line, paneTextWidth(width)))
+	}
+
+	return lines
+}
+
+func (m Model) reviewPerformanceHighlights() []string {
+	report := m.selectedRoleReport()
+	var lines []string
+	for _, section := range report.Department.Sections {
+		for _, metric := range section.Metrics {
+			lines = append(lines, fmt.Sprintf("%s: %d %s", metric.Label, metric.Metric.Value, metric.Metric.DisplayUnit))
+			if len(lines) == 3 {
+				return lines
+			}
+		}
+		for _, warning := range section.Warnings {
+			lines = append(lines, warning.Headline)
+			if len(lines) == 3 {
+				return lines
+			}
+		}
+	}
+	if len(lines) == 0 {
+		lines = append(lines, "No role-specific performance highlights are available yet.")
+	}
+	return lines
+}
+
+func (m Model) expectedGuidance(roleID domain.RoleID, draft actionDraft) []string {
+	switch roleID {
+	case domain.RoleProcurementManager:
+		return m.expectedProcurementGuidance(draft)
+	case domain.RoleProductionManager:
+		return m.expectedProductionGuidance(draft)
+	case domain.RoleSalesManager:
+		return m.expectedSalesGuidance(draft)
+	case domain.RoleFinanceController:
+		return m.expectedFinanceGuidance(draft)
+	default:
+		return []string{"No expected guidance is configured for this role."}
+	}
+}
+
+func (m Model) expectedProcurementGuidance(_ actionDraft) []string {
+	backlogDemand := make(map[domain.ProductID]int)
+	for _, entry := range m.state.Plant.Backlog {
+		backlogDemand[entry.ProductID] += int(entry.Quantity)
+	}
+
+	finishedByProduct := make(map[domain.ProductID]int)
+	for _, item := range m.state.Plant.FinishedInventory {
+		finishedByProduct[item.ProductID] += int(item.OnHandQty)
+	}
+
+	inTransitByPart := make(map[domain.PartID]int)
+	for _, item := range m.state.Plant.InTransitSupply {
+		inTransitByPart[item.PartID] += int(item.Quantity)
+	}
+
+	partsOnHand := make(map[domain.PartID]int)
+	for _, item := range m.state.Plant.PartsInventory {
+		partsOnHand[item.PartID] += int(item.OnHandQty)
+	}
+
+	requiredByPart := make(map[domain.PartID]int)
+	for _, product := range m.scenario.Products() {
+		gap := backlogDemand[product.ID] - finishedByProduct[product.ID]
+		if gap <= 0 {
+			continue
+		}
+		for _, line := range product.BOM {
+			requiredByPart[line.PartID] += gap * int(line.Quantity)
+		}
+	}
+
+	var lines []string
+	for _, part := range m.scenario.Parts() {
+		expected := requiredByPart[part.ID] - partsOnHand[part.ID] - inTransitByPart[part.ID]
+		if expected <= 0 {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("Expected %s order is roughly %d based on backlog demand, BOM coverage, on-hand parts, and inbound supply.", part.ID, expected))
+	}
+	if len(lines) == 0 {
+		lines = append(lines, "Current backlog, BOM, inventory, and inbound supply do not point to an urgent additional part order.")
+	}
+	return lines
+}
+
+func (m Model) expectedProductionGuidance(_ actionDraft) []string {
+	backlogByProduct := make(map[domain.ProductID]int)
+	for _, entry := range m.state.Plant.Backlog {
+		backlogByProduct[entry.ProductID] += int(entry.Quantity)
+	}
+	finishedByProduct := make(map[domain.ProductID]int)
+	for _, item := range m.state.Plant.FinishedInventory {
+		finishedByProduct[item.ProductID] += int(item.OnHandQty)
+	}
+	wipByProduct := make(map[domain.ProductID]int)
+	for _, item := range m.state.Plant.WIPInventory {
+		wipByProduct[item.ProductID] += int(item.Quantity)
+	}
+
+	var lines []string
+	for _, product := range m.scenario.Products() {
+		gap := backlogByProduct[product.ID] - finishedByProduct[product.ID] - wipByProduct[product.ID]
+		if gap <= 0 {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("Expected %s release is roughly %d based on backlog pressure minus finished goods and WIP already in the line.", product.ID, gap))
+	}
+	if len(lines) == 0 {
+		lines = append(lines, "Backlog pressure does not currently justify more release beyond existing finished goods and WIP.")
+	}
+	return lines
+}
+
+func (m Model) expectedSalesGuidance(_ actionDraft) []string {
+	backlogByProduct := make(map[domain.ProductID]int)
+	for _, entry := range m.state.Plant.Backlog {
+		backlogByProduct[entry.ProductID] += int(entry.Quantity)
+	}
+	finishedByProduct := make(map[domain.ProductID]int)
+	for _, item := range m.state.Plant.FinishedInventory {
+		finishedByProduct[item.ProductID] += int(item.OnHandQty)
+	}
+
+	var lines []string
+	for _, product := range m.scenario.Products() {
+		gap := backlogByProduct[product.ID] - finishedByProduct[product.ID]
+		if gap > 0 {
+			lines = append(lines, fmt.Sprintf("%s demand already exceeds finished-goods coverage by %d unit(s); avoid aggressive demand expansion until operations catch up.", product.ID, gap))
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("%s has finished-goods coverage against visible backlog, so measured demand expansion is supportable if service remains stable.", product.ID))
+	}
+	if len(lines) == 0 {
+		lines = append(lines, "No sales guidance is available because no visible product demand is loaded.")
+	}
+	return lines
+}
+
+func (m Model) expectedFinanceGuidance(_ actionDraft) []string {
+	nextRoundCashPressure := sumCommitmentAmount(m.state.Plant.Payables) - sumCommitmentAmount(m.state.Plant.Receivables)
+	lines := []string{
+		fmt.Sprintf("Current targets already anchor procurement at %d and production at %d for next round.", m.state.ActiveTargets.ProcurementBudget, m.state.ActiveTargets.ProductionSpendBudget),
+	}
+	if nextRoundCashPressure > 0 {
+		lines = append(lines, fmt.Sprintf("Visible commitments are net cash-negative by %d, so budget tightening deserves consideration.", nextRoundCashPressure))
+	} else {
+		lines = append(lines, "Visible commitments are not net cash-negative, so holding current targets is defensible if throughput needs support.")
+	}
+	if m.state.Plant.Debt >= m.state.Plant.DebtCeiling {
+		lines = append(lines, "Debt is already at or above the configured ceiling, so any growth posture needs explicit liquidity justification.")
+	}
+	return lines
+}
+
+func sumCommitmentAmount(items []domain.CashCommitment) int {
+	total := 0
+	for _, item := range items {
+		total += int(item.Amount)
+	}
+	return total
 }
 
 func parseOrderRows(rows []map[string]string) ([]domain.PurchaseOrderIntent, error) {
