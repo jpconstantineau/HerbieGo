@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/jpconstantineau/herbiego/internal/actionschema"
 	"github.com/jpconstantineau/herbiego/internal/domain"
 	"github.com/jpconstantineau/herbiego/internal/ports"
 	"github.com/jpconstantineau/herbiego/internal/prompting"
@@ -57,10 +58,10 @@ func (o AIOrchestrator) BuildRequest(request ports.RoundRequest) ports.AIDecisio
 		RoleID:         request.Assignment.RoleID,
 		Provider:       request.Assignment.Provider,
 		Model:          request.Assignment.ModelName,
-		Briefing:       roleBriefing(request.Assignment.RoleID),
+		Briefing:       roleBriefing(o.Scenario, request.Assignment.RoleID),
 		RoundView:      request.RoleView.Clone(),
 		RoleReport:     request.RoleReport.Clone(),
-		AllowedActions: allowedActionSchema(request.Assignment.RoleID),
+		AllowedActions: allowedActionSchema(o.Scenario, request.Assignment.RoleID),
 		Tools:          lookupTools(),
 		ResponseSpec: ports.ResponseFormatSpec{
 			RequireJSONOnly:     true,
@@ -559,7 +560,8 @@ func safeNoOpAction(roleID domain.RoleID, targets domain.BudgetTargets) domain.R
 	}
 }
 
-func roleBriefing(roleID domain.RoleID) ports.RoleBriefing {
+func roleBriefing(definition scenario.Definition, roleID domain.RoleID) ports.RoleBriefing {
+	schema := actionschema.Build(definition, roleID, domain.RoundView{})
 	switch roleID {
 	case domain.RoleProcurementManager:
 		return ports.RoleBriefing{
@@ -568,7 +570,7 @@ func roleBriefing(roleID domain.RoleID) ports.RoleBriefing {
 			PublicResponsibilities: []string{"Secure materials required for operations.", "Control input cost.", "Protect the plant from shortages.", "Build reliable supplier coverage."},
 			HiddenIncentives:       []string{"Favor bulk buys and lower unit prices even when inventory and cash risk rise."},
 			DecisionPrinciples:     []string{"Protect supply continuity for bottleneck flow.", "Avoid buying material the plant cannot use soon.", "Stay aware of active budget targets and plant cash."},
-			AllowedActionSummary:   []string{"Return only procurement orders.", "Each order needs part_id, supplier_id, and quantity.", "Use an empty orders list for a deliberate no-op."},
+			AllowedActionSummary:   slices.Clone(schema.AllowedSummary),
 		}
 	case domain.RoleProductionManager:
 		return ports.RoleBriefing{
@@ -577,7 +579,7 @@ func roleBriefing(roleID domain.RoleID) ports.RoleBriefing {
 			PublicResponsibilities: []string{"Maximize production output.", "Keep machines and labor utilized.", "Manage work-in-progress through the shop floor.", "Meet production commitments."},
 			HiddenIncentives:       []string{"Keep resources busy and local output high even when WIP or bottlenecks worsen."},
 			DecisionPrinciples:     []string{"Favor plant throughput over local utilization theater.", "Release only work that can move through the route.", "Keep WIP under control at the bottleneck."},
-			AllowedActionSummary:   []string{"Return production releases, capacity allocations, and optional overtime allocations.", "Each release needs product_id and quantity.", "Each capacity allocation needs workstation_id, product_id, and capacity.", "Each overtime allocation needs workstation_id and capacity; omit overtime entirely if not needed."},
+			AllowedActionSummary:   slices.Clone(schema.AllowedSummary),
 		}
 	case domain.RoleSalesManager:
 		return ports.RoleBriefing{
@@ -586,7 +588,7 @@ func roleBriefing(roleID domain.RoleID) ports.RoleBriefing {
 			PublicResponsibilities: []string{"Grow revenue.", "Capture demand.", "Maintain customer relationships.", "Push the plant toward market opportunity."},
 			HiddenIncentives:       []string{"Favor booked demand and strong promises even when capacity or delivery reliability suffer."},
 			DecisionPrinciples:     []string{"Protect profitable throughput, not just order count.", "Consider backlog and delivery risk before chasing demand.", "Set prices that fit current operational reality."},
-			AllowedActionSummary:   []string{"Return only product offers.", "Each offer needs product_id and unit_price.", "Use an empty product_offers list for a deliberate no-op."},
+			AllowedActionSummary:   slices.Clone(schema.AllowedSummary),
 		}
 	case domain.RoleFinanceController:
 		return ports.RoleBriefing{
@@ -595,45 +597,20 @@ func roleBriefing(roleID domain.RoleID) ports.RoleBriefing {
 			PublicResponsibilities: []string{"Monitor cash, cost, and financial performance.", "Highlight waste and overspending.", "Protect the business from financially dangerous decisions.", "Provide visibility into profit drivers."},
 			HiddenIncentives:       []string{"Favor short-term cost discipline even when it can damage throughput or resilience."},
 			DecisionPrinciples:     []string{"Preserve liquidity without starving profitable flow.", "Set next-round targets that balance cash, debt, and throughput.", "Treat cost cuts that harm throughput as risky."},
-			AllowedActionSummary:   []string{"Return only finance next_round_targets.", "Provide the full next_round_targets object.", "A safe no-op repeats the currently active targets."},
+			AllowedActionSummary:   slices.Clone(schema.AllowedSummary),
 		}
 	default:
 		return ports.RoleBriefing{RoleID: roleID, DisplayName: string(roleID)}
 	}
 }
 
-func allowedActionSchema(roleID domain.RoleID) ports.AllowedActionSchema {
-	switch roleID {
-	case domain.RoleProcurementManager:
-		return ports.AllowedActionSchema{
-			RoleID:         roleID,
-			RequiredAction: "procurement",
-			JSONSchemaName: "ProcurementAction",
-			Rules:          []string{"Populate only action.procurement.", "orders entries require part_id, supplier_id, and quantity.", "quantity must be non-negative."},
-		}
-	case domain.RoleProductionManager:
-		return ports.AllowedActionSchema{
-			RoleID:         roleID,
-			RequiredAction: "production",
-			JSONSchemaName: "ProductionAction",
-			Rules:          []string{"Populate only action.production.", "releases entries require product_id and quantity.", "capacity_allocation entries require workstation_id, product_id, and capacity.", "overtime entries are optional; each requires workstation_id and capacity.", "quantities and capacity must be non-negative."},
-		}
-	case domain.RoleSalesManager:
-		return ports.AllowedActionSchema{
-			RoleID:         roleID,
-			RequiredAction: "sales",
-			JSONSchemaName: "SalesAction",
-			Rules:          []string{"Populate only action.sales.", "product_offers entries require product_id and unit_price.", "unit_price must be non-negative."},
-		}
-	case domain.RoleFinanceController:
-		return ports.AllowedActionSchema{
-			RoleID:         roleID,
-			RequiredAction: "finance",
-			JSONSchemaName: "FinanceAction",
-			Rules:          []string{"Populate only action.finance.", "Provide next_round_targets exactly once.", "Each target field must be present."},
-		}
-	default:
-		return ports.AllowedActionSchema{RoleID: roleID}
+func allowedActionSchema(definition scenario.Definition, roleID domain.RoleID) ports.AllowedActionSchema {
+	spec := actionschema.Build(definition, roleID, domain.RoundView{})
+	return ports.AllowedActionSchema{
+		RoleID:         roleID,
+		RequiredAction: spec.RequiredAction,
+		JSONSchemaName: spec.JSONSchemaName,
+		Rules:          slices.Clone(spec.ValidationRules),
 	}
 }
 
