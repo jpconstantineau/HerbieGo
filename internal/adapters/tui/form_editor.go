@@ -338,6 +338,12 @@ func cycleOptionValue(options []actionschema.Option, current string, delta int) 
 	if len(options) == 0 {
 		return "", false
 	}
+	if strings.TrimSpace(current) == "" {
+		if delta < 0 {
+			return options[len(options)-1].Value, true
+		}
+		return options[0].Value, true
+	}
 	index := 0
 	for i, option := range options {
 		if option.Value == current {

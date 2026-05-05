@@ -47,8 +47,8 @@ func TestActionFormModelSupportsCollectionNavigationAndChoiceCycling(t *testing.
 	if !model.CycleChoice(1) {
 		t.Fatalf("CycleChoice(1) = false, want true")
 	}
-	if got := model.Values["orders"].Rows[0]["part_id"]; got != "seal_kit" {
-		t.Fatalf("part_id after cycle = %q, want seal_kit", got)
+	if got := model.Values["orders"].Rows[0]["part_id"]; got != "housing" {
+		t.Fatalf("part_id after cycle = %q, want housing", got)
 	}
 
 	model.MoveRight()

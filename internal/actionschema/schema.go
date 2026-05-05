@@ -75,14 +75,28 @@ type RoleSchema struct {
 	Fields           []FieldSpec
 }
 
+type CatalogSource interface {
+	Parts() []scenario.Part
+	Products() []scenario.Product
+	Workstations() []scenario.Workstation
+}
+
 func Build(definition scenario.Definition, roleID domain.RoleID, _ domain.RoundView) RoleSchema {
+	return buildFromPartsProductsWorkstations(definition.ProductionModel.Parts, definition.ProductionModel.Products, definition.ProductionModel.Workstations, roleID)
+}
+
+func BuildFromCatalog(source CatalogSource, roleID domain.RoleID, _ domain.RoundView) RoleSchema {
+	return buildFromPartsProductsWorkstations(source.Parts(), source.Products(), source.Workstations(), roleID)
+}
+
+func buildFromPartsProductsWorkstations(parts []scenario.Part, products []scenario.Product, workstations []scenario.Workstation, roleID domain.RoleID) RoleSchema {
 	switch roleID {
 	case domain.RoleProcurementManager:
-		return procurementSchema(definition)
+		return procurementSchema(parts)
 	case domain.RoleProductionManager:
-		return productionSchema(definition)
+		return productionSchema(products, workstations)
 	case domain.RoleSalesManager:
-		return salesSchema(definition)
+		return salesSchema(products)
 	case domain.RoleFinanceController:
 		return financeSchema()
 	default:
@@ -90,10 +104,10 @@ func Build(definition scenario.Definition, roleID domain.RoleID, _ domain.RoundV
 	}
 }
 
-func procurementSchema(definition scenario.Definition) RoleSchema {
-	partOptions := make([]Option, 0, len(definition.ProductionModel.Parts))
-	partSuppliers := make(map[string][]Option, len(definition.ProductionModel.Parts))
-	for _, part := range definition.ProductionModel.Parts {
+func procurementSchema(parts []scenario.Part) RoleSchema {
+	partOptions := make([]Option, 0, len(parts))
+	partSuppliers := make(map[string][]Option, len(parts))
+	for _, part := range parts {
 		partOptions = append(partOptions, Option{
 			Value:       string(part.ID),
 			Label:       part.DisplayName,
@@ -150,9 +164,9 @@ func procurementSchema(definition scenario.Definition) RoleSchema {
 	}
 }
 
-func productionSchema(definition scenario.Definition) RoleSchema {
-	productOptions := productOptions(definition)
-	workstationOptions := workstationOptions(definition)
+func productionSchema(products []scenario.Product, workstations []scenario.Workstation) RoleSchema {
+	productOptions := productOptions(products)
+	workstationOptions := workstationOptions(workstations)
 
 	return RoleSchema{
 		RoleID:         domain.RoleProductionManager,
@@ -217,8 +231,8 @@ func productionSchema(definition scenario.Definition) RoleSchema {
 	}
 }
 
-func salesSchema(definition scenario.Definition) RoleSchema {
-	productOptions := productOptions(definition)
+func salesSchema(products []scenario.Product) RoleSchema {
+	productOptions := productOptions(products)
 	return RoleSchema{
 		RoleID:         domain.RoleSalesManager,
 		RequiredAction: "sales",
@@ -301,9 +315,9 @@ func integerField(id, label, help string) FieldSpec {
 	}
 }
 
-func productOptions(definition scenario.Definition) []Option {
-	options := make([]Option, 0, len(definition.ProductionModel.Products))
-	for _, product := range definition.ProductionModel.Products {
+func productOptions(products []scenario.Product) []Option {
+	options := make([]Option, 0, len(products))
+	for _, product := range products {
 		options = append(options, Option{
 			Value:       string(product.ID),
 			Label:       product.DisplayName,
@@ -313,9 +327,9 @@ func productOptions(definition scenario.Definition) []Option {
 	return options
 }
 
-func workstationOptions(definition scenario.Definition) []Option {
-	options := make([]Option, 0, len(definition.ProductionModel.Workstations))
-	for _, workstation := range definition.ProductionModel.Workstations {
+func workstationOptions(workstations []scenario.Workstation) []Option {
+	options := make([]Option, 0, len(workstations))
+	for _, workstation := range workstations {
 		options = append(options, Option{
 			Value:       string(workstation.ID),
 			Label:       workstation.DisplayName,
