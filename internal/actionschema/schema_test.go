@@ -73,3 +73,44 @@ func TestBuildFinanceSchemaKeepsScalarTargetsAndCommentary(t *testing.T) {
 		t.Fatalf("last field ID = %q, want commentary", got)
 	}
 }
+
+func TestValidateRoleActionRejectsSupplierOutsidePartChoices(t *testing.T) {
+	spec := Build(scenario.Starter(), domain.RoleProcurementManager, domain.RoundView{})
+	errs := ValidateRoleAction(spec, domain.RoleAction{
+		Procurement: &domain.ProcurementAction{
+			Orders: []domain.PurchaseOrderIntent{{
+				PartID:     "housing",
+				SupplierID: "sealworks",
+				Quantity:   2,
+			}},
+		},
+	}, domain.RoundView{})
+	if len(errs) == 0 {
+		t.Fatalf("ValidateRoleAction() = nil, want supplier validation error")
+	}
+	if errs[0].Path != "action.procurement.orders[0].supplier_id" {
+		t.Fatalf("errs[0].Path = %q, want supplier_id path", errs[0].Path)
+	}
+}
+
+func TestValidateRoleActionRejectsFinanceTargetsForWrongRound(t *testing.T) {
+	spec := Build(scenario.Starter(), domain.RoleFinanceController, domain.RoundView{})
+	errs := ValidateRoleAction(spec, domain.RoleAction{
+		Finance: &domain.FinanceAction{
+			NextRoundTargets: domain.BudgetTargets{
+				EffectiveRound:        4,
+				ProcurementBudget:     1,
+				ProductionSpendBudget: 1,
+				RevenueTarget:         1,
+				CashFloorTarget:       1,
+				DebtCeilingTarget:     1,
+			},
+		},
+	}, domain.RoundView{ActiveTargets: domain.BudgetTargets{EffectiveRound: 1}})
+	if len(errs) == 0 {
+		t.Fatalf("ValidateRoleAction() = nil, want effective_round validation error")
+	}
+	if errs[0].Path != "action.finance.next_round_targets.effective_round" {
+		t.Fatalf("errs[0].Path = %q, want effective_round path", errs[0].Path)
+	}
+}

@@ -27,6 +27,7 @@ type AIDecisionRequest struct {
 	Briefing        RoleBriefing
 	RoundView       domain.RoundView
 	RoleReport      domain.RoleRoundReport
+	SharedActionSurface any
 	AllowedActions  AllowedActionSchema
 	Tools           []LookupToolSpec
 	ToolResults     []LookupToolResult

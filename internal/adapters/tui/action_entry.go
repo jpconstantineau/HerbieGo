@@ -352,6 +352,9 @@ func (m Model) buildSubmissionDraft(draft actionDraft) (domain.ActionSubmission,
 	if err != nil {
 		return domain.ActionSubmission{}, err
 	}
+	if err := actionschema.FirstError(actionschema.ValidateRoleAction(draft.form.Schema, action, m.selectedRoleView())); err != nil {
+		return domain.ActionSubmission{}, err
+	}
 	commentary := strings.TrimSpace(draft.form.Values["commentary"].Scalar)
 	if commentary == "" {
 		return domain.ActionSubmission{}, fmt.Errorf("commentary is required before review or submit")

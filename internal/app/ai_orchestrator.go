@@ -52,6 +52,8 @@ func (o AIOrchestrator) SubmitRound(ctx context.Context, request ports.RoundRequ
 // BuildRequest converts the round request into the canonical provider-neutral
 // AI decision contract.
 func (o AIOrchestrator) BuildRequest(request ports.RoundRequest) ports.AIDecisionRequest {
+	roundView := request.RoleView.Clone()
+	actionSchema := actionschema.Build(o.Scenario, request.Assignment.RoleID, roundView)
 	return ports.AIDecisionRequest{
 		MatchID:        request.RoleView.MatchID,
 		Round:          request.RoleView.Round,
@@ -59,8 +61,9 @@ func (o AIOrchestrator) BuildRequest(request ports.RoundRequest) ports.AIDecisio
 		Provider:       request.Assignment.Provider,
 		Model:          request.Assignment.ModelName,
 		Briefing:       roleBriefing(o.Scenario, request.Assignment.RoleID),
-		RoundView:      request.RoleView.Clone(),
+		RoundView:      roundView,
 		RoleReport:     request.RoleReport.Clone(),
+		SharedActionSurface: actionSchema,
 		AllowedActions: allowedActionSchema(o.Scenario, request.Assignment.RoleID),
 		Tools:          lookupTools(),
 		ResponseSpec: ports.ResponseFormatSpec{
@@ -87,6 +90,7 @@ func (o AIOrchestrator) Decide(ctx context.Context, request ports.AIDecisionRequ
 	audit := ports.AIDecisionAudit{}
 	retryContext := request.RetryContext
 	toolCalls := 0
+	actionSchema := actionschema.Build(o.Scenario, request.RoleID, request.RoundView)
 	logger := loggerOrDiscard(o.Logger).With(
 		"component", "ai_orchestrator",
 		"match_id", request.MatchID,
@@ -125,7 +129,7 @@ func (o AIOrchestrator) Decide(ctx context.Context, request ports.AIDecisionRequ
 			return domain.ActionSubmission{}, audit, fmt.Errorf("app: ai decision runner: request decision: %w", err)
 		}
 
-		response, toolCall, validationErrors, parseErr := parseAndValidateDecision(result, request)
+		response, toolCall, validationErrors, parseErr := parseAndValidateDecision(result, request, actionSchema)
 		isToolCall := parseErr == nil && toolCall != nil
 		valid := parseErr == nil && !isToolCall && len(validationErrors) == 0
 
@@ -229,9 +233,9 @@ func validateDecisionRequest(request ports.AIDecisionRequest) error {
 	return errorsJoin(errs...)
 }
 
-func parseAndValidateDecision(result ports.ProviderDecisionResult, request ports.AIDecisionRequest) (ports.AIDecisionResponse, *ports.LookupToolCall, []ports.ValidationError, error) {
+func parseAndValidateDecision(result ports.ProviderDecisionResult, request ports.AIDecisionRequest, schema actionschema.RoleSchema) (ports.AIDecisionResponse, *ports.LookupToolCall, []ports.ValidationError, error) {
 	if result.StructuredResponse != nil {
-		return validateStructuredDecision(*result.StructuredResponse, request)
+		return validateStructuredDecision(*result.StructuredResponse, request, schema)
 	}
 
 	raw := result.RawResponse
@@ -258,7 +262,7 @@ func parseAndValidateDecision(result ports.ProviderDecisionResult, request ports
 		return ports.AIDecisionResponse{}, nil, validationErrors, err
 	}
 
-	validationErrors := validateDecisionResponse(response, request)
+	validationErrors := validateDecisionResponse(response, request, schema)
 	if len(validationErrors) > 0 {
 		return ports.AIDecisionResponse{}, nil, validationErrors, fmt.Errorf("response failed validation")
 	}
@@ -266,7 +270,7 @@ func parseAndValidateDecision(result ports.ProviderDecisionResult, request ports
 	return response, nil, nil, nil
 }
 
-func validateStructuredDecision(envelope ports.AIDecisionEnvelope, request ports.AIDecisionRequest) (ports.AIDecisionResponse, *ports.LookupToolCall, []ports.ValidationError, error) {
+func validateStructuredDecision(envelope ports.AIDecisionEnvelope, request ports.AIDecisionRequest, schema actionschema.RoleSchema) (ports.AIDecisionResponse, *ports.LookupToolCall, []ports.ValidationError, error) {
 	if envelope.ToolCall != nil {
 		validationErrors := validateToolCall(*envelope.ToolCall, request.Tools)
 		if len(validationErrors) > 0 {
@@ -276,7 +280,7 @@ func validateStructuredDecision(envelope ports.AIDecisionEnvelope, request ports
 	}
 
 	response := envelope.DecisionResponse()
-	validationErrors := validateDecisionResponse(response, request)
+	validationErrors := validateDecisionResponse(response, request, schema)
 	if len(validationErrors) > 0 {
 		return ports.AIDecisionResponse{}, nil, validationErrors, fmt.Errorf("response failed validation")
 	}
@@ -341,7 +345,7 @@ func extractJSONObject(raw string) (string, error) {
 	return "", fmt.Errorf("response did not contain a recoverable JSON object")
 }
 
-func validateDecisionResponse(response ports.AIDecisionResponse, request ports.AIDecisionRequest) []ports.ValidationError {
+func validateDecisionResponse(response ports.AIDecisionResponse, request ports.AIDecisionRequest, schema actionschema.RoleSchema) []ports.ValidationError {
 	var errs []ports.ValidationError
 
 	payloadCount := 0
@@ -361,27 +365,7 @@ func validateDecisionResponse(response ports.AIDecisionResponse, request ports.A
 		errs = append(errs, ports.ValidationError{Path: "action", Message: "must contain exactly one populated role action payload"})
 	}
 
-	switch request.RoleID {
-	case domain.RoleProcurementManager:
-		if response.Action.Procurement == nil {
-			errs = append(errs, ports.ValidationError{Path: "action.procurement", Message: "must be populated for procurement_manager"})
-		}
-		errs = append(errs, validateProcurementAction(response.Action.Procurement)...)
-	case domain.RoleProductionManager:
-		if response.Action.Production == nil {
-			errs = append(errs, ports.ValidationError{Path: "action.production", Message: "must be populated for production_manager"})
-		}
-		errs = append(errs, validateProductionAction(response.Action.Production, request.RoundView)...)
-	case domain.RoleSalesManager:
-		if response.Action.Sales == nil {
-			errs = append(errs, ports.ValidationError{Path: "action.sales", Message: "must be populated for sales_manager"})
-		}
-		errs = append(errs, validateSalesAction(response.Action.Sales, request.RoundView)...)
-	case domain.RoleFinanceController:
-		if response.Action.Finance == nil {
-			errs = append(errs, ports.ValidationError{Path: "action.finance", Message: "must be populated for finance_controller"})
-		}
-	}
+	errs = append(errs, translateValidationErrors(actionschema.ValidateRoleAction(schema, response.Action, request.RoundView))...)
 
 	summary := strings.TrimSpace(response.Commentary.PublicSummary)
 	if summary == "" {
@@ -423,75 +407,6 @@ func validateToolCall(call ports.LookupToolCall, tools []ports.LookupToolSpec) [
 	for _, argument := range selected.Arguments {
 		if argument.Required && strings.TrimSpace(call.Arguments[argument.Name]) == "" {
 			errs = append(errs, ports.ValidationError{Path: fmt.Sprintf("tool_call.arguments.%s", argument.Name), Message: "must not be empty"})
-		}
-	}
-	return errs
-}
-
-func validateProcurementAction(action *domain.ProcurementAction) []ports.ValidationError {
-	if action == nil {
-		return nil
-	}
-
-	var errs []ports.ValidationError
-	for i, order := range action.Orders {
-		if order.PartID == "" {
-			errs = append(errs, ports.ValidationError{Path: fmt.Sprintf("action.procurement.orders[%d].part_id", i), Message: "must not be empty"})
-		}
-		if order.SupplierID == "" {
-			errs = append(errs, ports.ValidationError{Path: fmt.Sprintf("action.procurement.orders[%d].supplier_id", i), Message: "must not be empty"})
-		}
-		if order.Quantity < 0 {
-			errs = append(errs, ports.ValidationError{Path: fmt.Sprintf("action.procurement.orders[%d].quantity", i), Message: "must be non-negative"})
-		}
-	}
-	return errs
-}
-
-func validateProductionAction(action *domain.ProductionAction, view domain.RoundView) []ports.ValidationError {
-	if action == nil {
-		return nil
-	}
-
-	knownProducts := productSet(view)
-	knownStations := workstationSet(view)
-
-	var errs []ports.ValidationError
-	for i, release := range action.Releases {
-		if !knownProducts[release.ProductID] {
-			errs = append(errs, ports.ValidationError{Path: fmt.Sprintf("action.production.releases[%d].product_id", i), Message: "must reference a product visible in the round view"})
-		}
-		if release.Quantity < 0 {
-			errs = append(errs, ports.ValidationError{Path: fmt.Sprintf("action.production.releases[%d].quantity", i), Message: "must be non-negative"})
-		}
-	}
-	for i, allocation := range action.CapacityAllocation {
-		if !knownStations[allocation.WorkstationID] {
-			errs = append(errs, ports.ValidationError{Path: fmt.Sprintf("action.production.capacity_allocation[%d].workstation_id", i), Message: "must reference a workstation visible in the round view"})
-		}
-		if !knownProducts[allocation.ProductID] {
-			errs = append(errs, ports.ValidationError{Path: fmt.Sprintf("action.production.capacity_allocation[%d].product_id", i), Message: "must reference a product visible in the round view"})
-		}
-		if allocation.Capacity < 0 {
-			errs = append(errs, ports.ValidationError{Path: fmt.Sprintf("action.production.capacity_allocation[%d].capacity", i), Message: "must be non-negative"})
-		}
-	}
-	return errs
-}
-
-func validateSalesAction(action *domain.SalesAction, view domain.RoundView) []ports.ValidationError {
-	if action == nil {
-		return nil
-	}
-
-	knownProducts := productSet(view)
-	var errs []ports.ValidationError
-	for i, offer := range action.ProductOffers {
-		if !knownProducts[offer.ProductID] {
-			errs = append(errs, ports.ValidationError{Path: fmt.Sprintf("action.sales.product_offers[%d].product_id", i), Message: "must reference a product visible in the round view"})
-		}
-		if offer.UnitPrice < 0 {
-			errs = append(errs, ports.ValidationError{Path: fmt.Sprintf("action.sales.product_offers[%d].unit_price", i), Message: "must be non-negative"})
 		}
 	}
 	return errs
@@ -614,42 +529,20 @@ func allowedActionSchema(definition scenario.Definition, roleID domain.RoleID) p
 	}
 }
 
-func productSet(view domain.RoundView) map[domain.ProductID]bool {
-	products := make(map[domain.ProductID]bool)
-	for _, item := range view.Plant.WIPInventory {
-		products[item.ProductID] = true
-	}
-	for _, item := range view.Plant.FinishedInventory {
-		products[item.ProductID] = true
-	}
-	for _, item := range view.Plant.Backlog {
-		products[item.ProductID] = true
-	}
-	for _, customer := range view.Customers {
-		for _, item := range customer.Backlog {
-			products[item.ProductID] = true
-		}
-	}
-	if len(products) == 0 {
-		products["pump"] = true
-	}
-	return products
-}
-
-func workstationSet(view domain.RoundView) map[domain.WorkstationID]bool {
-	stations := make(map[domain.WorkstationID]bool, len(view.Plant.Workstations))
-	for _, item := range view.Plant.Workstations {
-		stations[item.WorkstationID] = true
-	}
-	return stations
-}
-
 func clonePreviousForDecision(previous *domain.ActionSubmission) *domain.ActionSubmission {
 	if previous == nil {
 		return nil
 	}
 	cloned := previous.Clone()
 	return &cloned
+}
+
+func translateValidationErrors(errs []actionschema.ValidationError) []ports.ValidationError {
+	out := make([]ports.ValidationError, 0, len(errs))
+	for _, err := range errs {
+		out = append(out, ports.ValidationError{Path: err.Path, Message: err.Message})
+	}
+	return out
 }
 
 func errorsJoin(errs ...error) error {
